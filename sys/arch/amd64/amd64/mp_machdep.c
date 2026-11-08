@@ -25,7 +25,10 @@
 #include <machine/cpufunc.h>
 #include <machine/param.h>
 
+#include <sys/kmem.h>
+
 #include <vm/hat.h>
+#include <vm/kva.h>
 #include <vm/page.h>
 
 /* How long to wait for a processor to report in. */
@@ -35,29 +38,32 @@
 struct cpu_info cpu_info_store[MAXCPUS];
 volatile unsigned int ncpus = 1;
 
-static uint64_t cpu_alloc_stack(void);
 static void cpu_hatch_entry(void *);
+static void cpu_hatch_tables(void *);
 static void cpu_hatch(void *);
 static void cpu_idle_loop(void) __dead;
 
-/* Allocate a kernel stack and return its top. */
-static uint64_t
-cpu_alloc_stack(void)
-{
-        struct page *pp;
-
-        if ((pp = page_alloc(KSTACK_ORDER, 0)) == NULL)
-                panic("cpu_alloc_stack: out of memory");
-        return (uint64_t)(uintptr_t)page_to_kva(pp) +
-            ((uint64_t)PAGESIZE << KSTACK_ORDER);
-}
-
-/* Entered on the boot loader's stack; move to our own. */
+/*
+ * A processor starts on the boot loader's stack, under the boot loader's
+ * page tables, which do not map KVA. It moves first to a one-page hatch
+ * stack in the direct map, which both sets of tables map, switches to
+ * the kernel's tables there, and only then moves to its guarded KVA
+ * stack.
+ */
 static void
 cpu_hatch_entry(void *arg)
 {
         struct cpu_info *ci = arg;
 
+        stack_switch_call(ci->ci_hatch_top, cpu_hatch_tables, ci);
+}
+
+static void
+cpu_hatch_tables(void *arg)
+{
+        struct cpu_info *ci = arg;
+
+        hat_cpu_init();
         stack_switch_call(ci->ci_stack_top, cpu_hatch, ci);
 }
 
@@ -66,11 +72,6 @@ cpu_hatch(void *arg)
 {
         struct cpu_info *ci = arg;
 
-        /*
-         * The new stack is in the direct map, which the boot loader's
-         * tables and ours both contain, so switching tables here is safe.
-         */
-        hat_cpu_init();
         cpu_tables_init(ci);
         intr_cpu_init(ci);
         atomic_or_32(&ci->ci_flags, CPUF_RUNNING);
@@ -106,6 +107,7 @@ cpu_boot_secondary_processors(void)
 
         for (unsigned int i = 0; i < bi->bi_ncpu; i++) {
                 struct cpu_info *ci;
+                struct page *hatch;
                 unsigned int waited;
 
                 if (bi->bi_cpu_lapic[i] == bi->bi_bsp_lapic_id)
@@ -116,9 +118,13 @@ cpu_boot_secondary_processors(void)
                 ci->ci_cpuid = next;
                 ci->ci_lapic_id = bi->bi_cpu_lapic[i];
                 ci->ci_flags = CPUF_PRESENT;
-                ci->ci_stack_top = cpu_alloc_stack();
+                if ((hatch = page_alloc(0, 0)) == NULL)
+                        panic("cpu_boot: out of memory");
+                ci->ci_hatch_top = (uint64_t)(uintptr_t)page_to_kva(hatch) +
+                    PAGESIZE;
+                ci->ci_stack_top = kstack_alloc(KM_SLEEP);
                 for (int j = 0; j < NIST; j++)
-                        ci->ci_ist_top[j] = cpu_alloc_stack();
+                        ci->ci_ist_top[j] = kstack_alloc(KM_SLEEP);
 
                 limine_cpu_start(i, cpu_hatch_entry, ci);
                 for (waited = 0; waited < CPU_START_USECS;
@@ -129,10 +135,13 @@ cpu_boot_secondary_processors(void)
                         drv_usecwait(CPU_START_POLL);
                 }
                 if (waited >= CPU_START_USECS) {
+                        /* It may yet start, so its memory is kept. */
                         printf("cpu%u: LAPIC id %u did not start\n",
                             next, bi->bi_cpu_lapic[i]);
                         continue;
                 }
+                page_free(hatch, 0);
+                ci->ci_hatch_top = 0;
                 if (ci->ci_lapic_id != bi->bi_cpu_lapic[i])
                         printf("cpu%u: LAPIC id %u, boot loader said %u\n",
                             next, ci->ci_lapic_id, bi->bi_cpu_lapic[i]);

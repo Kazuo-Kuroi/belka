@@ -45,6 +45,7 @@ struct cpu_info {
         volatile uint32_t ci_flags;
         uint32_t        ci_pad;
         uint64_t        ci_stack_top;   /* idle/boot kernel stack */
+        uint64_t        ci_hatch_top;   /* start-up stack, until running */
         uint64_t        ci_ist_top[NIST];
         uint64_t        ci_gdt[NGDT];
         uint32_t        ci_tss[TSS_WORDS];
@@ -96,6 +97,7 @@ struct cpu_info *curcpu(void);
 /* cpu_tables.c */
 void idt_init(void);
 void cpu_tables_init(struct cpu_info *);
+void cpu_set_ist(struct cpu_info *, int, uint64_t);
 
 /* intr.c */
 struct trapframe;

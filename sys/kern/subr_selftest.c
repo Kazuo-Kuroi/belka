@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 
+#include <sys/kmem.h>
 #include <sys/param.h>
 #include <sys/smp.h>
 #include <sys/spinlock.h>
@@ -22,6 +23,8 @@
 #include <machine/intr.h>
 #include <machine/param.h>
 
+#include <vm/hat.h>
+#include <vm/kva.h>
 #include <vm/page.h>
 
 static int selftest_failures;
@@ -46,6 +49,10 @@ static void selftest_atomic(void);
 static void selftest_spinlock(void);
 static void selftest_mp(void);
 static void selftest_clock(void);
+static void selftest_kmem(void);
+static void selftest_kva(void);
+static void mp_kmem_worker(void *);
+static size_t kmem_round(void);
 static void mp_nested_inner(void *);
 static void mp_nested_outer(void *);
 static void mp_lock_worker(void *);
@@ -428,6 +435,170 @@ mp_nested_outer(void *arg __unused)
         smp_call_all(mp_nested_inner, NULL);
 }
 
+#define KMEM_TEST_OBJS  512
+
+/*
+ * Allocate and free a spread of sizes, stamping every block with its own
+ * address at both ends and checking the stamps before freeing. Returns
+ * the number of pages free afterwards.
+ */
+static size_t
+kmem_round(void)
+{
+        static void *obj[KMEM_TEST_OBJS];
+        static size_t len[KMEM_TEST_OBJS];
+        struct page_stats st;
+
+        for (int i = 0; i < KMEM_TEST_OBJS; i++) {
+                size_t n = 16 + (size_t)((i * 37) % 4200);
+
+                obj[i] = kmem_alloc(n, KM_SLEEP);
+                len[i] = n;
+                CHECK(obj[i] != NULL);
+                if (n >= KMEM_ALIGN)
+                        CHECK(((uintptr_t)obj[i] & (KMEM_ALIGN - 1)) == 0);
+                memcpy(obj[i], &obj[i], sizeof(void *));
+                memcpy((char *)obj[i] + n - sizeof(void *), &obj[i],
+                    sizeof(void *));
+        }
+        for (int i = KMEM_TEST_OBJS - 1; i >= 0; i -= 2) {
+                CHECK(memcmp(obj[i], &obj[i], sizeof(void *)) == 0);
+                CHECK(memcmp((char *)obj[i] + len[i] - sizeof(void *),
+                    &obj[i], sizeof(void *)) == 0);
+                kmem_free(obj[i], len[i]);
+        }
+        for (int i = 0; i < KMEM_TEST_OBJS; i += 2) {
+                CHECK(memcmp(obj[i], &obj[i], sizeof(void *)) == 0);
+                kmem_free(obj[i], len[i]);
+        }
+        page_get_stats(&st);
+        return st.ps_free;
+}
+
+static void
+selftest_kmem(void)
+{
+        struct kmem_zone_stats zs;
+        struct kmem_zone *kz;
+        size_t free1, free2;
+        void *a, *b;
+        char *z;
+
+        CHECK(kmem_alloc(0, KM_SLEEP) == NULL);
+
+        /* Zeroed allocation, small and large. */
+        z = kmem_zalloc(300, KM_SLEEP);
+        for (int i = 0; i < 300; i++)
+                CHECK(z[i] == 0);
+        kmem_free(z, 300);
+        z = kmem_zalloc(3 * PAGESIZE + 5, KM_SLEEP);
+        CHECK(((uintptr_t)z & PAGEOFFSET) == 0);
+        CHECK(z[0] == 0 && z[3 * PAGESIZE + 4] == 0);
+        CHECK(kmem_large_inuse() == 1);
+        kmem_free(z, 3 * PAGESIZE + 5);
+        CHECK(kmem_large_inuse() == 0);
+
+        /*
+         * Two identical rounds must end with the same free page count:
+         * after the first warms the zones up, nothing may leak.
+         */
+        free1 = kmem_round();
+        free2 = kmem_round();
+        CHECK(free1 == free2);
+        CHECK(kmem_large_inuse() == 0);
+
+        /* A private zone. */
+        kz = kmem_zone_init(40, "selftest");
+        a = kmem_zone_alloc(kz, KM_SLEEP);
+        b = kmem_zone_zalloc(kz, KM_SLEEP);
+        CHECK(a != NULL && b != NULL && a != b);
+        CHECK(((uintptr_t)a & (KMEM_ALIGN - 1)) == 0);
+        CHECK(((const char *)b)[0] == 0 && ((const char *)b)[47] == 0);
+        kmem_zone_get_stats(kz, &zs);
+        CHECK(zs.kzs_size == 48 && zs.kzs_inuse == 2 && zs.kzs_slabs == 1);
+        kmem_zone_free(kz, a);
+        kmem_zone_free(kz, b);
+        kmem_zone_get_stats(kz, &zs);
+        CHECK(zs.kzs_inuse == 0 && zs.kzs_allocs == 2 && zs.kzs_frees == 2);
+}
+
+/* KVA ranges and guarded kernel stacks. */
+static void
+selftest_kva(void)
+{
+        struct kva_stats before, after;
+        vaddr_t a, b, c, top;
+        paddr_t pa;
+
+        kva_get_stats(&before);
+        a = kva_alloc(3, KM_SLEEP);
+        b = kva_alloc(5, KM_SLEEP);
+        c = kva_alloc(2, KM_SLEEP);
+        CHECK(b == a + 3 * PAGESIZE && c == b + 5 * PAGESIZE);
+        kva_free(b, 5);
+        CHECK(kva_alloc(4, KM_SLEEP) == b);     /* first fit */
+        kva_free(b, 4);
+        kva_free(a, 3);
+        kva_free(c, 2);
+        kva_get_stats(&after);
+        CHECK(after.kvs_free_pages == before.kvs_free_pages);
+        CHECK(after.kvs_segments == before.kvs_segments);
+
+        top = kstack_alloc(KM_SLEEP);
+        CHECK(top != 0);
+        CHECK(hat_kextract(top - PAGESIZE, &pa) == 0);
+        CHECK(hat_kextract(top - KSTACK_PAGES * PAGESIZE, &pa) == 0);
+        CHECK(hat_kextract(top - (KSTACK_PAGES + 1) * PAGESIZE, &pa) != 0);
+        *(volatile uint64_t *)(uintptr_t)(top - 8) = 1;
+        kstack_free(top);
+        CHECK(hat_kextract(top - PAGESIZE, &pa) != 0);
+        kva_get_stats(&after);
+        CHECK(after.kvs_free_pages == before.kvs_free_pages);
+}
+
+#define MP_KMEM_SLOTS   64
+#define MP_KMEM_ROUNDS  20000
+
+/*
+ * Every processor allocates and frees random sizes at once, stamping
+ * each block, so a block handed to two processors is caught.
+ */
+static void
+mp_kmem_worker(void *arg __unused)
+{
+        void *slot[MP_KMEM_SLOTS];
+        size_t len[MP_KMEM_SLOTS];
+        uint32_t seed = cpu_number() * 2654435761u + 7u;
+
+        memset(slot, 0, sizeof(slot));
+        for (int round = 0; round < MP_KMEM_ROUNDS; round++) {
+                unsigned int i;
+
+                seed = seed * 1103515245u + 12345u;
+                i = (seed >> 8) % MP_KMEM_SLOTS;
+                if (slot[i] == NULL) {
+                        seed = seed * 1103515245u + 12345u;
+                        /* At least 16, so the two stamps do not overlap. */
+                        len[i] = 16 + (seed >> 8) % 6000;
+                        slot[i] = kmem_alloc(len[i], KM_SLEEP);
+                        memcpy(slot[i], &slot[i], sizeof(void *));
+                        memcpy((char *)slot[i] + len[i] - sizeof(void *),
+                            &slot[i], sizeof(void *));
+                } else {
+                        if (memcmp(slot[i], &slot[i], sizeof(void *)) != 0 ||
+                            memcmp((char *)slot[i] + len[i] -
+                            sizeof(void *), &slot[i], sizeof(void *)) != 0)
+                                atomic_inc_32_nv(&mp_failures);
+                        kmem_free(slot[i], len[i]);
+                        slot[i] = NULL;
+                }
+        }
+        for (unsigned int i = 0; i < MP_KMEM_SLOTS; i++) {
+                if (slot[i] != NULL)
+                        kmem_free(slot[i], len[i]);
+        }
+}
+
 /*
  * The clock: ticks arrive at HZ, measured against the TSC. The bounds
  * are loose because a virtual machine's vCPU can be descheduled.
@@ -477,6 +648,9 @@ selftest_mp(void)
         smp_call_all(mp_nested_outer, NULL);
         CHECK(mp_nested_count == n * n);
 
+        smp_call_all(mp_kmem_worker, NULL);
+        CHECK(kmem_large_inuse() == 0);
+
         CHECK(mp_failures == 0);
         printf("selftest: %u processors: %ju locked increments, "
             "%u atomic, %u nested calls\n", n, (uintmax_t)mp_locked_count,
@@ -492,6 +666,8 @@ selftest_run(void)
         selftest_prf();
         selftest_string();
         selftest_page();
+        selftest_kmem();
+        selftest_kva();
         selftest_spinlock();
         selftest_clock();
         selftest_mp();

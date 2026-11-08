@@ -27,6 +27,8 @@
 #include <machine/segments.h>
 #include <machine/trap.h>
 
+#include <vm/hat.h>
+
 /* The assembly offsets must match the structure. */
 CTASSERT(offsetof(struct trapframe, tf_rdi) == TF_RDI);
 CTASSERT(offsetof(struct trapframe, tf_rbp) == TF_RBP);
@@ -138,7 +140,7 @@ trap_dump(const struct trapframe *tf)
  * built with frame pointers, so each frame begins with the caller's
  * %rbp followed by the return address. The walk stops at the first
  * frame that is not an aligned kernel address or does not move up the
- * stack, so a corrupt chain cannot fault.
+ * stack, or that is not mapped, so a corrupt chain cannot fault.
  */
 static void
 trap_backtrace(uint64_t rip, uint64_t rbp)
@@ -148,7 +150,12 @@ trap_backtrace(uint64_t rip, uint64_t rbp)
                 const uint64_t *frame;
                 uint64_t next;
 
-                if (rbp < KERNEL_BASE || (rbp & 7) != 0)
+                paddr_t pa;
+
+                /* The frame may lie in a guard page; never fault here. */
+                if (rbp < KERNEL_BASE || (rbp & 7) != 0 ||
+                    hat_kextract(rbp, &pa) != 0 ||
+                    hat_kextract(rbp + 8, &pa) != 0)
                         break;
                 frame = (const uint64_t *)(uintptr_t)rbp;
                 if (frame[1] == 0)

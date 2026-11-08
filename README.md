@@ -20,6 +20,9 @@ make run                # boot in QEMU with the serial console on stdio
 make test               # boot, run the self-tests, and report PASS/FAIL
 make test-fault         # boot, force a page fault, expect a clean panic
 make test-apfault       # the same, on a secondary processor
+make test-stack         # overflow a kernel stack, expect a double fault
+make test-uaf           # write to freed kmem, expect it to be caught
+make test-all           # every test above
 ```
 
 `SMP=n` and `MEM=size` set the guest's processors and memory.

@@ -15,10 +15,12 @@ LDSCRIPT        := sys/arch/amd64/conf/kernel.ld
 MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_clock.c \
                    sys/kern/kern_cons.c \
+                   sys/kern/kern_kmem.c \
                    sys/kern/kern_spinlock.c \
                    sys/kern/subr_prf.c \
                    sys/kern/subr_selftest.c \
                    sys/libkern/string.c \
+                   sys/vm/vm_kva.c \
                    sys/vm/vm_page.c \
                    sys/dev/ic/ns16550.c
 

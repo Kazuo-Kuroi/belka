@@ -25,7 +25,10 @@
 #include <machine/trap.h>
 #include <machine/vmparam.h>
 
+#include <sys/kmem.h>
+
 #include <vm/hat.h>
+#include <vm/kva.h>
 #include <vm/page.h>
 
 #include "dev/ic/ns16550var.h"
@@ -48,7 +51,10 @@
 struct bootinfo bootinfo;
 vaddr_t dmap_base;
 
-/* Interrupt stacks for the bootstrap processor. */
+/*
+ * Interrupt stacks for the bootstrap processor until md_stacks_init()
+ * replaces them with guarded ones.
+ */
 static uint64_t bsp_ist_stacks[NIST][IST_STACK_SIZE / sizeof(uint64_t)];
 
 static struct ns16550_softc console_softc;
@@ -68,12 +74,14 @@ static const char *const bootmem_names[] = {
 static void print_memory_map(const struct bootinfo *);
 static uint64_t stack_top(const void *, size_t);
 static void md_fault_on_cpu1(void *);
+static void md_overflow_on_cpu1(void *);
 static int md_expect_read_fault(uint64_t, uint64_t);
 static int md_expect_write_fault(uint64_t, uint64_t, uint64_t);
 static void md_kva_read_all(void *);
 static void md_kva_fault_all(void *);
 static int md_selftest_hat(void);
 static int md_selftest_intr(void);
+static int md_recurse(int);
 static void md_note_ipi(void *);
 static void cpu_halt_self_forever(void) __dead;
 
@@ -178,6 +186,34 @@ amd64_init(void)
         }
 
         main();
+}
+
+void
+md_stacks_init(void)
+{
+        for (int i = 1; i <= NIST; i++)
+                cpu_set_ist(&cpu_info_primary, i, kstack_alloc(KM_SLEEP));
+}
+
+static volatile int md_recurse_limit = 1 << 30;
+
+/* Recurse until the stack overflows into its guard page. */
+static int
+md_recurse(int depth)
+{
+        volatile char pad[256];
+
+        pad[0] = (char)depth;
+        if (depth > md_recurse_limit)
+                return 0;
+        return md_recurse(depth + 1) + pad[0];
+}
+
+static void
+md_overflow_on_cpu1(void *arg __unused)
+{
+        if (cpu_number() == 1)
+                (void)md_recurse(0);
 }
 
 /* Touch an unmapped address on processor 1 only. */
@@ -285,14 +321,14 @@ md_selftest_hat(void)
         HCHECK(hat_kextract((vaddr_t)(uintptr_t)kernel_start, &pa) == 0);
         HCHECK(hat_kextract(dmap_base + UINT64_C(0x200000), &pa) == 0 &&
             pa == UINT64_C(0x200000));
-        HCHECK(hat_kextract(KVA_FIXED_END, &pa) != 0);
+        HCHECK(hat_kextract(KVA_END - PAGESIZE, &pa) != 0);
 
         /* KVA mappings, and their removal from every processor's TLB. */
         if ((pp = page_alloc(0, PA_ZERO)) == NULL) {
                 HCHECK(pp != NULL);
                 return failures;
         }
-        va = KVA_FIXED_END + 16 * PAGESIZE;
+        va = kva_alloc(1, KM_SLEEP);
         HCHECK(hat_kenter(va, page_to_pa(pp), HAT_WRITE) == 0);
         HCHECK(hat_kenter(va, page_to_pa(pp), HAT_WRITE) != 0);
         HCHECK(hat_kextract(va, &pa) == 0 && pa == page_to_pa(pp));
@@ -314,6 +350,7 @@ md_selftest_hat(void)
         HCHECK(hat_kenter(va, page_to_pa(pp), HAT_READ) == 0);
         HCHECK(md_expect_write_fault(va, 0, PGEX_P | PGEX_W));
         hat_kremove(va, 1);
+        kva_free(va, 1);
 
         page_free(pp, 0);
         return failures;
@@ -404,6 +441,27 @@ md_selftest(void)
 
         failures += md_selftest_hat();
         failures += md_selftest_intr();
+
+        if (boot_option("teststack") && ncpus > 1) {
+                printf("selftest: overflowing cpu1's stack; a double "
+                    "fault panic should follow\n");
+                smp_call_all(md_overflow_on_cpu1, NULL);
+                printf("selftest: no fault was raised\n");
+                failures++;
+        }
+
+        if (boot_option("testuaf")) {
+                char *p = kmem_alloc(64, KM_SLEEP);
+
+                printf("selftest: writing to freed memory; a panic "
+                    "should follow\n");
+                kmem_free(p, 64);
+                p[20] = 1;
+                p = kmem_alloc(64, KM_SLEEP);
+                printf("selftest: write after free not detected\n");
+                kmem_free(p, 64);
+                failures++;
+        }
 
         if (boot_option("testapfault") && ncpus > 1) {
                 printf("selftest: faulting on cpu1; a page fault panic "

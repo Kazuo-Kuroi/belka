@@ -155,6 +155,33 @@ Recorded 2026-11-07.
   IPIs. Interrupt handlers run with interrupts disabled and do not nest.
   Device interrupts will be dispatched to interrupt threads.
 
+## Kernel memory allocation (2026-11-08)
+
+- **Interface:** `kmem_alloc()`, `kmem_zalloc()`, and `kmem_free()` with
+  the System V DDI contract (the size is passed again on free, flags
+  `KM_SLEEP` and `KM_NOSLEEP`), and fixed-size object zones with the
+  IRIX `kmem_zone_*` names.
+- **Zones** are slab allocators: slabs of 2^order pages from the page
+  allocator, in the direct map, header at the end, every page pointing
+  at its slab through `p_private`. One empty slab is kept per zone.
+- **kmem_alloc** serves 28 size classes up to 4 KB from zones, 16-byte
+  aligned; larger requests get whole pages, page aligned.
+- **Until the kernel can wait for memory**, `KM_SLEEP` failure panics.
+- **Debugging is always on:** per-slab allocation bitmaps catch double
+  frees and foreign pointers; free objects are poisoned and checked on
+  reuse to catch writes after free.
+- **KVA** above the fixed mappings is handed out by `kva_alloc()`, a
+  first-fit list of free ranges, to be replaced by a vmem-style arena
+  when use grows.
+- **Kernel stacks** are 16 KB in KVA with an unmapped guard page below;
+  an overflow double faults onto an IST stack and panics. Secondary
+  processors start on a one-page direct-map hatch stack, switch to the
+  kernel's tables there, then move to their guarded stack. The
+  bootstrap processor's own boot stack is still in `.bss` without a
+  guard.
+- **Not yet:** per-processor object caches (magazines), constructors,
+  zone reclaim under memory pressure.
+
 ## File systems
 
 1. **tmpfs**, for testing.

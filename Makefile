@@ -13,7 +13,8 @@
 #   WERROR      yes to treat warnings as errors
 #   SMP         number of CPUs given to QEMU (default 4)
 #
-# Targets: all, iso, run, test, test-fault, test-apfault, limine, clean, distclean.
+# Targets: all, iso, run, test, test-fault, test-apfault, test-stack,
+# test-uaf, test-all, limine, clean, distclean.
 #
 
 ARCH            ?= amd64
@@ -40,6 +41,8 @@ ISO             := $(BUILD)/belka.iso
 TEST_ISO        := $(BUILD)/belka-test.iso
 FAULT_ISO       := $(BUILD)/belka-fault.iso
 APFAULT_ISO     := $(BUILD)/belka-apfault.iso
+STACK_ISO       := $(BUILD)/belka-stack.iso
+UAF_ISO         := $(BUILD)/belka-uaf.iso
 
 INCLUDES        := -nostdinc -isystem $(CC_INCLUDE) \
                    -Isys -Isys/arch/$(ARCH)/include -Isys/external
@@ -68,7 +71,8 @@ LDFLAGS         := -nostdlib -static -z max-page-size=0x1000 \
 SRCS            := $(MI_SRCS) $(MD_SRCS)
 OBJS            := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS)))
 
-.PHONY: all iso run test test-fault test-apfault limine clean distclean
+.PHONY: all iso run test test-fault test-apfault test-stack test-uaf \
+	test-all limine clean distclean
 
 all: $(KERNEL)
 
@@ -108,6 +112,12 @@ $(FAULT_ISO): $(ISO_DEPS)
 $(APFAULT_ISO): $(ISO_DEPS)
 	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testapfault" $@
 
+$(STACK_ISO): $(ISO_DEPS)
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit teststack" $@
+
+$(UAF_ISO): $(ISO_DEPS)
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testuaf" $@
+
 QEMU            ?= qemu-system-x86_64
 QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
                    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
@@ -121,7 +131,8 @@ run: $(ISO)
 # QEMU exits with 33 after a clean halt and 35 after a panic. "test"
 # expects a clean run; "test-fault" makes the kernel touch an unmapped
 # address and expects the resulting panic; "test-apfault" does the same
-# on a secondary processor.
+# on a secondary processor; "test-stack" and "test-uaf" check that stack
+# overflow and use after free are caught.
 test: $(TEST_ISO)
 	sh tools/qemu-test.sh pass $(BUILD)/test-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(TEST_ISO)
@@ -133,6 +144,20 @@ test-fault: $(FAULT_ISO)
 test-apfault: $(APFAULT_ISO)
 	sh tools/qemu-test.sh panic $(BUILD)/test-apfault-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(APFAULT_ISO)
+
+# A kernel stack overflow must hit the guard page and double fault.
+test-stack: $(STACK_ISO)
+	QEMU_EXPECT="double fault" sh tools/qemu-test.sh panic \
+	    $(BUILD)/test-stack-serial.log \
+	    $(QEMU) $(QEMU_FLAGS) -cdrom $(STACK_ISO)
+
+# A write to freed kmem must be caught when the object is reused.
+test-uaf: $(UAF_ISO)
+	QEMU_EXPECT="modified after free" sh tools/qemu-test.sh panic \
+	    $(BUILD)/test-uaf-serial.log \
+	    $(QEMU) $(QEMU_FLAGS) -cdrom $(UAF_ISO)
+
+test-all: test test-fault test-apfault test-stack test-uaf
 
 clean:
 	rm -rf $(BUILD)

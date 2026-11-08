@@ -111,3 +111,15 @@ cpu_tables_init(struct cpu_info *ci)
         wrmsr(MSR_GSBASE, (uint64_t)(uintptr_t)ci);
         wrmsr(MSR_KERNELGSBASE, 0);
 }
+
+/*
+ * Point interrupt stack n (1 to NIST) of processor ci at a new stack.
+ * The processor reads the TSS on every switch, so this takes effect at
+ * the next exception that uses the stack.
+ */
+void
+cpu_set_ist(struct cpu_info *ci, int n, uint64_t top)
+{
+        ci->ci_ist_top[n - 1] = top;
+        tss_set64(ci->ci_tss, TSS_IST(n), top);
+}

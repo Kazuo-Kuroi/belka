@@ -41,6 +41,12 @@ extern volatile uint64_t lbolt;         /* clock ticks since start */
 void clock(void);
 
 /*
+ * Machine-dependent: move the bootstrap processor's exception stacks to
+ * guarded KVA stacks, once kernel stacks can be allocated.
+ */
+void md_stacks_init(void);
+
+/*
  * Machine-dependent: set up interrupt controllers and start the clock on
  * the bootstrap processor, leaving interrupts disabled.
  */

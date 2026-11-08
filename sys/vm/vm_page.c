@@ -302,6 +302,7 @@ page_alloc_node(int node, unsigned int order, int flags)
                         }
                         pp->p_flags = PG_ALLOC;
                         pp->p_order = (uint8_t)order;
+                        pp->p_private = NULL;
                 }
                 spin_unlock(&pn->pn_lock, s);
         }
@@ -342,6 +343,7 @@ page_free(struct page *pp, unsigned int order)
         ps = page_seg_find(pp->p_pfn);
         pfn = pp->p_pfn;
         pp->p_flags = 0;
+        pp->p_private = NULL;
 
         while (order < PAGE_NORDERS - 1) {
                 pfn_t buddy_pfn = pfn ^ ((pfn_t)1 << order);

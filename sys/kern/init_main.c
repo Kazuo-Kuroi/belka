@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 
+#include <sys/kmem.h>
 #include <sys/smp.h>
 #include <sys/systm.h>
 #include <sys/uadmin.h>
@@ -18,6 +19,7 @@
 #include <machine/param.h>
 
 #include <vm/hat.h>
+#include <vm/kva.h>
 #include <vm/page.h>
 
 static const char version[] = "Belka 0.0-dev";
@@ -46,6 +48,9 @@ main(void)
             (uintmax_t)(ptob(st.ps_free) / 1024));
 
         hat_init();
+        kmem_init();
+        kva_init();
+        md_stacks_init();
         intr_init();
         cpu_boot_secondary_processors();
         bootloader_reclaim();

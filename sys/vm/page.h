@@ -41,6 +41,7 @@ struct page {
         struct page     *p_next;        /* free list linkage */
         struct page     *p_prev;
         pfn_t           p_pfn;          /* physical frame number */
+        void            *p_private;     /* owner's data, while allocated */
         uint32_t        p_flags;
         uint8_t         p_order;        /* order of the block, when free */
         uint8_t         p_node;         /* memory node */

@@ -7,7 +7,8 @@
 # Boot the kernel under QEMU and check the outcome. The kernel signals
 # its result through the isa-debug-exit device: QEMU exits with status
 # 33 after a clean halt and 35 after a panic. Serial output is saved to
-# the log file and echoed.
+# the log file and echoed. If QEMU_EXPECT is set, the log must also
+# contain that text.
 #
 # usage: qemu-test.sh pass|panic logfile qemu-command...
 #
@@ -43,6 +44,10 @@ case $status in
 esac
 
 if [ "$status" -eq "$want" ]; then
+        if [ -n "${QEMU_EXPECT:-}" ] && ! grep -qF "$QEMU_EXPECT" "$log"; then
+                echo "test: FAIL ($got, but \"$QEMU_EXPECT\" not seen)" >&2
+                exit 1
+        fi
         echo "test: PASS ($got)"
         exit 0
 fi
