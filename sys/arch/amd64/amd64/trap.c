@@ -79,15 +79,27 @@ static const char *const trap_names[NEXCEPTIONS] = {
         "reserved (31)"
 };
 
-/*
- * Self-test support. A test sets trap_expect to a vector and
- * trap_expect_skip to the length of the faulting instruction, then
- * raises the exception. trap() counts it in trap_expect_seen, steps
- * over the instruction, and resumes. Only kernel-mode traps qualify.
- */
-volatile int trap_expect = -1;
-volatile int trap_expect_skip;
-volatile int trap_expect_seen;
+void
+trap_expect(int vector, int skip)
+{
+        struct cpu_info *ci = curcpu();
+
+        ci->ci_texp_hit = 0;
+        ci->ci_texp_err = 0;
+        ci->ci_texp_skip = skip;
+        ci->ci_texp_vec = vector + 1;
+}
+
+int
+trap_expect_done(uint64_t *errp)
+{
+        struct cpu_info *ci = curcpu();
+
+        ci->ci_texp_vec = 0;
+        if (errp != NULL)
+                *errp = ci->ci_texp_err;
+        return ci->ci_texp_hit;
+}
 
 static void trap_dump(const struct trapframe *);
 static void trap_backtrace(uint64_t, uint64_t);
@@ -156,14 +168,25 @@ trap_backtrace(uint64_t rip, uint64_t rbp)
 void
 trap(struct trapframe *tf)
 {
+        struct cpu_info *ci = curcpu();
         uint64_t vector = tf->tf_trapno;
         int user = (tf->tf_cs & SEL_RPL_MASK) != 0;
         const char *name;
 
-        if (!user && trap_expect >= 0 && vector == (uint64_t)trap_expect) {
-                trap_expect = -1;
-                trap_expect_seen++;
-                tf->tf_rip += (uint64_t)trap_expect_skip;
+        if (!user && ci->ci_texp_vec != 0 &&
+            vector == (uint64_t)(ci->ci_texp_vec - 1)) {
+                ci->ci_texp_vec = 0;
+                ci->ci_texp_hit = 1;
+                ci->ci_texp_err = tf->tf_err;
+                if (ci->ci_texp_skip == TRAP_RESUME_RETURN) {
+                        const uint64_t *sp =
+                            (const uint64_t *)(uintptr_t)tf->tf_rsp;
+
+                        tf->tf_rip = sp[0];
+                        tf->tf_rsp += sizeof(uint64_t);
+                } else {
+                        tf->tf_rip += (uint64_t)ci->ci_texp_skip;
+                }
                 return;
         }
 

@@ -5,8 +5,10 @@
  *
  * Link map for the amd64 kernel. The Limine protocol requires the kernel
  * to be linked in the top 2 GB of the address space. Text, read-only
- * data, and writable data get separate segments so that each can be
- * mapped with the narrowest permissions.
+ * data, and writable data get separate page-aligned segments so that
+ * each can be mapped with the narrowest permissions: kernel_start to
+ * etext is executable, etext to erodata is read-only, and erodata to
+ * kernel_end is writable.
  */
 
 OUTPUT_FORMAT(elf64-x86-64)
@@ -29,11 +31,13 @@ SECTIONS
         } :text
 
         . = ALIGN(4096);
+        etext = .;
         .rodata : {
                 *(.rodata .rodata.*)
         } :rodata
 
         . = ALIGN(4096);
+        erodata = .;
         .data : {
                 *(.data .data.*)
         } :data
@@ -45,6 +49,7 @@ SECTIONS
                 bss_end = .;
         } :data
 
+        . = ALIGN(4096);
         kernel_end = .;
 
         /DISCARD/ : {

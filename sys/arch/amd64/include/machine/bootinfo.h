@@ -37,14 +37,21 @@ struct bootmem {
         enum bootmem_type bm_type;
 };
 
+#define BOOTINFO_NAMELEN 64
+#define BOOTINFO_CMDLEN 256
+
+/*
+ * Everything here is copied out of boot loader memory, so it stays valid
+ * after that memory is reclaimed.
+ */
 struct bootinfo {
-        const char      *bi_loader_name;
-        const char      *bi_loader_version;
-        const char      *bi_cmdline;
+        char            bi_loader_name[BOOTINFO_NAMELEN];
+        char            bi_loader_version[BOOTINFO_NAMELEN];
+        char            bi_cmdline[BOOTINFO_CMDLEN];
         uint64_t        bi_hhdm_offset; /* VA of physical 0 in the direct map */
         uint64_t        bi_kernel_pa;   /* physical load address */
         uint64_t        bi_kernel_va;   /* virtual load address */
-        uint64_t        bi_rsdp;        /* ACPI RSDP, direct-map VA, or 0 */
+        uint64_t        bi_rsdp;        /* ACPI RSDP physical address, or 0 */
         uint64_t        bi_ncpu;        /* processors listed, at most MAXCPUS */
         uint64_t        bi_ncpu_dropped; /* processors beyond MAXCPUS */
         uint32_t        bi_bsp_lapic_id;
@@ -55,6 +62,22 @@ struct bootinfo {
 };
 
 extern struct bootinfo bootinfo;
+
+/* Nonzero for memory types that are RAM rather than device space. */
+static inline int
+bootmem_is_ram(enum bootmem_type type)
+{
+        switch (type) {
+        case BOOTMEM_USABLE:
+        case BOOTMEM_ACPI_RECLAIM:
+        case BOOTMEM_ACPI_NVS:
+        case BOOTMEM_LOADER_RECLAIM:
+        case BOOTMEM_KERNEL:
+                return 1;
+        default:
+                return 0;
+        }
+}
 
 /*
  * Fill in bootinfo from the boot loader's responses. Returns 0 on
@@ -69,6 +92,12 @@ int limine_boot_collect(struct bootinfo *);
  * with interrupts disabled, and fn must not return.
  */
 void limine_cpu_start(unsigned int, void (*)(void *), void *);
+
+/*
+ * Forget every pointer into boot loader memory, before that memory is
+ * handed to the page allocator. No processor can be started afterwards.
+ */
+void limine_boot_release(void);
 
 /* Return nonzero if word appears as a whole word in the command line. */
 int boot_option(const char *);

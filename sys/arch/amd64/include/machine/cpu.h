@@ -40,6 +40,12 @@ struct cpu_info {
         uint64_t        ci_ist_top[NIST];
         uint64_t        ci_gdt[NGDT];
         uint32_t        ci_tss[TSS_WORDS];
+
+        /* Expected-trap state for self-tests; see trap_expect(). */
+        volatile int    ci_texp_vec;    /* vector + 1, or 0 for none */
+        volatile int    ci_texp_skip;
+        volatile int    ci_texp_hit;
+        volatile uint64_t ci_texp_err;
 };
 
 /* ci_flags */

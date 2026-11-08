@@ -54,10 +54,14 @@ struct page {
 /* Flags to page_alloc(). */
 #define PA_ZERO         0x0001  /* fill the block with zeroes */
 
+/* Flags to page_seg_add(). */
+#define PSEG_DEFER      0x0001  /* in use until page_release_deferred() */
+
 /* Called by machine-dependent startup, before page_init(). */
-void page_seg_add(paddr_t, paddr_t, int);
+void page_seg_add(paddr_t, paddr_t, int, int);
 
 void page_init(void);
+size_t page_release_deferred(void);
 
 struct page *page_alloc(unsigned int, int);
 struct page *page_alloc_node(int, unsigned int, int);

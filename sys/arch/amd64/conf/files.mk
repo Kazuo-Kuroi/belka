@@ -27,6 +27,7 @@ MD_SRCS         := sys/arch/amd64/amd64/locore.S \
                    sys/arch/amd64/amd64/vector.S \
                    sys/arch/amd64/amd64/cpu_tables.c \
                    sys/arch/amd64/amd64/trap.c \
+                   sys/arch/amd64/amd64/hat.c \
                    sys/arch/amd64/amd64/limine_boot.c \
                    sys/arch/amd64/amd64/machdep.c \
                    sys/arch/amd64/amd64/mp_machdep.c

@@ -59,6 +59,21 @@ static void (*limine_cpu_fn)(void *);
 
 static void limine_cpu_entry(struct limine_mp_info *);
 
+static void limine_strcpy(char *, const char *, size_t);
+
+/* Copy a string from loader memory, truncating to fit. */
+static void
+limine_strcpy(char *dst, const char *src, size_t size)
+{
+        size_t i = 0;
+
+        if (src != NULL) {
+                for (; i + 1 < size && src[i] != '\0'; i++)
+                        dst[i] = src[i];
+        }
+        dst[i] = '\0';
+}
+
 static enum bootmem_type
 limine_memtype(uint64_t type)
 {
@@ -101,19 +116,25 @@ limine_boot_collect(struct bootinfo *bi)
                 return -1;
 
         if ((info = limine_requests.info.response) != NULL) {
-                bi->bi_loader_name = info->name;
-                bi->bi_loader_version = info->version;
+                limine_strcpy(bi->bi_loader_name, info->name,
+                    sizeof(bi->bi_loader_name));
+                limine_strcpy(bi->bi_loader_version, info->version,
+                    sizeof(bi->bi_loader_version));
         }
         if ((cmdline = limine_requests.cmdline.response) != NULL)
-                bi->bi_cmdline = cmdline->cmdline;
+                limine_strcpy(bi->bi_cmdline, cmdline->cmdline,
+                    sizeof(bi->bi_cmdline));
         if ((hhdm = limine_requests.hhdm.response) != NULL)
                 bi->bi_hhdm_offset = hhdm->offset;
         if ((kaddr = limine_requests.kaddr.response) != NULL) {
                 bi->bi_kernel_pa = kaddr->physical_base;
                 bi->bi_kernel_va = kaddr->virtual_base;
         }
-        if ((rsdp = limine_requests.rsdp.response) != NULL)
-                bi->bi_rsdp = (uint64_t)(uintptr_t)rsdp->address;
+        /* From base revision 3 the RSDP is given as a direct-map address. */
+        if ((rsdp = limine_requests.rsdp.response) != NULL &&
+            rsdp->address != NULL)
+                bi->bi_rsdp = (uint64_t)(uintptr_t)rsdp->address -
+                    bi->bi_hhdm_offset;
         if ((mp = limine_requests.mp.response) != NULL) {
                 limine_mp = mp;
                 bi->bi_bsp_lapic_id = mp->bsp_lapic_id;
@@ -156,6 +177,12 @@ limine_cpu_entry(struct limine_mp_info *info)
 {
         limine_cpu_fn((void *)(uintptr_t)info->extra_argument);
         panic("limine_cpu_entry: start function returned");
+}
+
+void
+limine_boot_release(void)
+{
+        limine_mp = NULL;
 }
 
 void

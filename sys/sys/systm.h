@@ -38,6 +38,12 @@ int strncmp(const char *, const char *, size_t);
 /* init_main.c: machine-independent startup, entered from MD code. */
 void main(void) __dead;
 
+/*
+ * Machine-dependent: release memory held for the boot loader, once all
+ * processors run on the kernel's own tables and stacks.
+ */
+void bootloader_reclaim(void);
+
 /* subr_selftest.c */
 int selftest_run(void);
 

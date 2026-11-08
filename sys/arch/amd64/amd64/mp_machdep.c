@@ -24,6 +24,7 @@
 #include <machine/cpufunc.h>
 #include <machine/param.h>
 
+#include <vm/hat.h>
 #include <vm/page.h>
 
 /* Polls to wait for a processor to report in; KVM needs far fewer. */
@@ -74,6 +75,11 @@ cpu_hatch(void *arg)
 {
         struct cpu_info *ci = arg;
 
+        /*
+         * The new stack is in the direct map, which the boot loader's
+         * tables and ours both contain, so switching tables here is safe.
+         */
+        hat_cpu_init();
         cpu_tables_init(ci);
         atomic_or_32(&ci->ci_flags, CPUF_RUNNING);
         cpu_idle_loop(ci);

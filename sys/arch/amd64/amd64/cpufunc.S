@@ -153,3 +153,67 @@ ENTRY(curcpu)
         movq    %gs:0, %rax
         ret
 END(curcpu)
+
+/* void lcr3(uint64_t) */
+ENTRY(lcr3)
+        movq    %rdi, %cr3
+        ret
+END(lcr3)
+
+/* void lcr4(uint64_t) */
+ENTRY(lcr4)
+        movq    %rdi, %cr4
+        ret
+END(lcr4)
+
+/* void invlpg(uint64_t va) */
+ENTRY(invlpg)
+        invlpg  (%rdi)
+        ret
+END(invlpg)
+
+/* void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t regs[4]) */
+ENTRY(cpuid)
+        pushq   %rbx
+        movq    %rdx, %r8
+        movl    %edi, %eax
+        movl    %esi, %ecx
+        cpuid
+        movl    %eax, 0(%r8)
+        movl    %ebx, 4(%r8)
+        movl    %ecx, 8(%r8)
+        movl    %edx, 12(%r8)
+        popq    %rbx
+        ret
+END(cpuid)
+
+/* uint64_t cpu_read_probe(const volatile uint64_t *p) */
+ENTRY(cpu_read_probe)
+        .globl  cpu_read_insn
+        .globl  cpu_read_insn_end
+cpu_read_insn:
+        movq    (%rdi), %rax
+cpu_read_insn_end:
+        ret
+END(cpu_read_probe)
+
+/* void cpu_write_probe(volatile uint64_t *p, uint64_t value) */
+ENTRY(cpu_write_probe)
+        .globl  cpu_write_insn
+        .globl  cpu_write_insn_end
+cpu_write_insn:
+        movq    %rsi, (%rdi)
+cpu_write_insn_end:
+        ret
+END(cpu_write_probe)
+
+/*
+ * void cpu_call_probe(const void *addr)
+ *
+ * Call addr. A test expecting an instruction-fetch fault there resumes
+ * by returning from the call.
+ */
+ENTRY(cpu_call_probe)
+        call    *%rdi
+        ret
+END(cpu_call_probe)

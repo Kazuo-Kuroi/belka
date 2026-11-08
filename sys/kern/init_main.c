@@ -16,6 +16,7 @@
 
 #include <machine/param.h>
 
+#include <vm/hat.h>
 #include <vm/page.h>
 
 static const char version[] = "Belka 0.0-dev";
@@ -43,7 +44,9 @@ main(void)
             st.ps_managed, st.ps_free,
             (uintmax_t)(ptob(st.ps_free) / 1024));
 
+        hat_init();
         cpu_boot_secondary_processors();
+        bootloader_reclaim();
 
         failures = selftest_run();
         if (failures != 0)

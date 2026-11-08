@@ -79,8 +79,9 @@ Recorded 2026-11-07.
   boundary.
 - Physical page 0 is never managed, so a zero physical address is never
   valid.
-- Memory the boot loader marks reclaimable is withheld until the kernel
-  runs on its own page tables.
+- Memory the boot loader marks reclaimable is registered as deferred
+  segments and released once every processor runs on the kernel's own
+  tables and stacks (`page_release_deferred()`).
 - **Still to come:** a cache list that keeps freed file and anonymous
   pages' identity (the IRIX behaviour), per-node locks, and nodes from
   ACPI SRAT.
@@ -107,6 +108,32 @@ Recorded 2026-11-07.
   interface.
 - **Panic** stops every other processor and bypasses the console lock.
 - Lock order is kept in [lock-order.md](lock-order.md).
+
+## Kernel page tables (2026-11-07)
+
+- The machine-dependent layer is called the **HAT**, after System V
+  (`<vm/hat.h>`). Only the kernel address space exists so far.
+- **Layout** (`<machine/vmparam.h>`): the lower half is empty in the
+  kernel's tables, so stray low addresses fault. The kernel half holds
+  the direct map at the boot loader's base (so pointers made before the
+  switch stay valid), a 512 GB kernel virtual area for run-time
+  mappings, and the kernel image at its link address.
+- All 256 kernel-half PML4 entries are populated at boot and never
+  change; user address spaces will share them by copying.
+- **Only RAM is direct-mapped**, write-back, with 1 GB, 2 MB, or 4 KB
+  pages as alignment allows. Holes stay unmapped so device memory is
+  never mapped cacheable by accident. Device memory goes in KVA with
+  `HAT_NOCACHE` or `HAT_WCOMBINE`.
+- **W^X**: kernel text is read-only and executable, read-only data is
+  not writable or executable, data and bss are not executable, and the
+  direct map is not executable. Every kernel mapping is global.
+- The PAT is programmed explicitly on every processor, to the layout
+  the Limine protocol documents.
+- **TLB shootdown** of KVA mappings goes through `smp_call_all()` until
+  IPIs exist; new mappings need no flush.
+- Boot loader strings are copied into `bootinfo`, and the RSDP is kept
+  as a physical address, so nothing points into loader memory after it
+  is reclaimed.
 
 ## File systems
 

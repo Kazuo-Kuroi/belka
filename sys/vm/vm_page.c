@@ -30,6 +30,7 @@ struct page_seg {
         pfn_t           ps_end;         /* one past the last frame */
         struct page     *ps_pages;      /* struct page for ps_start */
         int             ps_node;
+        int             ps_flags;       /* PSEG_* */
 };
 
 struct page_node {
@@ -95,13 +96,17 @@ page_list_remove(struct page_node *pn, struct page *pp, unsigned int order)
 }
 
 /*
- * Record that physical memory [start, end) is usable and belongs to
- * node. Partial pages at either end are dropped, as is page 0, so that
- * a zero physical address is never handed out. A range adjacent to an
- * existing segment of the same node extends it.
+ * Record that physical memory [start, end) is RAM belonging to node.
+ * Partial pages at either end are dropped, as is page 0, so that a zero
+ * physical address is never handed out. A range adjacent to an existing
+ * segment of the same node and flags extends it.
+ *
+ * With PSEG_DEFER the range gets struct pages but stays off the free
+ * lists until page_release_deferred(), for memory that is still in use
+ * during start-up.
  */
 void
-page_seg_add(paddr_t start, paddr_t end, int node)
+page_seg_add(paddr_t start, paddr_t end, int node, int flags)
 {
         pfn_t first = btopr(start);
         pfn_t last = btop(end);
@@ -119,7 +124,7 @@ page_seg_add(paddr_t start, paddr_t end, int node)
         for (i = 0; i < page_nsegs; i++) {
                 struct page_seg *ps = &page_segs[i];
 
-                if (ps->ps_node != node)
+                if (ps->ps_node != node || ps->ps_flags != flags)
                         continue;
                 if (ps->ps_end == first) {
                         ps->ps_end = last;
@@ -143,6 +148,7 @@ page_seg_add(paddr_t start, paddr_t end, int node)
         page_segs[i].ps_end = last;
         page_segs[i].ps_pages = NULL;
         page_segs[i].ps_node = node;
+        page_segs[i].ps_flags = flags;
         page_nsegs++;
 }
 
@@ -191,13 +197,15 @@ page_init(void)
                 struct page_seg *ps = &page_segs[i];
 
                 total += ps->ps_end - ps->ps_start;
+                if ((ps->ps_flags & PSEG_DEFER) != 0)
+                        continue;
                 if (host == NULL ||
                     ps->ps_end - ps->ps_start > host->ps_end - host->ps_start)
                         host = ps;
         }
 
         need = btopr(total * sizeof(struct page));
-        if (host->ps_end - host->ps_start <= need)
+        if (host == NULL || host->ps_end - host->ps_start <= need)
                 panic("page_init: no segment can hold the page array");
         host->ps_end -= need;
         array = phys_to_kva(ptob(host->ps_end));
@@ -215,11 +223,41 @@ page_init(void)
                         pp->p_node = (uint8_t)ps->ps_node;
                 }
                 offset += npages;
+                if ((ps->ps_flags & PSEG_DEFER) != 0)
+                        continue;
                 page_nodes[ps->ps_node].pn_managed += npages;
                 page_seg_carve(ps);
         }
 
         page_ready = 1;
+}
+
+/*
+ * Put every deferred segment on the free lists. Returns the number of
+ * pages released. The caller guarantees that nothing uses them any more.
+ */
+size_t
+page_release_deferred(void)
+{
+        size_t released = 0;
+
+        for (int i = 0; i < page_nsegs; i++) {
+                struct page_seg *ps = &page_segs[i];
+                struct page_node *pn = &page_nodes[ps->ps_node];
+                size_t npages;
+                int s;
+
+                if ((ps->ps_flags & PSEG_DEFER) == 0)
+                        continue;
+                npages = ps->ps_end - ps->ps_start;
+                s = spin_lock(&pn->pn_lock);
+                ps->ps_flags &= ~PSEG_DEFER;
+                pn->pn_managed += npages;
+                page_seg_carve(ps);
+                spin_unlock(&pn->pn_lock, s);
+                released += npages;
+        }
+        return released;
 }
 
 /*

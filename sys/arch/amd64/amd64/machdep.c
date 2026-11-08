@@ -25,6 +25,7 @@
 #include <machine/trap.h>
 #include <machine/vmparam.h>
 
+#include <vm/hat.h>
 #include <vm/page.h>
 
 #include "dev/ic/ns16550var.h"
@@ -67,6 +68,11 @@ static const char *const bootmem_names[] = {
 static void print_memory_map(const struct bootinfo *);
 static uint64_t stack_top(const void *, size_t);
 static void md_fault_on_cpu1(void *);
+static int md_expect_read_fault(uint64_t, uint64_t);
+static int md_expect_write_fault(uint64_t, uint64_t, uint64_t);
+static void md_kva_read_all(void *);
+static void md_kva_fault_all(void *);
+static int md_selftest_hat(void);
 static void cpu_halt_self_forever(void) __dead;
 
 static void
@@ -139,15 +145,14 @@ amd64_init(void)
                 panic("boot loader does not support Limine base revision 6");
 
         printf("boot loader: %s %s\n",
-            bi->bi_loader_name != NULL ? bi->bi_loader_name : "unknown",
-            bi->bi_loader_version != NULL ? bi->bi_loader_version : "");
-        printf("command line: \"%s\"\n",
-            bi->bi_cmdline != NULL ? bi->bi_cmdline : "");
+            bi->bi_loader_name[0] != '\0' ? bi->bi_loader_name : "unknown",
+            bi->bi_loader_version);
+        printf("command line: \"%s\"\n", bi->bi_cmdline);
         printf("kernel: va %#jx pa %#jx, %ju KB\n",
             (uintmax_t)bi->bi_kernel_va, (uintmax_t)bi->bi_kernel_pa,
             (uintmax_t)((size_t)(kernel_end - kernel_start) / 1024));
         printf("direct map at %p\n", (void *)(uintptr_t)bi->bi_hhdm_offset);
-        printf("ACPI RSDP at %p\n", (void *)(uintptr_t)bi->bi_rsdp);
+        printf("ACPI RSDP at physical %#jx\n", (uintmax_t)bi->bi_rsdp);
         printf("processors: %ju (bootstrap LAPIC id %u)\n",
             (uintmax_t)bi->bi_ncpu, bi->bi_bsp_lapic_id);
         ci->ci_lapic_id = bi->bi_bsp_lapic_id;
@@ -155,8 +160,8 @@ amd64_init(void)
 
         /*
          * Give usable memory to the page allocator. Memory the boot
-         * loader marks reclaimable still holds the page tables in use,
-         * so it is withheld until the kernel has its own.
+         * loader marks reclaimable holds its page tables and the other
+         * processors' stacks, so it is deferred until bootloader_reclaim().
          */
         dmap_base = bi->bi_hhdm_offset;
         for (uint32_t i = 0; i < bi->bi_nmem; i++) {
@@ -164,7 +169,10 @@ amd64_init(void)
 
                 if (bm->bm_type == BOOTMEM_USABLE)
                         page_seg_add(bm->bm_base,
-                            bm->bm_base + bm->bm_length, 0);
+                            bm->bm_base + bm->bm_length, 0, 0);
+                else if (bm->bm_type == BOOTMEM_LOADER_RECLAIM)
+                        page_seg_add(bm->bm_base,
+                            bm->bm_base + bm->bm_length, 0, PSEG_DEFER);
         }
 
         main();
@@ -178,12 +186,145 @@ md_fault_on_cpu1(void *arg __unused)
                 *(volatile uint64_t *)(uintptr_t)UNMAPPED_VA = 1;
 }
 
+/* Test data for the protection checks. */
+static const uint64_t md_rodata_word = UINT64_C(0x5eed5eed5eed5eed);
+static uint64_t md_data_word = 1;
+static uint8_t md_nx_code[16] = { 0xc3 };      /* ret */
+
+static volatile uint64_t md_kva_probe_va;
+static volatile uint32_t md_kva_reads_ok;
+static volatile uint32_t md_kva_faults;
+
 /*
- * amd64 self-tests: per-processor data and exception delivery. With the
- * "testfault" boot option, finish by touching an unmapped address, which
- * must end in a page-fault panic; the test harness checks for that.
- * "testapfault" does the same on processor 1, to check that a panic on
- * a secondary processor stops the system.
+ * Expect the access to fault with a page fault. want_err holds the error
+ * code bits that must be set. Returns 1 if it did.
+ */
+static int
+md_expect_read_fault(uint64_t addr, uint64_t want_err)
+{
+        uint64_t err;
+
+        trap_expect(PGFLT, (int)(cpu_read_insn_end - cpu_read_insn));
+        (void)cpu_read_probe((const volatile uint64_t *)(uintptr_t)addr);
+        return trap_expect_done(&err) && (err & want_err) == want_err;
+}
+
+static int
+md_expect_write_fault(uint64_t addr, uint64_t value, uint64_t want_err)
+{
+        uint64_t err;
+
+        trap_expect(PGFLT, (int)(cpu_write_insn_end - cpu_write_insn));
+        cpu_write_probe((volatile uint64_t *)(uintptr_t)addr, value);
+        return trap_expect_done(&err) && (err & want_err) == want_err;
+}
+
+/* Each processor reads the probe page, loading it into its TLB. */
+static void
+md_kva_read_all(void *arg __unused)
+{
+        const volatile uint64_t *p =
+            (const volatile uint64_t *)(uintptr_t)md_kva_probe_va;
+
+        if (*p == UINT64_C(0xfeedface))
+                atomic_inc_32_nv(&md_kva_reads_ok);
+}
+
+/* After hat_kremove(), every processor must fault on the probe page. */
+static void
+md_kva_fault_all(void *arg __unused)
+{
+        if (md_expect_read_fault(md_kva_probe_va, 0))
+                atomic_inc_32_nv(&md_kva_faults);
+}
+
+/* Kernel page table checks; returns the number of failures. */
+static int
+md_selftest_hat(void)
+{
+        int failures = 0;
+        struct page *pp;
+        paddr_t pa;
+        vaddr_t va;
+
+#define HCHECK(expr)                                                    \
+        do {                                                            \
+                if (!(expr)) {                                          \
+                        printf("selftest: %s:%d: %s\n",                 \
+                            __FILE__, __LINE__, #expr);                 \
+                        failures++;                                     \
+                }                                                       \
+        } while (0)
+
+        /* The low half is empty. */
+        HCHECK(md_expect_read_fault(0, 0));
+        HCHECK(md_expect_read_fault(UINT64_C(0x1000), 0));
+
+        /* Text and read-only data refuse writes; data accepts them. */
+        HCHECK(md_expect_write_fault((uint64_t)(uintptr_t)kernel_start,
+            *(const volatile uint64_t *)(void *)kernel_start,
+            PGEX_P | PGEX_W));
+        HCHECK(md_expect_write_fault((uint64_t)(uintptr_t)&md_rodata_word,
+            md_rodata_word, PGEX_P | PGEX_W));
+        cpu_write_probe(&md_data_word, 2);
+        HCHECK(md_data_word == 2);
+
+        /* Data is not executable. */
+        if (hat_nx_enabled()) {
+                uint64_t err;
+
+                trap_expect(PGFLT, TRAP_RESUME_RETURN);
+                cpu_call_probe(md_nx_code);
+                HCHECK(trap_expect_done(&err) &&
+                    (err & (PGEX_P | PGEX_I)) == (PGEX_P | PGEX_I));
+        }
+
+        /* Translation. */
+        HCHECK(hat_kextract((vaddr_t)(uintptr_t)kernel_start, &pa) == 0);
+        HCHECK(hat_kextract(dmap_base + UINT64_C(0x200000), &pa) == 0 &&
+            pa == UINT64_C(0x200000));
+        HCHECK(hat_kextract(KVA_BASE, &pa) != 0);
+
+        /* KVA mappings, and their removal from every processor's TLB. */
+        if ((pp = page_alloc(0, PA_ZERO)) == NULL) {
+                HCHECK(pp != NULL);
+                return failures;
+        }
+        va = KVA_BASE + 16 * PAGESIZE;
+        HCHECK(hat_kenter(va, page_to_pa(pp), HAT_WRITE) == 0);
+        HCHECK(hat_kenter(va, page_to_pa(pp), HAT_WRITE) != 0);
+        HCHECK(hat_kextract(va, &pa) == 0 && pa == page_to_pa(pp));
+        *(volatile uint64_t *)(uintptr_t)va = UINT64_C(0xfeedface);
+        HCHECK(*(volatile uint64_t *)page_to_kva(pp) ==
+            UINT64_C(0xfeedface));
+
+        md_kva_probe_va = va;
+        md_kva_reads_ok = 0;
+        md_kva_faults = 0;
+        smp_call_all(md_kva_read_all, NULL);
+        HCHECK(md_kva_reads_ok == ncpus);
+        hat_kremove(va, 1);
+        HCHECK(hat_kextract(va, &pa) != 0);
+        smp_call_all(md_kva_fault_all, NULL);
+        HCHECK(md_kva_faults == ncpus);
+
+        /* A read-only KVA mapping refuses writes. */
+        HCHECK(hat_kenter(va, page_to_pa(pp), HAT_READ) == 0);
+        HCHECK(md_expect_write_fault(va, 0, PGEX_P | PGEX_W));
+        hat_kremove(va, 1);
+
+        page_free(pp, 0);
+        return failures;
+#undef HCHECK
+}
+
+/*
+ * amd64 self-tests: per-processor data, exception delivery, and the
+ * kernel page tables. With the "testfault" boot option, finish by
+ * touching an unmapped address, which must end in a page-fault panic;
+ * the test harness checks for that. "testapfault" does the same on
+ * processor 1, to check that a panic on a secondary processor stops the
+ * system.
  */
 int
 md_selftest(void)
@@ -196,23 +337,23 @@ md_selftest(void)
                 failures++;
         }
 
-        trap_expect_seen = 0;
-
         /* int3 is a trap: the saved rip is already past it. */
-        trap_expect_skip = 0;
-        trap_expect = BPTFLT;
+        trap_expect(BPTFLT, 0);
         breakpoint();
-
-        /* ud2 is a fault: the saved rip points at the 2-byte instruction. */
-        trap_expect_skip = 2;
-        trap_expect = INVOPFLT;
-        cpu_ud2();
-
-        if (trap_expect_seen != 2 || trap_expect != -1) {
-                printf("selftest: %d of 2 expected traps seen\n",
-                    trap_expect_seen);
+        if (!trap_expect_done(NULL)) {
+                printf("selftest: breakpoint trap not seen\n");
                 failures++;
         }
+
+        /* ud2 is a fault: the saved rip points at the 2-byte instruction. */
+        trap_expect(INVOPFLT, 2);
+        cpu_ud2();
+        if (!trap_expect_done(NULL)) {
+                printf("selftest: invalid opcode fault not seen\n");
+                failures++;
+        }
+
+        failures += md_selftest_hat();
 
         if (boot_option("testapfault") && ncpus > 1) {
                 printf("selftest: faulting on cpu1; a page fault panic "
@@ -233,13 +374,29 @@ md_selftest(void)
         return failures;
 }
 
+/*
+ * Every processor now runs on the kernel's page tables, descriptor
+ * tables, and stacks, and bootinfo holds copies of everything it needs,
+ * so the boot loader's memory can be reused.
+ */
+void
+bootloader_reclaim(void)
+{
+        size_t pages;
+
+        limine_boot_release();
+        pages = page_release_deferred();
+        printf("reclaimed %ju KB of boot loader memory\n",
+            (uintmax_t)(ptob(pages) / 1024));
+}
+
 int
 boot_option(const char *word)
 {
         const char *p = bootinfo.bi_cmdline;
         size_t len = strlen(word);
 
-        if (p == NULL || len == 0)
+        if (len == 0)
                 return 0;
         while (*p != '\0') {
                 while (*p == ' ')

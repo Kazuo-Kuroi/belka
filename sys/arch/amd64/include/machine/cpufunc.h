@@ -94,12 +94,36 @@ uint64_t rcr0(void);
 uint64_t rcr2(void);
 uint64_t rcr3(void);
 uint64_t rcr4(void);
+void lcr3(uint64_t);
+void lcr4(uint64_t);
+void invlpg(uint64_t);
+void cpuid(uint32_t, uint32_t, uint32_t *);
 void breakpoint(void);
 void cpu_ud2(void);
 
+/*
+ * Probes for the fault self-tests. Each performs one memory access with
+ * an instruction that runs from cpu_*_insn to cpu_*_insn_end, so a test
+ * expecting a fault knows how far to step over it.
+ */
+uint64_t cpu_read_probe(const volatile uint64_t *);
+void cpu_write_probe(volatile uint64_t *, uint64_t);
+void cpu_call_probe(const void *);
+extern const char cpu_read_insn[], cpu_read_insn_end[];
+extern const char cpu_write_insn[], cpu_write_insn_end[];
+
 #define PSL_I           0x00000200      /* RFLAGS interrupt enable */
 
+#define CR4_PGE         0x00000080      /* global pages */
+
+/* CPUID leaf 0x80000001, EDX. */
+#define CPUID_EXT_NX    0x00100000      /* no-execute */
+#define CPUID_EXT_1GB   0x04000000      /* 1 GB pages */
+
 /* Model-specific registers. */
+#define MSR_PAT         0x00000277
+#define MSR_EFER        0xc0000080
+#define EFER_NXE        0x00000800      /* no-execute enable */
 #define MSR_FSBASE      0xc0000100
 #define MSR_GSBASE      0xc0000101
 #define MSR_KERNELGSBASE 0xc0000102
