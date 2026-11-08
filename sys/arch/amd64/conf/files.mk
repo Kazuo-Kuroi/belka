@@ -16,20 +16,28 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_clock.c \
                    sys/kern/kern_cons.c \
                    sys/kern/kern_kmem.c \
+                   sys/kern/kern_descrip.c \
+                   sys/kern/kern_exec.c \
+                   sys/kern/kern_exit.c \
+                   sys/kern/kern_fork.c \
                    sys/kern/kern_kthread.c \
                    sys/kern/kern_mrlock.c \
                    sys/kern/kern_mutex.c \
                    sys/kern/kern_sched.c \
+                   sys/kern/kern_proc.c \
                    sys/kern/kern_spinlock.c \
+                   sys/kern/kern_syscall.c \
                    sys/kern/kern_synch.c \
                    sys/kern/kern_timeout.c \
                    sys/kern/sched_rt.c \
                    sys/kern/sched_ts.c \
                    sys/kern/subr_blkdev.c \
+                   sys/kern/sys_generic.c \
                    sys/kern/vfs_bio.c \
                    sys/kern/vfs_dnlc.c \
                    sys/kern/vfs_lookup.c \
                    sys/kern/vfs_mount.c \
+                   sys/kern/vfs_syscalls.c \
                    sys/kern/vfs_vnode.c \
                    sys/kern/vfs_vnops.c \
                    sys/fs/ext2fs/ext2fs_alloc.c \
@@ -47,10 +55,15 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/subr_selftest_dev.c \
                    sys/kern/subr_selftest_vfs.c \
                    sys/kern/subr_selftest_ext2.c \
+                   sys/kern/subr_selftest_proc.c \
                    sys/libkern/string.c \
                    sys/vm/vm_kva.c \
                    sys/vm/vm_page.c \
                    sys/vm/vm_pvn.c \
+                   sys/vm/vm_anon.c \
+                   sys/vm/vm_as.c \
+                   sys/vm/vm_segvn.c \
+                   sys/vm/vm_mman.c \
                    sys/dev/acpi/acpi.c \
                    sys/dev/pci/pci.c \
                    sys/dev/virtio/virtio.c \
@@ -62,9 +75,13 @@ MD_SRCS         := sys/arch/amd64/amd64/locore.S \
                    sys/arch/amd64/amd64/atomic.S \
                    sys/arch/amd64/amd64/cpufunc.S \
                    sys/arch/amd64/amd64/vector.S \
+                   sys/arch/amd64/amd64/fpusubr.S \
+                   sys/arch/amd64/amd64/copy.S \
                    sys/arch/amd64/amd64/cpu_tables.c \
                    sys/arch/amd64/amd64/trap.c \
                    sys/arch/amd64/amd64/hat.c \
+                   sys/arch/amd64/amd64/fpu.c \
+                   sys/arch/amd64/amd64/vm_machdep.c \
                    sys/arch/amd64/amd64/intr.c \
                    sys/arch/amd64/amd64/ioapic.c \
                    sys/arch/amd64/amd64/acpi_machdep.c \

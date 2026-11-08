@@ -48,6 +48,16 @@ vfs_type(const char *name)
         return -1;
 }
 
+/* Write back every mounted file system (sync). */
+void
+vfs_syncall(void)
+{
+        mutex_lock(&vfs_mutex);
+        for (struct vfs *vfsp = rootvfs; vfsp != NULL; vfsp = vfsp->vfs_next)
+                (void)VFS_SYNC(vfsp, kcred);
+        mutex_unlock(&vfs_mutex);
+}
+
 void
 vfs_init(void)
 {

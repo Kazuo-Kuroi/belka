@@ -58,6 +58,7 @@ struct kmem_zone_stats {
 };
 
 void kmem_zone_get_stats(struct kmem_zone *, struct kmem_zone_stats *);
+size_t kmem_zone_inuse_named(const char *);
 
 /* Large blocks currently allocated, for leak checks. */
 size_t kmem_large_inuse(void);

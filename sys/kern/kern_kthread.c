@@ -21,6 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/compiler.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
 #include <sys/sched.h>
@@ -34,6 +35,9 @@
 #include <machine/intr.h>
 
 #include <vm/kva.h>
+
+CTASSERT(offsetof(struct kthread, kt_rsp) == KT_RSP_OFFSET);
+CTASSERT(offsetof(struct kthread, kt_onfault) == KT_ONFAULT_OFFSET);
 
 static struct kmem_zone *kthread_zone;
 static struct spinlock allthreads_lock = SPINLOCK_INITIALIZER("allthreads");
@@ -137,6 +141,36 @@ struct kthread *
 kthread_create(void (*fn)(void *), void *arg, int pri, const char *name)
 {
         return kthread_create_bound(fn, arg, pri, name, KT_NOCPU);
+}
+
+/*
+ * Create a thread like kthread_create(), but leave it stopped, so that
+ * its creator can finish setting it up (an LWP); kthread_run() starts
+ * it.
+ */
+struct kthread *
+kthread_create_stopped(void (*fn)(void *), void *arg, int pri,
+    const char *name)
+{
+        struct kthread *kt;
+
+        if (pri < PRI_TS_BOOST || pri > PRI_MAX)
+                panic("kthread_create: %s: bad priority %d", name, pri);
+        kt = kthread_alloc(name, pri);
+        kt->kt_fn = fn;
+        kt->kt_arg = arg;
+        kt->kt_stack = kstack_alloc(KM_SLEEP);
+        cpu_thread_setup(kt);
+        return kt;
+}
+
+void
+kthread_run(struct kthread *kt)
+{
+        int s = thread_lock(kt);
+
+        setrun(kt);
+        thread_unlock(kt, s);
 }
 
 void

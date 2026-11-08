@@ -160,6 +160,9 @@ ext2fs_setattr(struct vnode *vp, struct vattr *va, struct cred *cr __unused)
                 if ((uint64_t)va->va_size > EXT2_MAXSMALLFILE &&
                     !em->em_largefile)
                         return EFBIG;
+                /* Mapped pages are held; they cannot be cut away. */
+                if (vp->v_nmap != 0)
+                        return ETXTBSY;
                 mrupdate(&ip->i_rwlock);
         }
         mutex_lock(&em->em_lock);
@@ -739,6 +742,28 @@ ext2fs_inactive(struct vnode *vp, struct cred *cr __unused)
         return r;
 }
 
+/*
+ * A page of the file for a mapping, held. Past the end of the file is
+ * an error: the mapping has nothing there.
+ */
+static int
+ext2fs_vop_getpage(struct vnode *vp, off_t off, struct page **ppp,
+    struct cred *cr __unused)
+{
+        struct ext2inode *ip = VTOI(vp);
+        int error;
+
+        if (vp->v_type != VREG)
+                return ENODEV;
+        mraccess(&ip->i_rwlock);
+        if (off < 0 || (uint64_t)off >= ip->i_size)
+                error = EFAULT;
+        else
+                error = ext2fs_getpage(ip, (uint64_t)off / PAGESIZE, 0, ppp);
+        mrunlock(&ip->i_rwlock);
+        return error;
+}
+
 /* Write back every dirty page of vp. */
 static int
 ext2fs_putpage(struct vnode *vp, int flags __unused, struct cred *cr __unused)
@@ -775,5 +800,6 @@ const struct vnodeops ext2fs_vnodeops = {
         ext2fs_fsync,
         ext2fs_inactive,
         ext2fs_putpage,
-        ext2fs_reclaim
+        ext2fs_reclaim,
+        ext2fs_vop_getpage
 };

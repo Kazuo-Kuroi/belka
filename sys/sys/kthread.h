@@ -63,8 +63,18 @@ struct sched_class;
 struct sleepq;
 struct tsjob;
 
+/*
+ * kt_rsp and kt_onfault are used from assembly at these offsets;
+ * kern_kthread.c checks them.
+ */
+#define KT_RSP_OFFSET           0
+#define KT_ONFAULT_OFFSET       8
+
+struct lwp;
+
 struct kthread {
         uint64_t        kt_rsp;         /* saved stack pointer */
+        uint64_t        kt_onfault;     /* recovery for copyin/copyout */
         struct spinlock kt_lock;
         volatile int    kt_state;
         int             kt_flags;
@@ -101,6 +111,7 @@ struct kthread {
         struct mutex    *kt_mutexes;    /* owned mutexes with waiters */
 
         vaddr_t         kt_stack;       /* stack top; 0 for the boot thread */
+        struct lwp      *kt_lwp;        /* the LWP it runs, or NULL */
         void            (*kt_fn)(void *);
         void            *kt_arg;
 
@@ -115,6 +126,9 @@ struct kthread {
 #define curthread       (cpu_curthread())
 
 struct kthread *kthread_create(void (*)(void *), void *, int, const char *);
+struct kthread *kthread_create_stopped(void (*)(void *), void *, int,
+    const char *);
+void kthread_run(struct kthread *);
 struct kthread *kthread_create_bound(void (*)(void *), void *, int,
     const char *, int);
 void kthread_exit(void) __dead;
@@ -138,6 +152,7 @@ void sched_idle(void) __dead;
 void sched_tick(void);
 void sched_preempt_check(void);
 void swtch(int);
+void cpu_switch_md(struct kthread *, struct kthread *);
 void setrun(struct kthread *);
 void sched_setpri(struct kthread *, int);
 int thread_lock(struct kthread *);

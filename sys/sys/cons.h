@@ -24,4 +24,7 @@ void cninit(struct consdev *);
 void cnputc(int);
 void cnflush(void);
 
+struct vnode;
+struct vnode *cons_vnode(void);
+
 #endif /* _SYS_CONS_H_ */

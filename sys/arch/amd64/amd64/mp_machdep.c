@@ -23,6 +23,8 @@
 #include <machine/bootinfo.h>
 #include <machine/cpu.h>
 #include <machine/cpufunc.h>
+#include <machine/fpu.h>
+#include <machine/frame.h>
 #include <machine/param.h>
 
 #include <sys/kmem.h>
@@ -76,6 +78,7 @@ cpu_hatch(void *arg)
         struct cpu_info *ci = arg;
 
         cpu_tables_init(ci);
+        fpu_cpu_init();
         intr_cpu_init(ci);
         /* This context, on its guarded stack, becomes the idle thread. */
         ci->ci_curthread = kthread_alloc_idle(ci, ci->ci_stack_top);
@@ -87,12 +90,15 @@ cpu_hatch(void *arg)
  * Lay out a new thread's stack as cpu_switch() expects: six zeroed
  * callee-saved registers, with the kthread in %r12, then thread_start as
  * the return address. The frame starts 8 bytes off a 16-byte boundary
- * so that thread_start runs with an aligned stack.
+ * so that thread_start runs with an aligned stack. It sits below the
+ * top of the stack by a trap frame, which is where an LWP keeps its user
+ * registers (md_lwp_init).
  */
 void
 cpu_thread_setup(struct kthread *kt)
 {
-        uint64_t *sp = (uint64_t *)(uintptr_t)(kt->kt_stack - 72);
+        uint64_t *sp = (uint64_t *)(uintptr_t)(kt->kt_stack -
+            sizeof(struct trapframe) - 72);
 
         for (int i = 0; i < 9; i++)
                 sp[i] = 0;

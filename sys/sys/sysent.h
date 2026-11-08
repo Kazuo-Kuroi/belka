@@ -1,0 +1,34 @@
+/*
+ * Copyright (c) 2026 Setsuna Software L.C.
+ * Created: 2026-11-08
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * System call handlers. Each takes the six argument registers and two
+ * return values and returns 0 or an errno value (see kern_syscall.c).
+ */
+
+#ifndef _SYS_SYSENT_H_
+#define _SYS_SYSENT_H_
+
+#include <stdint.h>
+
+typedef int sy_call_t(const uint64_t *, uint64_t *);
+
+int syscall_dispatch(uint64_t, const uint64_t *, uint64_t *);
+
+/* kern_exit.c, kern_fork.c, kern_exec.c */
+sy_call_t sys_exit, sys_wait, sys_waitsys, sys_fork, sys_execve, sys_exec;
+/* sys_generic.c */
+sy_call_t sys_read, sys_write, sys_pread, sys_pwrite, sys_lseek, sys_close;
+sy_call_t sys_dup, sys_fcntl, sys_ioctl, sys_getdents, sys_ftruncate;
+sy_call_t sys_fstat;
+/* vfs_syscalls.c */
+sy_call_t sys_open, sys_creat, sys_link, sys_unlink, sys_chdir, sys_fchdir;
+sy_call_t sys_chmod, sys_stat, sys_lstat, sys_access, sys_rmdir, sys_mkdir;
+sy_call_t sys_symlink, sys_readlink, sys_rename;
+/* vm_mman.c */
+sy_call_t sys_brk, sys_mmap, sys_munmap, sys_mprotect;
+
+#endif /* _SYS_SYSENT_H_ */

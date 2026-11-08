@@ -1,0 +1,376 @@
+/*
+ * Copyright (c) 2026 Setsuna Software L.C.
+ * Created: 2026-11-08
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * System calls on file descriptors: read, write, pread, pwrite, lseek,
+ * close, dup, fcntl, ioctl, getdents, fstat, and ftruncate.
+ *
+ * Reads and writes through one open file are serialised by its
+ * f_offlock, so its offset advances atomically. A transfer that moves
+ * some bytes before an error reports the bytes, as System V does.
+ *
+ * The user buffer is faulted in before the file system is called: the
+ * copy inside then cannot fault into a file's VOP_GETPAGE while that
+ * file system's locks are held (a write from a mapping of the file
+ * being written, say). Mapped pages stay until unmapped, so nothing
+ * undoes this in between.
+ */
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include <sys/cred.h>
+#include <sys/dirent.h>
+#include <sys/errno.h>
+#include <sys/fcntl.h>
+#include <sys/file.h>
+#include <sys/proc.h>
+#include <sys/stat.h>
+#include <sys/synch.h>
+#include <sys/sysent.h>
+#include <sys/systm.h>
+#include <sys/uio.h>
+#include <sys/vfs.h>
+#include <sys/vnode.h>
+
+#include <machine/param.h>
+#include <machine/vmparam.h>
+
+#include <vm/as.h>
+#include <vm/seg.h>
+
+/* Fault in a user buffer; errors are left for the copy to report. */
+static void
+uio_prefault(void *ubuf, size_t len, enum uio_rw rw)
+{
+        struct as *as = curproc->p_as;
+        vaddr_t va = ptrunc((vaddr_t)(uintptr_t)ubuf);
+        vaddr_t end = (vaddr_t)(uintptr_t)ubuf + len;
+
+        if (as == NULL || len == 0 || end < va || end > VM_USER_MAX)
+                return;
+        for (; va < end; va += PAGESIZE) {
+                if (as_fault(as, va, rw == UIO_READ ? S_WRITE : S_READ) !=
+                    FC_OK)
+                        return;
+        }
+}
+
+static int
+rdwr(int fd, void *ubuf, uint64_t len, off_t off, int positioned,
+    enum uio_rw rw, uint64_t *rv)
+{
+        struct proc *p = curproc;
+        struct file *fp = fd_get(p, fd);
+        struct vnode *vp;
+        struct iovec iov;
+        struct uio uio;
+        int ioflag = 0, error;
+
+        if (fp == NULL)
+                return EBADF;
+        if ((fp->f_flag & (rw == UIO_READ ? FREAD : FWRITE)) == 0) {
+                frele(fp);
+                return EBADF;
+        }
+        if ((int64_t)len < 0) {
+                frele(fp);
+                return EINVAL;
+        }
+        vp = fp->f_vnode;
+        if (positioned && (vp->v_type == VCHR || off < 0)) {
+                frele(fp);
+                return vp->v_type == VCHR ? ESPIPE : EINVAL;
+        }
+        if (rw == UIO_WRITE && (fp->f_flag & FAPPEND) != 0 && !positioned)
+                ioflag |= IO_APPEND;
+        if ((fp->f_flag & FSYNC) != 0)
+                ioflag |= IO_SYNC;
+        iov.iov_base = ubuf;
+        iov.iov_len = (size_t)len;
+        uio.uio_iov = &iov;
+        uio.uio_iovcnt = 1;
+        uio.uio_resid = (ssize_t)len;
+        uio.uio_segflg = UIO_USERSPACE;
+        uio.uio_rw = rw;
+        uio_prefault(ubuf, (size_t)len, rw);
+        if (!positioned)
+                mutex_lock(&fp->f_offlock);
+        uio.uio_offset = positioned ? off : fp->f_offset;
+        if (rw == UIO_READ)
+                error = VOP_READ(vp, &uio, ioflag, fp->f_cred);
+        else
+                error = VOP_WRITE(vp, &uio, ioflag, fp->f_cred);
+        if (!positioned) {
+                fp->f_offset = uio.uio_offset;
+                mutex_unlock(&fp->f_offlock);
+        }
+        rv[0] = len - (uint64_t)uio.uio_resid;
+        if (rv[0] != 0)
+                error = 0;
+        frele(fp);
+        return error;
+}
+
+int
+sys_read(const uint64_t *args, uint64_t *rv)
+{
+        return rdwr((int)args[0], (void *)(uintptr_t)args[1], args[2], 0, 0,
+            UIO_READ, rv);
+}
+
+int
+sys_write(const uint64_t *args, uint64_t *rv)
+{
+        return rdwr((int)args[0], (void *)(uintptr_t)args[1], args[2], 0, 0,
+            UIO_WRITE, rv);
+}
+
+int
+sys_pread(const uint64_t *args, uint64_t *rv)
+{
+        return rdwr((int)args[0], (void *)(uintptr_t)args[1], args[2],
+            (off_t)args[3], 1, UIO_READ, rv);
+}
+
+int
+sys_pwrite(const uint64_t *args, uint64_t *rv)
+{
+        return rdwr((int)args[0], (void *)(uintptr_t)args[1], args[2],
+            (off_t)args[3], 1, UIO_WRITE, rv);
+}
+
+int
+sys_lseek(const uint64_t *args, uint64_t *rv)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        off_t off = (off_t)args[1], base;
+        struct vattr va;
+        int error = 0;
+
+        if (fp == NULL)
+                return EBADF;
+        mutex_lock(&fp->f_offlock);
+        switch ((int)args[2]) {
+        case SEEK_SET:
+                base = 0;
+                break;
+        case SEEK_CUR:
+                base = fp->f_offset;
+                break;
+        case SEEK_END:
+                va.va_mask = AT_SIZE;
+                error = VOP_GETATTR(fp->f_vnode, &va, fp->f_cred);
+                base = va.va_size;
+                break;
+        default:
+                error = EINVAL;
+                base = 0;
+                break;
+        }
+        if (error == 0 && (base + off < 0 || (off > 0 && base + off < base)))
+                error = EINVAL;
+        if (error == 0) {
+                fp->f_offset = base + off;
+                rv[0] = (uint64_t)fp->f_offset;
+        }
+        mutex_unlock(&fp->f_offlock);
+        frele(fp);
+        return error;
+}
+
+int
+sys_close(const uint64_t *args, uint64_t *rv __unused)
+{
+        return fd_close(curproc, (int)args[0]);
+}
+
+int
+sys_dup(const uint64_t *args, uint64_t *rv)
+{
+        struct proc *p = curproc;
+        struct file *fp = fd_get(p, (int)args[0]);
+        int fd, error;
+
+        if (fp == NULL)
+                return EBADF;
+        if ((error = fd_alloc(p, fp, 0, &fd)) != 0) {
+                frele(fp);
+                return error;
+        }
+        rv[0] = (uint64_t)fd;
+        return 0;
+}
+
+/* The open flags a file was opened with, as fcntl reports them. */
+static int
+file_oflags(int flag)
+{
+        return ((flag & (FREAD | FWRITE)) - 1) | (flag & ~(FREAD | FWRITE));
+}
+
+int
+sys_fcntl(const uint64_t *args, uint64_t *rv)
+{
+        struct proc *p = curproc;
+        int fd = (int)args[0], cmd = (int)args[1], arg = (int)args[2];
+        struct file *fp = fd_get(p, fd);
+        int nfd, error = 0;
+
+        if (fp == NULL)
+                return EBADF;
+        switch (cmd) {
+        case F_DUPFD:
+                if ((error = fd_alloc(p, fp, arg, &nfd)) == 0) {
+                        rv[0] = (uint64_t)nfd;
+                        return 0;
+                }
+                break;
+        case F_DUP2FD:
+                if (arg == fd) {
+                        rv[0] = (uint64_t)fd;
+                        break;
+                }
+                if ((error = fd_install(p, fp, arg)) == 0) {
+                        rv[0] = (uint64_t)arg;
+                        return 0;
+                }
+                break;
+        case F_GETFD:
+                rv[0] = (uint64_t)fd_cloexec(p, fd, -1);
+                break;
+        case F_SETFD:
+                (void)fd_cloexec(p, fd, (arg & FD_CLOEXEC) != 0);
+                break;
+        case F_GETFL:
+                rv[0] = (uint64_t)file_oflags(fp->f_flag);
+                break;
+        case F_SETFL:
+                fp->f_flag = (fp->f_flag & ~FMASK_SETFL) |
+                    (arg & FMASK_SETFL);
+                break;
+        default:
+                error = EINVAL;
+                break;
+        }
+        frele(fp);
+        return error;
+}
+
+/* No device has ioctls yet; nothing is a terminal. */
+int
+sys_ioctl(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+
+        if (fp == NULL)
+                return EBADF;
+        frele(fp);
+        return ENOTTY;
+}
+
+/* getdents(fd, buf, nbytes): the native struct dirent records. */
+int
+sys_getdents(const uint64_t *args, uint64_t *rv)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        struct iovec iov;
+        struct uio uio;
+        int eof, error;
+
+        if (fp == NULL)
+                return EBADF;
+        if (fp->f_vnode->v_type != VDIR) {
+                frele(fp);
+                return ENOTDIR;
+        }
+        iov.iov_base = (void *)(uintptr_t)args[1];
+        iov.iov_len = (size_t)args[2];
+        uio.uio_iov = &iov;
+        uio.uio_iovcnt = 1;
+        uio.uio_resid = (ssize_t)args[2];
+        uio.uio_segflg = UIO_USERSPACE;
+        uio.uio_rw = UIO_READ;
+        mutex_lock(&fp->f_offlock);
+        uio.uio_offset = fp->f_offset;
+        error = VOP_READDIR(fp->f_vnode, &uio, &eof, fp->f_cred);
+        fp->f_offset = uio.uio_offset;
+        mutex_unlock(&fp->f_offlock);
+        rv[0] = args[2] - (uint64_t)uio.uio_resid;
+        frele(fp);
+        return error;
+}
+
+/* Fill a native struct stat from attributes. */
+void
+vattr_to_stat(const struct vattr *va, struct stat *st)
+{
+        static const mode_t typebits[] = {
+                [VREG] = S_IFREG, [VDIR] = S_IFDIR, [VBLK] = S_IFBLK,
+                [VCHR] = S_IFCHR, [VLNK] = S_IFLNK, [VFIFO] = S_IFIFO,
+                [VSOCK] = S_IFSOCK
+        };
+
+        memset(st, 0, sizeof(*st));
+        st->st_dev = va->va_fsid;
+        st->st_ino = va->va_nodeid;
+        st->st_mode = (va->va_type <= VSOCK ? typebits[va->va_type] : 0) |
+            (va->va_mode & 07777);
+        st->st_nlink = va->va_nlink;
+        st->st_uid = va->va_uid;
+        st->st_gid = va->va_gid;
+        st->st_rdev = va->va_rdev;
+        st->st_size = va->va_size;
+        st->st_atime_sec = va->va_atime.tv_sec;
+        st->st_atime_nsec = va->va_atime.tv_nsec;
+        st->st_mtime_sec = va->va_mtime.tv_sec;
+        st->st_mtime_nsec = va->va_mtime.tv_nsec;
+        st->st_ctime_sec = va->va_ctime.tv_sec;
+        st->st_ctime_nsec = va->va_ctime.tv_nsec;
+        st->st_blksize = va->va_blksize;
+        st->st_blocks = (int64_t)va->va_nblocks;
+}
+
+int
+sys_fstat(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        struct vattr va;
+        struct stat st;
+        int error;
+
+        if (fp == NULL)
+                return EBADF;
+        memset(&va, 0, sizeof(va));
+        va.va_mask = AT_ALL;
+        error = VOP_GETATTR(fp->f_vnode, &va, fp->f_cred);
+        frele(fp);
+        if (error != 0)
+                return error;
+        vattr_to_stat(&va, &st);
+        return copyout(&st, (void *)(uintptr_t)args[1], sizeof(st));
+}
+
+int
+sys_ftruncate(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        struct vattr va;
+        int error;
+
+        if (fp == NULL)
+                return EBADF;
+        if ((fp->f_flag & FWRITE) == 0 || (off_t)args[1] < 0) {
+                frele(fp);
+                return EINVAL;
+        }
+        memset(&va, 0, sizeof(va));
+        va.va_mask = AT_SIZE;
+        va.va_size = (off_t)args[1];
+        error = VOP_SETATTR(fp->f_vnode, &va, fp->f_cred);
+        frele(fp);
+        return error;
+}

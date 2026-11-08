@@ -5,19 +5,28 @@
  */
 
 /*
- * Processor exception handling.
+ * Processor exception handling, and the C side of the system call entry.
  *
- * Nothing can be recovered yet: there is no user mode, no demand
- * paging, and no fault-catching for copyin/copyout. Every exception
- * except those a self-test expects therefore ends in a panic, after a
- * register dump and a frame-pointer backtrace of the interrupted code.
+ * - A page fault in user mode, or in the kernel on a user address while
+ *   a copy routine has set kt_onfault, is resolved through the process's
+ *   address space. If it cannot be, a user fault ends the process as if
+ *   by the signal the fault would raise (there is no signal delivery
+ *   yet), and a kernel one resumes at the copy routine's recovery point.
+ * - Any other exception in user mode ends the process the same way.
+ * - Everything else, apart from what a self-test expects, ends in a
+ *   panic after a register dump and a backtrace of the interrupted code.
  */
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include <sys/compiler.h>
+#include <sys/errno.h>
 #include <sys/kthread.h>
+#include <sys/proc.h>
+#include <sys/signal.h>
+#include <sys/syscall.h>
+#include <sys/sysent.h>
 #include <sys/systm.h>
 
 #include <machine/cpu.h>
@@ -28,7 +37,11 @@
 #include <machine/segments.h>
 #include <machine/trap.h>
 
+#include <machine/vmparam.h>
+
+#include <vm/as.h>
 #include <vm/hat.h>
+#include <vm/seg.h>
 
 /* The assembly offsets must match the structure. */
 CTASSERT(offsetof(struct trapframe, tf_rdi) == TF_RDI);
@@ -41,6 +54,17 @@ CTASSERT(offsetof(struct trapframe, tf_cs) == TF_CS);
 CTASSERT(offsetof(struct trapframe, tf_ss) == TF_SS);
 CTASSERT(sizeof(struct trapframe) == TF_SIZE);
 CTASSERT(TF_SIZE % 16 == 0);
+
+/* And the constants the entry code uses as plain numbers. */
+CTASSERT(USER_CS == UCSEL);
+CTASSERT(USER_SS == UDSEL);
+CTASSERT(USER_VA_END == VM_USER_MAX);
+CTASSERT(KT_ONFAULT == KT_ONFAULT_OFFSET);
+CTASSERT(CI_KSTACK == CI_KSTACK_OFFSET);
+CTASSERT(CI_USCRATCH == CI_USCRATCH_OFFSET);
+CTASSERT(T_SYSCALL >= NIDT);
+CTASSERT(ASM_EFAULT == EFAULT);
+CTASSERT(ASM_ENAMETOOLONG == ENAMETOOLONG);
 
 #define BACKTRACE_DEPTH 16
 
@@ -169,6 +193,70 @@ trap_backtrace(uint64_t rip, uint64_t rbp)
         }
 }
 
+/* The signal a user-mode exception raises. */
+static int
+trap_signal(uint64_t vector)
+{
+        switch (vector) {
+        case DIVERR:
+        case EXTERRFLT:
+        case SIMDFLT:
+                return SIGFPE;
+        case SGLSTP:
+        case BPTFLT:
+                return SIGTRAP;
+        case INVOPFLT:
+                return SIGILL;
+        case ALIGNFLT:
+                return SIGBUS;
+        default:
+                return SIGSEGV;
+        }
+}
+
+/*
+ * A page fault that may be resolved through the current process's
+ * address space. Returns 1 if it was dealt with: resolved, or, in the
+ * kernel, sent to the copy routine's recovery point.
+ */
+static int
+trap_pagefault(struct trapframe *tf, int user)
+{
+        struct kthread *kt = curthread;
+        uint64_t va = rcr2();
+        struct proc *p;
+        enum seg_rw rw;
+        int fc;
+
+        if (!user) {
+                if (kt->kt_onfault == 0 || va >= VM_USER_MAX)
+                        return 0;
+                if ((tf->tf_rflags & PSL_I) == 0 ||
+                    curcpu()->ci_spinlocks != 0 ||
+                    curcpu()->ci_intr_depth != 0)
+                        panic("trap: user access at %#jx with a spin lock "
+                            "held or interrupts off", (uintmax_t)va);
+        }
+        rw = (tf->tf_err & PGEX_I) != 0 ? S_EXEC :
+            (tf->tf_err & PGEX_W) != 0 ? S_WRITE : S_READ;
+        /* Resolving the fault may sleep; the interrupted code allowed it. */
+        enable_intr();
+        p = curproc;
+        fc = p->p_as != NULL ? as_fault(p->p_as, va, rw) : FC_NOMAP;
+        if (fc == FC_OK) {
+                if (user)
+                        sched_preempt_check();
+                disable_intr();
+                return 1;
+        }
+        if (!user) {
+                disable_intr();
+                tf->tf_rip = kt->kt_onfault;
+                return 1;
+        }
+        proc_fault(fc == FC_OBJERR ? SIGBUS : SIGSEGV, va);
+}
+
 /*
  * Common C entry for all exceptions, called from alltraps with
  * interrupts disabled.
@@ -209,6 +297,14 @@ trap(struct trapframe *tf)
                 return;
         }
 
+        if (vector == PGFLT && trap_pagefault(tf, user))
+                return;
+        if (user && vector != NMIFLT && vector != MCEFLT &&
+            vector != DBLFLT) {
+                enable_intr();
+                proc_fault(trap_signal(vector), tf->tf_rip);
+        }
+
         name = (vector < NEXCEPTIONS) ? trap_names[vector] : "unknown trap";
         printf("\ncpu%u: fatal %s trap: %s (vector %ju)\n", cpu_number(),
             user ? "user" : "kernel", name, (uintmax_t)vector);
@@ -225,4 +321,22 @@ trap(struct trapframe *tf)
         if (!user)
                 trap_backtrace(tf->tf_rip, tf->tf_rbp);
         panic("%s", name);
+}
+
+/*
+ * A system call, from Xsyscall with interrupts enabled. The number is in
+ * %rax and the arguments in %rdi, %rsi, %rdx, %r10, %r8, and %r9.
+ */
+void
+syscall(struct trapframe *tf)
+{
+        uint64_t args[6] = { tf->tf_rdi, tf->tf_rsi, tf->tf_rdx,
+            tf->tf_r10, tf->tf_r8, tf->tf_r9 };
+        uint64_t rv[2] = { 0, tf->tf_rdx };
+        int error;
+
+        error = syscall_dispatch(tf->tf_rax, args, rv);
+        if (error != EJUSTRETURN)
+                md_syscall_return(tf, error, rv[0], rv[1]);
+        sched_preempt_check();
 }

@@ -20,6 +20,7 @@
 #include <machine/intrdefs.h>
 #include <machine/segments.h>
 #include <machine/trap.h>
+#include <machine/md_var.h>
 #include <machine/tss.h>
 
 /* Entry stubs for vectors 0 to 31, defined in vector.S. */
@@ -29,6 +30,8 @@ extern const uint64_t trap_vector_table[NEXCEPTIONS];
 
 CTASSERT(offsetof(struct cpu_info, ci_self) == CI_SELF_OFFSET);
 CTASSERT(offsetof(struct cpu_info, ci_curthread) == CI_CURTHREAD_OFFSET);
+CTASSERT(offsetof(struct cpu_info, ci_kstack) == CI_KSTACK_OFFSET);
+CTASSERT(offsetof(struct cpu_info, ci_uscratch) == CI_USCRATCH_OFFSET);
 
 /* The IDT is shared by all processors; each gate takes two words. */
 static uint64_t idt[NIDT * 2];
@@ -116,6 +119,7 @@ cpu_tables_init(struct cpu_info *ci)
          */
         wrmsr(MSR_GSBASE, (uint64_t)(uintptr_t)ci);
         wrmsr(MSR_KERNELGSBASE, 0);
+        cpu_syscall_init();
 }
 
 /*

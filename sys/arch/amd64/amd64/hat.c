@@ -27,20 +27,36 @@
  * the direct map. That works both before and after the switch because
  * the direct map keeps the boot loader's base.
  *
- * Locking: hat_klock serialises changes to KVA mappings. It is taken
- * before the page allocator's node locks. hat_init() runs before any
- * other processor is started and takes no lock.
+ * User address spaces (struct hat) own the lower half of a PML4 of
+ * their own, whose upper half is a copy of the kernel's. Their entries
+ * are never global, so loading %cr3 flushes them. Each hat records which
+ * processors have it loaded, so that removing a translation flushes only
+ * those; hat_activate() updates the set as processors switch, with the
+ * bit set before %cr3 is loaded and the entries cleared before the set
+ * is read, so a processor can never keep a stale translation.
+ *
+ * Locking: hat_klock serialises changes to KVA mappings, and each hat's
+ * h_lock changes to its tables. Both are taken before the page
+ * allocator's node locks; allocating a table page may recycle a cached
+ * page, so they also come before any vnode's page-cache lock.
+ * hat_init() runs before any other processor is started and takes no
+ * lock.
  */
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/kmem.h>
 #include <sys/smp.h>
 #include <sys/spinlock.h>
 #include <sys/systm.h>
 
+#include <machine/atomic.h>
+#include <machine/cpu.h>
+
 #include <machine/bootinfo.h>
 #include <machine/cpufunc.h>
+#include <machine/intr.h>
 #include <machine/md_var.h>
 #include <machine/param.h>
 #include <machine/pte.h>
@@ -50,6 +66,14 @@
 #include <vm/page.h>
 
 #define KERNEL_PML4_FIRST       256     /* first kernel-half PML4 slot */
+#define HAT_NCPUWORDS           ((MAXCPUS + 63) / 64)
+#define HAT_UNLOAD_BATCH        32
+
+struct hat {
+        paddr_t         h_pml4;
+        struct spinlock h_lock;
+        volatile uint64_t h_cpus[HAT_NCPUWORDS]; /* processors using it */
+};
 
 static paddr_t kernel_pml4;             /* physical address of the PML4 */
 static pt_entry_t pte_nx;               /* PTE_NX, or 0 without NX */
@@ -154,11 +178,14 @@ hat_lookup(paddr_t root, vaddr_t va, paddr_t *pap, pt_entry_t *ptep)
 /*
  * Return the level-1 entry for va in the tables rooted at root, creating
  * page tables if create is set. Returns NULL if va lies in a large page,
- * or if a table is missing and cannot be created.
+ * or if a table is missing and cannot be created. Tables created for a
+ * user address space allow user access at every level (PTE_U); the
+ * leaves restrict it.
  */
 static pt_entry_t *
 hat_pte(paddr_t root, vaddr_t va, int create)
 {
+        pt_entry_t ubit = va < VM_USER_MAX ? PTE_U : 0;
         pt_entry_t *table = pt_page(root);
 
         for (int l = PT_LEVELS; l > 1; l--) {
@@ -169,7 +196,7 @@ hat_pte(paddr_t root, vaddr_t va, int create)
 
                         if (!create || (next = pt_alloc()) == 0)
                                 return NULL;
-                        *e = next | PTE_P | PTE_W;
+                        *e = next | PTE_P | PTE_W | ubit;
                 } else if ((*e & PTE_PS) != 0) {
                         return NULL;
                 }
@@ -423,4 +450,279 @@ hat_kremove(vaddr_t va, size_t npages)
                 smp_call_all(hat_shootdown, &sd);
         else
                 hat_shootdown(&sd);
+}
+
+/* --- User address spaces. --- */
+
+static struct kmem_zone *hat_zone;
+
+/* An empty user address space, sharing the kernel half. */
+struct hat *
+hat_alloc(void)
+{
+        struct hat *hat;
+        pt_entry_t *pml4, *kpml4 = pt_page(kernel_pml4);
+
+        if (hat_zone == NULL)
+                hat_zone = kmem_zone_init(sizeof(struct hat), "hat");
+        hat = kmem_zone_alloc(hat_zone, KM_SLEEP);
+        memset(hat, 0, sizeof(*hat));
+        spinlock_init(&hat->h_lock, "hat");
+        if ((hat->h_pml4 = pt_alloc()) == 0)
+                panic("hat_alloc: out of memory");
+        pml4 = pt_page(hat->h_pml4);
+        for (int i = KERNEL_PML4_FIRST; i < PT_ENTRIES; i++)
+                pml4[i] = kpml4[i];
+        return hat;
+}
+
+/* Free the table pages below a level-l table, then the table itself. */
+static void
+hat_free_table(paddr_t table, int level)
+{
+        pt_entry_t *t = pt_page(table);
+
+        if (level > 1) {
+                for (int i = 0; i < PT_ENTRIES; i++) {
+                        if ((t[i] & PTE_P) != 0)
+                                hat_free_table(t[i] & PTE_FRAME, level - 1);
+                }
+        }
+        page_free(pa_to_page(table), 0);
+}
+
+/*
+ * Free a hat and its user tables. No processor may have it loaded, and
+ * its translations must already be unloaded (the pages they named are
+ * the caller's).
+ */
+void
+hat_free(struct hat *hat)
+{
+        pt_entry_t *pml4 = pt_page(hat->h_pml4);
+
+        for (int w = 0; w < HAT_NCPUWORDS; w++) {
+                if (hat->h_cpus[w] != 0)
+                        panic("hat_free: hat %p still loaded", (void *)hat);
+        }
+        for (int i = 0; i < KERNEL_PML4_FIRST; i++) {
+                if ((pml4[i] & PTE_P) != 0)
+                        hat_free_table(pml4[i] & PTE_FRAME, PT_LEVELS - 1);
+        }
+        page_free(pa_to_page(hat->h_pml4), 0);
+        kmem_zone_free(hat_zone, hat);
+}
+
+/*
+ * Make hat the user address space of this processor (NULL for none),
+ * as the scheduler switches threads. Interrupts are disabled.
+ */
+void
+hat_activate(struct hat *hat)
+{
+        struct cpu_info *ci = curcpu();
+        uint64_t bit = UINT64_C(1) << (ci->ci_cpuid % 64);
+        unsigned int w = ci->ci_cpuid / 64;
+        paddr_t want = hat != NULL ? hat->h_pml4 : kernel_pml4;
+        struct hat *old = ci->ci_hat;
+
+        if (old == hat)
+                return;
+        if (hat != NULL)
+                atomic_or_64(&hat->h_cpus[w], bit);     /* before %cr3 */
+        lcr3(want);
+        if (old != NULL)
+                atomic_and_64(&old->h_cpus[w], ~bit);
+        ci->ci_hat = hat;
+}
+
+static pt_entry_t
+hat_user_bits(unsigned int attr)
+{
+        pt_entry_t bits = PTE_P | PTE_U;
+
+        if ((attr & HAT_WRITE) != 0)
+                bits |= PTE_W;
+        if ((attr & HAT_EXEC) == 0)
+                bits |= pte_nx;
+        return bits;
+}
+
+/*
+ * Map the page at pa at user address va. Returns 0, -1 if va is
+ * already mapped, or -2 if a table page cannot be allocated.
+ */
+int
+hat_memload(struct hat *hat, vaddr_t va, paddr_t pa, unsigned int attr)
+{
+        pt_entry_t *pte;
+        int s, error = 0;
+
+        if (va >= VM_USER_MAX || (va & PAGEOFFSET) != 0 ||
+            (pa & PAGEOFFSET) != 0)
+                panic("hat_memload: bad mapping %#jx -> %#jx",
+                    (uintmax_t)va, (uintmax_t)pa);
+        s = spin_lock(&hat->h_lock);
+        if ((pte = hat_pte(hat->h_pml4, va, 1)) == NULL)
+                error = -2;
+        else if ((*pte & PTE_P) != 0)
+                error = -1;
+        else
+                *pte = pa | hat_user_bits(attr);
+        spin_unlock(&hat->h_lock, s);
+        return error;
+}
+
+struct hat_flush {
+        paddr_t         hf_pml4;
+        const vaddr_t   *hf_va;
+        size_t          hf_n;
+};
+
+static void
+hat_flush_action(void *arg)
+{
+        const struct hat_flush *hf = arg;
+
+        if ((rcr3() & PTE_FRAME) != hf->hf_pml4)
+                return;
+        for (size_t i = 0; i < hf->hf_n; i++)
+                invlpg(hf->hf_va[i]);
+}
+
+/*
+ * Flush n translations of hat from the processors that have it loaded.
+ * The entries have been changed already; no spin lock may be held.
+ */
+static void
+hat_flush(struct hat *hat, const vaddr_t *va, size_t n)
+{
+        struct hat_flush hf = { hat->h_pml4, va, n };
+        struct cpu_info *ci;
+        int others = 0, s;
+
+        if (n == 0)
+                return;
+        membar_sync();          /* the entries before the processor set */
+        s = splhi();
+        ci = curcpu();
+        for (int w = 0; w < HAT_NCPUWORDS; w++) {
+                uint64_t mine = (unsigned int)w == ci->ci_cpuid / 64 ?
+                    UINT64_C(1) << (ci->ci_cpuid % 64) : 0;
+
+                if ((hat->h_cpus[w] & ~mine) != 0)
+                        others = 1;
+        }
+        if (!others) {
+                hat_flush_action(&hf);
+                splx(s);
+                return;
+        }
+        splx(s);
+        smp_call_all(hat_flush_action, &hf);
+}
+
+/*
+ * Remove the translations of npages pages from va. For each one that
+ * was there, fn(arg, va, pa) is called once it is flushed everywhere.
+ */
+void
+hat_unload(struct hat *hat, vaddr_t va, size_t npages,
+    void (*fn)(void *, vaddr_t, paddr_t), void *arg)
+{
+        vaddr_t end = va + ptob(npages);
+
+        while (va < end) {
+                vaddr_t vas[HAT_UNLOAD_BATCH];
+                paddr_t pas[HAT_UNLOAD_BATCH];
+                size_t n = 0;
+                int s = spin_lock(&hat->h_lock);
+
+                while (va < end && n < HAT_UNLOAD_BATCH) {
+                        pt_entry_t *pte = hat_pte(hat->h_pml4, va, 0);
+
+                        if (pte == NULL) {
+                                /* No level-1 table: skip all it covers. */
+                                vaddr_t next = (va + NBPD_2M) &
+                                    ~(vaddr_t)(NBPD_2M - 1);
+
+                                va = next < end && next > va ? next : end;
+                                continue;
+                        }
+                        if ((*pte & PTE_P) != 0) {
+                                vas[n] = va;
+                                pas[n] = *pte & PTE_FRAME;
+                                *pte = 0;
+                                n++;
+                        }
+                        va += PAGESIZE;
+                }
+                spin_unlock(&hat->h_lock, s);
+                hat_flush(hat, vas, n);
+                if (fn != NULL) {
+                        for (size_t i = 0; i < n; i++)
+                                fn(arg, vas[i], pas[i]);
+                }
+        }
+}
+
+/*
+ * Set the access of the present translations of npages pages from va to
+ * attr (HAT_WRITE, HAT_EXEC), flushing them.
+ */
+void
+hat_chgprot(struct hat *hat, vaddr_t va, size_t npages, unsigned int attr)
+{
+        vaddr_t end = va + ptob(npages);
+        pt_entry_t bits = hat_user_bits(attr);
+
+        while (va < end) {
+                vaddr_t vas[HAT_UNLOAD_BATCH];
+                size_t n = 0;
+                int s = spin_lock(&hat->h_lock);
+
+                while (va < end && n < HAT_UNLOAD_BATCH) {
+                        pt_entry_t *pte = hat_pte(hat->h_pml4, va, 0);
+
+                        if (pte == NULL) {
+                                vaddr_t next = (va + NBPD_2M) &
+                                    ~(vaddr_t)(NBPD_2M - 1);
+
+                                va = next < end && next > va ? next : end;
+                                continue;
+                        }
+                        if ((*pte & PTE_P) != 0 &&
+                            (*pte & (PTE_W | PTE_NX | PTE_U | PTE_P)) !=
+                            bits) {
+                                *pte = (*pte & PTE_FRAME) | bits;
+                                vas[n++] = va;
+                        }
+                        va += PAGESIZE;
+                }
+                spin_unlock(&hat->h_lock, s);
+                hat_flush(hat, vas, n);
+        }
+}
+
+/*
+ * Whether va is mapped in hat: 1 with its page and access, or 0. The
+ * answer may be out of date unless the caller excludes changes.
+ */
+int
+hat_probe(struct hat *hat, vaddr_t va, paddr_t *pap, unsigned int *attrp)
+{
+        pt_entry_t *pte, e;
+        int s = spin_lock(&hat->h_lock);
+
+        pte = hat_pte(hat->h_pml4, ptrunc(va), 0);
+        e = pte != NULL ? *pte : 0;
+        spin_unlock(&hat->h_lock, s);
+        if ((e & PTE_P) == 0)
+                return 0;
+        if (pap != NULL)
+                *pap = e & PTE_FRAME;
+        if (attrp != NULL)
+                *attrp = ((e & PTE_W) != 0 ? HAT_WRITE : 0) |
+                    ((e & PTE_NX) == 0 ? HAT_EXEC : 0);
+        return 1;
 }

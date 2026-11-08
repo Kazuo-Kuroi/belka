@@ -53,6 +53,7 @@
 #include <vm/pvn.h>
 
 struct cred;
+struct page;
 struct uio;
 struct vfs;
 struct vnode;
@@ -78,6 +79,7 @@ struct vnode {
         void            *v_data;        /* the file system's node */
         dev_t           v_rdev;
         uint64_t        v_number;       /* identity, new on each reuse */
+        volatile uint32_t v_nmap;       /* segments mapping it */
 
         /* The global vnode cache. */
         struct vnode    *v_fnext;       /* free list, under its lock */
@@ -166,6 +168,8 @@ struct vnodeops {
         int     (*vop_inactive)(struct vnode *, struct cred *);
         int     (*vop_putpage)(struct vnode *, int, struct cred *);
         int     (*vop_reclaim)(struct vnode *, int);
+        int     (*vop_getpage)(struct vnode *, off_t, struct page **,
+                    struct cred *);
 };
 
 #define VOP_OPEN(vpp, f, cr)            (*(vpp))->v_op->vop_open(vpp, f, cr)
@@ -192,6 +196,7 @@ struct vnodeops {
 #define VOP_INACTIVE(vp, cr)            (vp)->v_op->vop_inactive(vp, cr)
 #define VOP_PUTPAGE(vp, fl, cr)         (vp)->v_op->vop_putpage(vp, fl, cr)
 #define VOP_RECLAIM(vp, fl)             (vp)->v_op->vop_reclaim(vp, fl)
+#define VOP_GETPAGE(vp, off, ppp, cr)   (vp)->v_op->vop_getpage(vp, off, ppp, cr)
 
 /* Statistics of the global vnode cache. */
 struct vn_stats {
@@ -224,6 +229,9 @@ void vn_purge_vfs(struct vfs *);
 void vn_dirty_add(struct vnode *);
 void vn_dirty_remove(struct vnode *);
 void vn_get_stats(struct vn_stats *);
+
+struct stat;
+void vattr_to_stat(const struct vattr *, struct stat *);
 
 #define VN_HOLD(vp)     vn_hold(vp)
 #define VN_RELE(vp)     vn_rele(vp)

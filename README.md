@@ -35,6 +35,12 @@ boot, because the tests write to them. After `make test`, the host
 checks both with `e2fsck -fn`, and `tools/check-ext2.sh` reads back
 with `debugfs` the files the kernel left. This needs e2fsprogs
 (`E2FSCK` and `DEBUGFS` name the programs).
+
+User-mode test programs live in `usr/tests`. A tiny C library in
+`usr/tests/lib` stands in until mlibc is ported. They are built with the
+host compiler (`USER_CC`, default `HOSTCC`) against the kernel's own ABI
+headers, and installed in `/bin` on both test images. The kernel runs
+them during `make test`. `make user-progs` builds them alone.
 `SMP=n` and `MEM=size` set the guest's processors and memory.
 `make INLINE_ASM=no` builds the out-of-line fallbacks for every inline
 assembly primitive, which is what a compiler without GNU extensions
@@ -46,7 +52,8 @@ downloads a pinned, checksummed Limine release into `build/`.
 | Path | Contents |
 |---|---|
 | `sys/kern` | machine-independent kernel |
-| `sys/vm` | physical pages, kernel virtual space, and the page cache |
+| `sys/vm` | physical pages, the page cache, address spaces, anonymous memory |
+| `usr/tests` | user-mode test programs and their tiny C library |
 | `sys/libkern` | freestanding C library routines |
 | `sys/sys` | machine-independent headers (`<sys/...>`) |
 | `sys/dev/ic` | drivers for chips, independent of the bus |

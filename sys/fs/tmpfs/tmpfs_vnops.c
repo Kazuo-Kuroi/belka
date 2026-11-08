@@ -223,6 +223,9 @@ tmpfs_setattr(struct vnode *vp, struct vattr *va, struct cred *cr __unused)
                         return EINVAL;
                 if (va->va_size < 0)
                         return EINVAL;
+                /* Mapped pages are held; they cannot be cut away. */
+                if (vp->v_nmap != 0)
+                        return ETXTBSY;
         }
         mutex_lock(&tm->tm_lock);
         if ((va->va_mask & AT_MODE) != 0)
@@ -754,6 +757,45 @@ tmpfs_putpage(struct vnode *vp __unused, int flags __unused,
         return 0;
 }
 
+/*
+ * A page of the file for a mapping, held. A hole gets a page of zeroes,
+ * counted against the mount like a written one.
+ */
+static int
+tmpfs_getpage(struct vnode *vp, off_t off, struct page **ppp,
+    struct cred *cr __unused)
+{
+        struct tmpnode *tn = VTOTN(vp);
+        struct tmount *tm = tn->tn_mount;
+        struct page *pp;
+        int isnew, error = 0;
+
+        if (tn->tn_type != VREG)
+                return ENODEV;
+        mraccess(&tn->tn_rwlock);
+        if (off < 0 || off >= tn->tn_size) {
+                error = EFAULT;
+        } else if ((pp = page_lookup_create(vp, (uint64_t)off / PAGESIZE,
+            &isnew)) == NULL) {
+                error = ENOMEM;
+        } else {
+                if (isnew) {
+                        if (atomic_inc_64_nv(&tm->tm_pages) >
+                            tm->tm_maxpages) {
+                                atomic_add_64(&tm->tm_pages, -1);
+                                page_abort(pp);
+                                mrunlock(&tn->tn_rwlock);
+                                return ENOSPC;
+                        }
+                        memset(page_to_kva(pp), 0, PAGESIZE);
+                        page_unbusy(pp);
+                }
+                *ppp = pp;
+        }
+        mrunlock(&tn->tn_rwlock);
+        return error;
+}
+
 /* Private vnodes are never reclaimed. */
 static int
 tmpfs_reclaim(struct vnode *vp __unused, int flags __unused)
@@ -782,5 +824,6 @@ const struct vnodeops tmpfs_vnodeops = {
         tmpfs_fsync,
         tmpfs_inactive,
         tmpfs_putpage,
-        tmpfs_reclaim
+        tmpfs_reclaim,
+        tmpfs_getpage
 };

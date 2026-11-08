@@ -86,7 +86,7 @@ LDFLAGS         := -nostdlib -static -z max-page-size=0x1000 \
 SRCS            := $(MI_SRCS) $(MD_SRCS)
 OBJS            := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS)))
 
-.PHONY: ext2-images all iso run test test-fault test-apfault test-stack test-uaf \
+.PHONY: ext2-images user-progs all iso run test test-fault test-apfault test-stack test-uaf \
 	test-reboot test-all limine clean distclean
 
 all: $(KERNEL)
@@ -156,15 +156,36 @@ QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
                    -device virtio-blk-pci,drive=vd2,disable-legacy=on \
                    -display none -no-reboot
 
+# User-mode test programs, built with the host compiler against the
+# kernel's own ABI headers and a tiny C library (usr/tests/lib), and put
+# in /bin on both ext2 images.
+USER_CC         ?= $(HOSTCC)
+USER_DIR        := build/user
+USER_PROGS      := hello segv argtest utest
+USER_BINS       := $(addprefix $(USER_DIR)/,$(USER_PROGS))
+USER_CFLAGS     := -std=c99 -O2 -g -Wall -Wextra -Werror -ffreestanding \
+                   -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+                   -Isys -Isys/arch/$(ARCH)/include
+USER_LDFLAGS    := -static -nostdlib -no-pie -Wl,--build-id=none \
+                   -Wl,-z,max-page-size=4096 -Wl,-z,noexecstack
+USER_LIB        := usr/tests/lib/crt0.S usr/tests/lib/libt.c
+
+$(USER_DIR)/%: usr/tests/%.c $(USER_LIB) usr/tests/lib/libt.h
+	@mkdir -p $(USER_DIR)
+	$(USER_CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_LIB) $<
+
+user-progs: $(USER_BINS)
+
 # Every recipe that boots the kernel rebuilds the images first, since a
 # prerequisite would run only once for all the boots of one make run.
-MKEXT2          = @mkdir -p build && sh tools/mkext2.sh $(EXT2_1K) 1024 && \
-                  sh tools/mkext2.sh $(EXT2_4K) 4096
+MKEXT2          = @mkdir -p build && \
+                  sh tools/mkext2.sh $(EXT2_1K) 1024 $(USER_DIR) && \
+                  sh tools/mkext2.sh $(EXT2_4K) 4096 $(USER_DIR)
 
-ext2-images:
+ext2-images: $(USER_BINS)
 	$(MKEXT2)
 
-run: $(ISO) $(DISK)
+run: $(ISO) $(DISK) $(USER_BINS)
 	$(MKEXT2)
 	$(QEMU) $(QEMU_FLAGS) -cdrom $(ISO) -serial mon:stdio
 
@@ -174,7 +195,7 @@ run: $(ISO) $(DISK)
 # address and expects the resulting panic; "test-apfault" does the same
 # on a secondary processor; "test-stack" and "test-uaf" check that stack
 # overflow and use after free are caught.
-test: $(TEST_ISO)
+test: $(TEST_ISO) $(USER_BINS)
 	$(MKEXT2)
 	sh tools/qemu-test.sh pass $(BUILD)/test-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(TEST_ISO)
@@ -184,25 +205,27 @@ test: $(TEST_ISO)
 	$(E2FSCK) -fn $(EXT2_4K)
 	sh tools/check-ext2.sh $(DEBUGFS) $(EXT2_1K) $(EXT2_4K)
 
-test-fault: $(FAULT_ISO)
+test-fault: $(FAULT_ISO) $(USER_BINS)
 	$(MKEXT2)
-	sh tools/qemu-test.sh panic $(BUILD)/test-fault-serial.log \
+	QEMU_EXPECT="panic: page fault" sh tools/qemu-test.sh panic \
+	    $(BUILD)/test-fault-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(FAULT_ISO)
 
-test-apfault: $(APFAULT_ISO)
+test-apfault: $(APFAULT_ISO) $(USER_BINS)
 	$(MKEXT2)
-	sh tools/qemu-test.sh panic $(BUILD)/test-apfault-serial.log \
+	QEMU_EXPECT="panic: page fault" sh tools/qemu-test.sh panic \
+	    $(BUILD)/test-apfault-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(APFAULT_ISO)
 
 # A kernel stack overflow must hit the guard page and double fault.
-test-stack: $(STACK_ISO)
+test-stack: $(STACK_ISO) $(USER_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="double fault" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-stack-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(STACK_ISO)
 
 # A write to freed kmem must be caught when the object is reused.
-test-uaf: $(UAF_ISO)
+test-uaf: $(UAF_ISO) $(USER_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="modified after free" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-uaf-serial.log \
@@ -210,7 +233,7 @@ test-uaf: $(UAF_ISO)
 
 # A reboot through the ACPI reset register makes QEMU, run with
 # -no-reboot, exit with status 0.
-test-reboot: $(REBOOT_ISO)
+test-reboot: $(REBOOT_ISO) $(USER_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="rebooting" sh tools/qemu-test.sh reset \
 	    $(BUILD)/test-reboot-serial.log \

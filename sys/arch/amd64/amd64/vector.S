@@ -9,18 +9,27 @@
  * registers to complete a struct trapframe and calls trap().
  *
  * On entry from user mode the GS base is exchanged with swapgs, so that
- * the kernel always finds cpu_info through %gs. The decision is made
- * from the saved CS.
+ * the kernel always finds cpu_info through %gs. For ordinary vectors the
+ * decision is made from the saved CS. NMI, double fault, and machine
+ * check can arrive in the kernel between a swapgs and the iretq or
+ * sysretq that follows it, so their entry (alltraps_paranoid) reads
+ * MSR_GSBASE instead: the kernel's GS base is a kernel-half address.
  *
- * KNOWN LIMITATION: deciding by CS is wrong for NMI, machine check, and
- * double fault, which can arrive in the kernel between a swapgs and the
- * iretq that follows it. Before user mode is enabled those three must
- * instead read MSR_GSBASE to decide. There is no user mode yet.
+ * Xsyscall is the system call entry: the syscall instruction leaves
+ * the user %rip in %rcx and %rflags in %r11, and switches neither stack
+ * nor GS. It builds the same trap frame as an exception would, and
+ * returns with sysretq when the frame still describes an ordinary user
+ * context, with iretq otherwise.
+ *
+ * user_enter() starts user mode from a trap frame, for a new LWP or a
+ * new program.
  */
 
 #include <machine/asm.h>
 #include <machine/frameasm.h>
 #include <machine/trap.h>
+
+#define MSR_GSBASE_NUM  0xc0000101
 
 /* A vector for which the processor pushes no error code. */
 #define TRAP(num)                       \
@@ -37,15 +46,64 @@ ENTRY(Xtrap##num);                      \
         jmp     alltraps;               \
 END(Xtrap##num)
 
+/* NMI and machine check, which push no error code. */
+#define TRAP_PARANOID(num)              \
+ENTRY(Xtrap##num);                      \
+        pushq   $0;                     \
+        pushq   $num;                   \
+        jmp     alltraps_paranoid;      \
+END(Xtrap##num)
+
+/* Double fault, which pushes one. */
+#define TRAP_PARANOID_ERR(num)          \
+ENTRY(Xtrap##num);                      \
+        pushq   $num;                   \
+        jmp     alltraps_paranoid;      \
+END(Xtrap##num)
+
+#define SAVE_REGS                       \
+        movq    %rdi, TF_RDI(%rsp);     \
+        movq    %rsi, TF_RSI(%rsp);     \
+        movq    %rdx, TF_RDX(%rsp);     \
+        movq    %rcx, TF_RCX(%rsp);     \
+        movq    %r8, TF_R8(%rsp);       \
+        movq    %r9, TF_R9(%rsp);       \
+        movq    %rax, TF_RAX(%rsp);     \
+        movq    %rbx, TF_RBX(%rsp);     \
+        movq    %rbp, TF_RBP(%rsp);     \
+        movq    %r10, TF_R10(%rsp);     \
+        movq    %r11, TF_R11(%rsp);     \
+        movq    %r12, TF_R12(%rsp);     \
+        movq    %r13, TF_R13(%rsp);     \
+        movq    %r14, TF_R14(%rsp);     \
+        movq    %r15, TF_R15(%rsp)
+
+#define RESTORE_REGS                    \
+        movq    TF_RDI(%rsp), %rdi;     \
+        movq    TF_RSI(%rsp), %rsi;     \
+        movq    TF_RDX(%rsp), %rdx;     \
+        movq    TF_RCX(%rsp), %rcx;     \
+        movq    TF_R8(%rsp), %r8;       \
+        movq    TF_R9(%rsp), %r9;       \
+        movq    TF_RAX(%rsp), %rax;     \
+        movq    TF_RBX(%rsp), %rbx;     \
+        movq    TF_RBP(%rsp), %rbp;     \
+        movq    TF_R10(%rsp), %r10;     \
+        movq    TF_R11(%rsp), %r11;     \
+        movq    TF_R12(%rsp), %r12;     \
+        movq    TF_R13(%rsp), %r13;     \
+        movq    TF_R14(%rsp), %r14;     \
+        movq    TF_R15(%rsp), %r15
+
 TRAP(0)
 TRAP(1)
-TRAP(2)
+TRAP_PARANOID(2)
 TRAP(3)
 TRAP(4)
 TRAP(5)
 TRAP(6)
 TRAP(7)
-TRAP_ERR(8)
+TRAP_PARANOID_ERR(8)
 TRAP(9)
 TRAP_ERR(10)
 TRAP_ERR(11)
@@ -55,7 +113,7 @@ TRAP_ERR(14)
 TRAP(15)
 TRAP(16)
 TRAP_ERR(17)
-TRAP(18)
+TRAP_PARANOID(18)
 TRAP(19)
 TRAP(20)
 TRAP_ERR(21)
@@ -77,22 +135,7 @@ TRAP(31)
  */
 ENTRY(alltraps)
         subq    $TF_TRAPNO, %rsp
-        movq    %rdi, TF_RDI(%rsp)
-        movq    %rsi, TF_RSI(%rsp)
-        movq    %rdx, TF_RDX(%rsp)
-        movq    %rcx, TF_RCX(%rsp)
-        movq    %r8, TF_R8(%rsp)
-        movq    %r9, TF_R9(%rsp)
-        movq    %rax, TF_RAX(%rsp)
-        movq    %rbx, TF_RBX(%rsp)
-        movq    %rbp, TF_RBP(%rsp)
-        movq    %r10, TF_R10(%rsp)
-        movq    %r11, TF_R11(%rsp)
-        movq    %r12, TF_R12(%rsp)
-        movq    %r13, TF_R13(%rsp)
-        movq    %r14, TF_R14(%rsp)
-        movq    %r15, TF_R15(%rsp)
-
+        SAVE_REGS
         testb   $3, TF_CS(%rsp)
         jz      1f
         swapgs
@@ -100,29 +143,100 @@ ENTRY(alltraps)
         cld
         movq    %rsp, %rdi
         call    trap
-
         testb   $3, TF_CS(%rsp)
-        jz      2f
-        swapgs
-2:
-        movq    TF_RDI(%rsp), %rdi
-        movq    TF_RSI(%rsp), %rsi
-        movq    TF_RDX(%rsp), %rdx
-        movq    TF_RCX(%rsp), %rcx
-        movq    TF_R8(%rsp), %r8
-        movq    TF_R9(%rsp), %r9
-        movq    TF_RAX(%rsp), %rax
-        movq    TF_RBX(%rsp), %rbx
-        movq    TF_RBP(%rsp), %rbp
-        movq    TF_R10(%rsp), %r10
-        movq    TF_R11(%rsp), %r11
-        movq    TF_R12(%rsp), %r12
-        movq    TF_R13(%rsp), %r13
-        movq    TF_R14(%rsp), %r14
-        movq    TF_R15(%rsp), %r15
+        jnz     user_return
+        RESTORE_REGS
         addq    $TF_RIP, %rsp
         iretq
 END(alltraps)
+
+/*
+ * NMI, double fault, machine check: swap GS only if the GS base in
+ * force is not the kernel's, and swap back on the way out. %rbx, which
+ * trap() preserves, remembers which.
+ */
+ENTRY(alltraps_paranoid)
+        subq    $TF_TRAPNO, %rsp
+        SAVE_REGS
+        xorl    %ebx, %ebx
+        movl    $MSR_GSBASE_NUM, %ecx
+        rdmsr
+        testl   %edx, %edx
+        js      1f
+        swapgs
+        movl    $1, %ebx
+1:
+        cld
+        movq    %rsp, %rdi
+        call    trap
+        testl   %ebx, %ebx
+        jz      2f
+        swapgs
+2:
+        RESTORE_REGS
+        addq    $TF_RIP, %rsp
+        iretq
+END(alltraps_paranoid)
+
+/*
+ * Return to user mode through the trap frame at %rsp, with interrupts
+ * disabled and the kernel GS base in force.
+ */
+ENTRY(user_return)
+        cli
+        RESTORE_REGS
+        swapgs
+        addq    $TF_RIP, %rsp
+        iretq
+END(user_return)
+
+/* void user_enter(struct trapframe *tf) */
+ENTRY(user_enter)
+        cli
+        movq    %rdi, %rsp
+        jmp     user_return
+END(user_enter)
+
+/*
+ * The system call entry. Interrupts are off (SFMASK clears IF), the
+ * stack is still the user's, and GS is the user's.
+ */
+ENTRY(Xsyscall)
+        swapgs
+        movq    %rsp, %gs:CI_USCRATCH
+        movq    %gs:CI_KSTACK, %rsp
+        pushq   $USER_SS
+        pushq   %gs:CI_USCRATCH
+        pushq   %r11                    /* user %rflags */
+        pushq   $USER_CS
+        pushq   %rcx                    /* user %rip */
+        pushq   $0
+        pushq   $T_SYSCALL
+        subq    $TF_TRAPNO, %rsp
+        SAVE_REGS
+        sti
+        movq    %rsp, %rdi
+        call    syscall
+        cli
+        /*
+         * sysretq loads CS and SS from fixed selectors and %rip from
+         * %rcx; a non-canonical %rip would fault in the kernel with the
+         * user's stack. Anything unusual goes back through iretq.
+         */
+        cmpq    $USER_CS, TF_CS(%rsp)
+        jne     user_return
+        cmpq    $USER_SS, TF_SS(%rsp)
+        jne     user_return
+        movabsq $USER_VA_END, %rax
+        cmpq    %rax, TF_RIP(%rsp)
+        jae     user_return
+        RESTORE_REGS
+        movq    TF_RIP(%rsp), %rcx
+        movq    TF_RFLAGS(%rsp), %r11
+        movq    TF_RSP(%rsp), %rsp
+        swapgs
+        sysretq
+END(Xsyscall)
 
         .section .rodata
         .p2align 3

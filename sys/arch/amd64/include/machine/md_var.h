@@ -15,6 +15,8 @@
 
 #include <sys/compiler.h>
 
+#include <machine/types.h>
+
 struct trapframe;
 
 /* machdep.c: called from locore.S on the bootstrap processor. */
@@ -37,6 +39,19 @@ int trap_expect_done(uint64_t *);
 
 /* hat.c */
 int hat_nx_enabled(void);
+
+/* vm_machdep.c */
+struct lwp;
+void cpu_syscall_init(void);
+void md_lwp_init(struct lwp *, vaddr_t);
+void md_lwp_free(struct lwp *);
+void md_setregs(struct lwp *, uint64_t, uint64_t);
+void md_lwp_fork(struct lwp *, struct lwp *);
+void md_set_return(struct lwp *, uint64_t, uint64_t);
+void md_set_private(struct lwp *, uint64_t);
+void md_syscall_return(struct trapframe *, int, uint64_t, uint64_t);
+void user_enter(struct trapframe *) __dead;
+void syscall(struct trapframe *);
 
 /* Symbols defined by the linker script and locore.S. */
 extern char kernel_start[];

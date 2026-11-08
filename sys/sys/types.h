@@ -26,5 +26,7 @@ typedef uint32_t        uid_t;
 typedef uint32_t        gid_t;
 typedef uint32_t        nlink_t;
 typedef int64_t         daddr_t;        /* disk address, in 512-byte sectors */
+typedef int32_t         pid_t;
+typedef int64_t         time_t;
 
 #endif /* _SYS_TYPES_H_ */

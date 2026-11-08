@@ -296,6 +296,7 @@ swtch(int s)
         sc->sc_nswitch++;
         ci->ci_curthread = new;
 
+        cpu_switch_md(old, new);
         cpu_switch(&old->kt_rsp, new->kt_rsp);
 
         sched_finish();

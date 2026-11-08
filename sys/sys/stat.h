@@ -11,6 +11,10 @@
 #ifndef _SYS_STAT_H_
 #define _SYS_STAT_H_
 
+#include <stdint.h>
+
+#include <sys/types.h>
+
 #define S_IFMT          0170000
 #define S_IFIFO         0010000
 #define S_IFCHR         0020000
@@ -29,5 +33,30 @@
 #define S_IXUSR         00100
 #define S_IRWXG         00070
 #define S_IRWXO         00007
+
+/*
+ * The native stat structure, for stat(), lstat(), and fstat(). The
+ * UnixWare i386 layouts (stat, xstat) belong to the i386 personality.
+ */
+struct stat {
+        dev_t           st_dev;
+        ino_t           st_ino;
+        mode_t          st_mode;
+        nlink_t         st_nlink;
+        uid_t           st_uid;
+        gid_t           st_gid;
+        dev_t           st_rdev;
+        off_t           st_size;
+        int64_t         st_atime_sec;
+        int64_t         st_atime_nsec;
+        int64_t         st_mtime_sec;
+        int64_t         st_mtime_nsec;
+        int64_t         st_ctime_sec;
+        int64_t         st_ctime_nsec;
+        int64_t         st_blksize;
+        int64_t         st_blocks;
+        char            st_fstype[16];
+        int64_t         st_spare[4];
+};
 
 #endif /* _SYS_STAT_H_ */

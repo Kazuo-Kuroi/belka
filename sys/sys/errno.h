@@ -96,6 +96,11 @@
 #define ENOSYS          89
 #define ELOOP           90
 #define ERESTART        91
+
+#ifdef _KERNEL
+/* Kernel-internal: the system call has set its own return registers. */
+#define EJUSTRETURN     (-2)
+#endif
 #define ESTRPIPE        92
 #define ENOTEMPTY       93
 #define EUSERS          94

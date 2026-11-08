@@ -388,6 +388,25 @@ kmem_zone_free(struct kmem_zone *kz, void *obj)
         }
 }
 
+/*
+ * Objects in use in the zone called name, or 0 if there is none; for
+ * leak checks in the self-tests.
+ */
+size_t
+kmem_zone_inuse_named(const char *name)
+{
+        size_t n = 0;
+        int s = spin_lock(&kmem_zones_lock);
+
+        for (struct kmem_zone *kz = kmem_zones; kz != NULL;
+            kz = kz->kz_next) {
+                if (strcmp(kz->kz_name, name) == 0)
+                        n += kz->kz_inuse;
+        }
+        spin_unlock(&kmem_zones_lock, s);
+        return n;
+}
+
 void
 kmem_zone_get_stats(struct kmem_zone *kz, struct kmem_zone_stats *st)
 {

@@ -37,4 +37,18 @@
 #define TF_SS           168
 #define TF_SIZE         176
 
+/*
+ * Constants the entry code needs, as plain numbers; trap.c checks each
+ * against its C definition.
+ */
+#define T_SYSCALL       256                     /* tf_trapno of a syscall */
+#define USER_CS         0x2b                    /* UCSEL */
+#define USER_SS         0x23                    /* UDSEL */
+#define USER_VA_END     0x00007ffffffff000      /* VM_USER_MAX */
+#define KT_ONFAULT      8                       /* KT_ONFAULT_OFFSET */
+#define CI_KSTACK       16                      /* CI_KSTACK_OFFSET */
+#define CI_USCRATCH     24                      /* CI_USCRATCH_OFFSET */
+#define ASM_EFAULT      14
+#define ASM_ENAMETOOLONG 78
+
 #endif /* _MACHINE_FRAMEASM_H_ */

@@ -647,8 +647,6 @@ uiomove(void *cp, size_t n, enum uio_rw rw, struct uio *uio)
 {
         char *p = cp;
 
-        if (uio->uio_segflg != UIO_SYSSPACE)
-                return EFAULT;
         while (n > 0 && uio->uio_resid > 0) {
                 struct iovec *iov = uio->uio_iov;
                 size_t cnt;
@@ -661,10 +659,18 @@ uiomove(void *cp, size_t n, enum uio_rw rw, struct uio *uio)
                         continue;
                 }
                 cnt = iov->iov_len < n ? iov->iov_len : n;
-                if (rw == UIO_READ)
+                if (uio->uio_segflg == UIO_USERSPACE) {
+                        int error = rw == UIO_READ ?
+                            copyout(p, iov->iov_base, cnt) :
+                            copyin(iov->iov_base, p, cnt);
+
+                        if (error != 0)
+                                return error;
+                } else if (rw == UIO_READ) {
                         memcpy(iov->iov_base, p, cnt);
-                else
+                } else {
                         memcpy(p, iov->iov_base, cnt);
+                }
                 iov->iov_base = (char *)iov->iov_base + cnt;
                 iov->iov_len -= cnt;
                 uio->uio_resid -= (ssize_t)cnt;

@@ -5,8 +5,9 @@
  */
 
 /*
- * Scatter/gather I/O descriptions, as in System V. Only kernel
- * (UIO_SYSSPACE) addresses exist until there are user processes.
+ * Scatter/gather I/O descriptions, as in System V. With UIO_USERSPACE
+ * the iovec addresses are the current process's, and uiomove() copies
+ * with copyin() and copyout().
  */
 
 #ifndef _SYS_UIO_H_

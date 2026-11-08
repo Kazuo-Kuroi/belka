@@ -39,18 +39,26 @@ struct cpu_action {
         void            *ca_arg;
 };
 
+struct hat;
 struct kthread;
 
 /*
- * ci_self and ci_curthread are read with single %gs-relative loads, so
- * their offsets are fixed; cpu_tables.c checks them.
+ * ci_self, ci_curthread, ci_kstack, and ci_uscratch are reached with
+ * single %gs-relative accesses, the last two from the system call entry
+ * before any register is free, so their offsets are fixed; cpu_tables.c
+ * checks them.
  */
 #define CI_SELF_OFFSET          0
 #define CI_CURTHREAD_OFFSET     8
+#define CI_KSTACK_OFFSET        16
+#define CI_USCRATCH_OFFSET      24
 
 struct cpu_info {
         struct cpu_info *ci_self;       /* must be first: read via %gs:0 */
         struct kthread  *ci_curthread;  /* read via %gs:8 */
+        uint64_t        ci_kstack;      /* curthread's stack top, %gs:16 */
+        uint64_t        ci_uscratch;    /* user %rsp at syscall, %gs:24 */
+        struct hat      *ci_hat;        /* user address space loaded */
         uint32_t        ci_cpuid;       /* kernel processor number */
         uint32_t        ci_lapic_id;
         volatile uint32_t ci_flags;

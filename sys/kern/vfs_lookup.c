@@ -35,6 +35,7 @@
 #include <sys/errno.h>
 #include <sys/kmem.h>
 #include <sys/pathname.h>
+#include <sys/proc.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <sys/vfs.h>
@@ -106,6 +107,9 @@ lookuppn(const char *path, int follow, struct vnode *startdir,
         }
         memcpy(pn, path, len + 1);
 
+        /* Relative names start at startdir, or the current directory. */
+        if (startdir == NULL && pn[0] != '/')
+                startdir = curproc->p_cdir;
         cur = (pn[0] == '/' || startdir == NULL) ? rootdir : startdir;
         VN_HOLD(cur);
 

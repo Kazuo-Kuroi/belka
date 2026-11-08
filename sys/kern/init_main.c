@@ -13,6 +13,7 @@
 #include <sys/buf.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
+#include <sys/proc.h>
 #include <sys/smp.h>
 #include <sys/systm.h>
 #include <sys/uadmin.h>
@@ -22,6 +23,8 @@
 #include <machine/intr.h>
 #include <machine/param.h>
 
+#include <vm/anon.h>
+#include <vm/as.h>
 #include <vm/hat.h>
 #include <vm/kva.h>
 #include <vm/page.h>
@@ -68,6 +71,9 @@ main(void)
         vn_sysinit();
         binit();
         vfs_init();
+        anon_init();
+        as_init();
+        proc_init();
         if (vfs_mountroot("tmpfs", NULL) != 0)
                 panic("cannot mount the root file system");
 

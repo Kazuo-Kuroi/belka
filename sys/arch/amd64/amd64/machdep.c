@@ -22,6 +22,7 @@
 #include <machine/bootinfo.h>
 #include <machine/cpu.h>
 #include <machine/cpufunc.h>
+#include <machine/fpu.h>
 #include <machine/md_var.h>
 #include <machine/segments.h>
 #include <machine/trap.h>
@@ -208,6 +209,8 @@ md_stacks_init(void)
 {
         for (int i = 1; i <= NIST; i++)
                 cpu_set_ist(&cpu_info_primary, i, kstack_alloc(KM_SLEEP));
+        /* With memory allocation up: user floating-point state. */
+        fpu_init();
 }
 
 static volatile int md_recurse_limit = 1 << 30;

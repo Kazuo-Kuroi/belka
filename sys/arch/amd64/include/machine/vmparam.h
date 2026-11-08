@@ -14,6 +14,14 @@
  * The lower half of the address space is for user processes and is
  * empty in the kernel's page tables, so a stray low address faults.
  *
+ * User space runs from VM_USER_MIN, above an unmapped page 0, to
+ * VM_USER_MAX, one page short of the end of the lower half: a program
+ * can then never execute a system call in the last page, whose return
+ * address would not be canonical (sysret faults in the kernel on one).
+ * The stack ends at USRSTACK and is VM_STACK_SIZE long, all of it mapped
+ * demand-zero at exec as in UnixWare. mmap() places mappings without a
+ * fixed address from VM_MMAP_BASE upwards.
+ *
  * The direct map keeps the boot loader's base, so that pointers into it
  * made before the kernel's page tables existed stay valid afterwards.
  * Only RAM is direct-mapped, write-back; device memory is mapped in KVA
@@ -39,6 +47,12 @@
 #define KVA_LAPIC       (KVA_BASE + 0 * 4096)
 #define KVA_FIXED_END   (KVA_BASE + UINT64_C(0x200000))
 #define KERNBASE        UINT64_C(0xffffffff80000000)
+
+#define VM_USER_MIN     UINT64_C(0x0000000000001000)
+#define VM_USER_MAX     UINT64_C(0x00007ffffffff000)
+#define USRSTACK        VM_USER_MAX
+#define VM_STACK_SIZE   UINT64_C(0x0000000000800000)    /* 8 MB */
+#define VM_MMAP_BASE    UINT64_C(0x0000100000000000)
 
 extern vaddr_t dmap_base;
 

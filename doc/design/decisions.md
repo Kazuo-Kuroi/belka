@@ -443,6 +443,108 @@ Recorded 2026-11-07.
   clustering and read-ahead, vnode shaking, and a pager to clean pages
   under memory pressure.
 
+## User processes (2026-11-08)
+
+- **System calls** enter through `syscall` and leave through `sysretq`.
+  `iretq` is used instead whenever the frame no longer describes an
+  ordinary user context (exec, or a non-canonical %rip).
+  - The native table uses UnixWare's numbers, with arguments in %rdi,
+    %rsi, %rdx, %r10, %r8 and %r9.
+  - Results follow the System V convention: on success the carry flag is
+    clear and %rax and %rdx hold two values (%rdx defaults to the
+    caller's own); on failure the carry is set and %rax holds the errno.
+  - fork returns the other process's id, with 1 in %rdx in the child.
+    getpid returns the parent's id in %rdx. The old wait returns the pid
+    and status word.
+  - Numbers without a handler fail with EINVAL; UnixWare would also post
+    SIGSYS, which comes with signals.
+- **The calls so far:** exit, fork and fork1, read, write, pread,
+  pwrite, open, creat, close, lseek, dup, fcntl, ioctl (always ENOTTY),
+  getdents, stat, lstat and fstat (a native 64-bit `struct stat`),
+  link, unlink, rename, symlink, readlink, mkdir, rmdir, chdir, fchdir,
+  chmod, access, umask, ftruncate, sync, exec and execve, wait and
+  waitsys, brk, mmap, munmap, mprotect, getpid, getuid, getgid, time,
+  gettimeofday, uname, and `__lwp_private`, which sets the %fs base.
+- **Processes and LWPs** are separate structures from the start (SVR4).
+  Each process has exactly one LWP for now, on a kthread of its own
+  that joins fair-share time-sharing on entry.
+  - Process 0 stands for the kernel; its children are the processes it
+    starts with `proc_spawn()`, which are given the console on fds 0 to 2.
+  - Orphans go to process 0, which reaps them as they exit; there is no
+    init yet.
+  - Without signal delivery, a fatal fault ends the process with the
+    status of being killed by the signal UnixWare would send: SIGSEGV
+    for an unmapped or protected address, SIGBUS for an object error,
+    SIGFPE, SIGILL and SIGTRAP. A note goes to the console.
+- **exec** runs static ELF-64 executables only.
+  - Each `PT_LOAD` is a private file mapping, so the text is the page
+    cache's own pages, and the bss is demand-zero.
+  - The stack is all of `VM_STACK_SIZE` (8 MB), demand-zero, below
+    `USRSTACK`, mapped at exec as in UnixWare.
+  - The initial stack follows the AMD64 psABI, and the auxiliary vector
+    is always present.
+  - Errors after the new image replaces the old kill the process.
+- **Address spaces** follow SVR4: a sorted segment list over a HAT,
+  with the IRIX address-space mrlock (faults shared, layout changes
+  exclusive).
+  - `seg_vn` maps files and anonymous memory, private or shared. Shared
+    writable file mappings are refused until pages written through a
+    mapping can be written back.
+  - Anonymous memory is the SVR4 anon layer: refcounted anons in
+    per-segment maps. fork shares them and write-protects both sides;
+    the first write copies.
+  - Without swap an anon simply owns its page; page identity apart from
+    swap (anonfs) comes with paging.
+- **An anon page is never freed while mapped:** every path unloads a
+  translation before releasing the anon behind it, the copy-on-write
+  fault included. Unloading then tells a page-cache page (whose hold
+  the mapping releases) from an anon page by the page's identity.
+- **read and write fault their user buffer in** before calling the file
+  system, so the copy inside cannot fault into `VOP_GETPAGE` while the
+  file system holds its own locks.
+- **Mapped page-cache pages** are held by their mappings. A file with
+  mappings cannot be truncated (ETXTBSY), so truncation never meets a
+  mapped page. A reverse map comes with the pager.
+- **User page tables:** each address space has a PML4 sharing the
+  kernel half. Its translations are non-global, so a %cr3 load flushes
+  them. Each hat records which processors have it loaded, and
+  invalidations go only to those.
+  - Kernel threads run on the kernel's tables, so a dead address space
+    is loaded nowhere.
+  - SMEP is enabled where present. SMAP is not, since it needs
+    `stac`/`clac` around the copy routines.
+- **User state** is switched eagerly: FPU and vector registers with
+  XSAVE (x87, SSE, AVX) or FXSAVE, a page per LWP, plus the %fs base.
+  - The kernel is built without SSE, so the registers only ever hold user
+    state.
+  - An LWP's user trap frame sits at the top of its kernel stack, where
+    TSS.RSP0 points while it runs.
+- **copyin, copyout and copyinstr** check the range against the end of
+  user space and set a per-thread recovery point. A fault there is
+  resolved through the address space when it can be; otherwise the
+  routine returns EFAULT.
+- **NMI, double fault and machine check** decide on swapgs from
+  `MSR_GSBASE`, since they can arrive between a swapgs and the return
+  to user mode.
+- **Tests:** small freestanding programs (`usr/tests`) are built with
+  the host compiler against the kernel's own ABI headers and put in
+  `/bin` of the test images.
+  - `utest` checks the calls from the inside: fork and copy on write
+    (both directions), exec with argv, envp and auxv, every fault kind,
+    files, mmap, the FPU state across preemption, and TLS.
+  - The kernel runs it alone and four at a time, twice. Afterwards the
+    objects processes use (proc, lwp, file, as, seg, anon, hat, and so
+    on) must be back to their earlier counts, pages may grow only by kmem
+    high-water slack, and the file system must still unmount.
+  - A kernel-side unit test drives the address-space layer directly:
+    faults, a split by unmapping a hole, protection, and fork's
+    copy-on-write.
+  - `test-fault` and `test-apfault` now require the panic they provoke,
+    so an unrelated panic can no longer pass as the expected one.
+- **Not yet:** signals, multiple LWPs, dynamic linking, init and
+  sessions, device special files (the console is a private vnode),
+  pipes, credentials beyond the kernel's, and resource limits.
+
 ## File systems
 
 1. **tmpfs**, for testing.
@@ -455,7 +557,9 @@ Recorded 2026-11-07.
 ## ABI
 
 - **Native ABI:** AMD64 System V psABI, with system calls entered through
-  the `syscall` instruction.
+  the `syscall` instruction. Results come back System V style: carry
+  clear with two values in %rax and %rdx, or carry set with the errno in
+  %rax (see User processes above).
 - **System call numbers and errno values** follow UnixWare where
   practical.
 - **Space is reserved** for a later UnixWare i386 ABI personality: its
