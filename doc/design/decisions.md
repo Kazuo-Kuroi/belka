@@ -104,8 +104,12 @@ Recorded 2026-11-07.
 - **Classic SVR4 STREAMS** with multiprocessor synchronisation. The
   "next-generation STREAMS" redesign is deferred.
 - **Network stack:** the UnixWare architecture (TCP/IP as STREAMS
-  modules over DLPI drivers). See the open question below on the socket
-  interface.
+  modules over DLPI drivers).
+- **Socket interface** (decided 2026-11-07): a kernel socket layer that
+  translates socket calls into TPI messages to the STREAMS transport
+  providers, in the manner of later Solaris `sockfs`. UnixWare 2's
+  user-library emulation over TLI and `sockmod` is not used. mlibc sees
+  ordinary socket system calls.
 
 ## Userland and scope
 
@@ -115,10 +119,6 @@ Recorded 2026-11-07.
 
 ## Open questions
 
-- **Socket interface.** UnixWare 2 implements sockets in a user library
-  over TLI and `sockmod`. A kernel-side socket layer that translates to
-  TPI (as later Solaris `sockfs` does) would keep the STREAMS stack while
-  making the mlibc port and NetBSD network drivers easier to support.
 - **NetBSD network drivers under DLPI.** Imported drivers expect `ifnet`.
   A shim from `ifnet` to DLPI is needed whichever socket interface is
   chosen.
