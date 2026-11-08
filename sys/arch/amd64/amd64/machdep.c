@@ -38,6 +38,7 @@
 #include <vm/page.h>
 
 #include "dev/ic/ns16550var.h"
+#include "dev/pci/pcivar.h"
 
 #define CONSOLE_IOBASE  0x3f8   /* COM1 */
 #define CONSOLE_SPEED   115200
@@ -658,6 +659,12 @@ md_selftest(void)
         }
 
         return failures;
+}
+
+void
+configure(void)
+{
+        pci_init();
 }
 
 /*

@@ -13,6 +13,7 @@ object locks below.
 
 | Lock | Protects | Notes |
 |---|---|---|
+| `blkdev_lock` (`kern/subr_blkdev.c`) | the block device registry | Held only while registering or looking up. |
 | `intr_mutex` (`arch/amd64/amd64/intr.c`) | the interrupt source table and handler lists, for changes | Held across `smp_call_all()` and `delay()` in `intr_disestablish()`; never taken from an interrupt. |
 
 ## Spin locks
@@ -25,6 +26,8 @@ Listed roughly from outermost to innermost.
 | `kt_lock`, one per thread (`kern/kern_kthread.c`) | the thread's state, priority, run queue membership, wait channel | sync object locks | Held across a context switch by the thread leaving, and released by the next thread in `sched_finish()`. Never hold two, except the switch handover. |
 | `wt_lock` (`kern/sched_ts.c`) | the time-share active job list and every job's thread list | `kt_lock` | Redistribution holds it and only try-locks threads, leaving a busy thread for the next tick. |
 | `rq_lock`, one per processor (`sys/sched.h`) | that processor's run queue | `kt_lock` | Code holding `rq_lock` takes a `kt_lock` only with `spin_trylock()`. Never hold two run queue locks. |
+| `vq_lock`, one per virtqueue (`dev/virtio/virtio.c`) | the rings, free list, and cookies | nothing | The completion callback runs under it and may only wake threads (`sema`, `sv` locks nest inside). Submitters wait for space with `sv_wait()` on it. |
+| `pci_conf_lock` (`arch/amd64/amd64/pci_machdep.c`) | the legacy 0xcf8/0xcfc pair; ECAM bus mappings | nothing | |
 | `io_lock`, one per I/O APIC (`arch/amd64/amd64/ioapic.c`) | the select/window register pair | nothing | Taken from the hardware interrupt to mask a line. |
 | `callout_lock` (`kern/kern_timeout.c`) | the callout list | nothing | Released while a callout function runs. |
 | `zombie_lock`, `allthreads_lock` (`kern/kern_kthread.c`) | exited threads; the list of all threads | nothing | |

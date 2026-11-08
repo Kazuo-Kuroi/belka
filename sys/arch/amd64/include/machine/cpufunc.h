@@ -36,6 +36,21 @@ inb(uint16_t port)
 }
 
 static inline void
+outl(uint16_t port, uint32_t value)
+{
+        __asm__ __volatile__("outl %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static inline uint32_t
+inl(uint16_t port)
+{
+        uint32_t value;
+
+        __asm__ __volatile__("inl %1, %0" : "=a"(value) : "Nd"(port));
+        return value;
+}
+
+static inline void
 disable_intr(void)
 {
         __asm__ __volatile__("cli" : : : "memory");
@@ -82,6 +97,8 @@ read_rflags(void)
 
 void outb(uint16_t, uint8_t);
 uint8_t inb(uint16_t);
+void outl(uint16_t, uint32_t);
+uint32_t inl(uint16_t);
 void disable_intr(void);
 void enable_intr(void);
 void cpu_halt(void);

@@ -270,6 +270,35 @@ Recorded 2026-11-07.
   values from user processes, batch (Miser), gang, and the frame
   scheduler.
 
+## PCI and virtio (2026-11-08)
+
+- **Configuration space** through ECAM from the ACPI MCFG table, each
+  bus's megabyte mapped uncached on first use; the legacy 0xcf8/0xcfc
+  mechanism if there is no MCFG.
+- **Enumeration** walks from bus 0 through PCI-to-PCI bridges, sizes
+  BARs with decoding off, and keeps the firmware's assignments.
+- **MSI-X** is the interrupt mechanism for PCI devices (no AML, so no
+  `_PRT` routing for INTx yet). Each entry gets its own vector and
+  interrupt thread through `intr_establish_msi()`, delivered to the
+  bootstrap processor.
+- **Drivers** match from a static table for now; the names (match,
+  attach, softc) are chosen to grow into the planned NetBSD-style
+  autoconfiguration.
+- **Virtio**: the modern (1.x) PCI interface only, located through the
+  vendor capabilities; transitional devices work through it, legacy-only
+  ones are refused. Split virtqueues of up to 128 entries, rings in
+  page-allocator pages, one MSI-X vector per queue. Buffers are
+  translated page by page, so any kernel virtual address works.
+- **virtio-blk** (`vioblk`) registers as `vd0`, `vd1`, ... in a minimal
+  block device registry (`<sys/blkdev.h>`): synchronous read, write, and
+  flush, split at 64 KB. The buffer cache and asynchronous I/O come with
+  the VFS.
+- **errno** values (`<sys/errno.h>`) are the System V i386 ABI numbers
+  as UnixWare uses them.
+- **Test disk:** `tools/mkdisk.c` writes an 8 MB image with a
+  per-sector pattern; every QEMU run attaches it as a modern-only
+  virtio-blk device.
+
 ## File systems
 
 1. **tmpfs**, for testing.

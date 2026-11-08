@@ -57,6 +57,7 @@ main(void)
         cpu_boot_secondary_processors();
         bootloader_reclaim();
         spl0();
+        configure();
 
         failures = selftest_run();
         if (failures != 0)

@@ -52,6 +52,12 @@ void md_stacks_init(void);
  */
 void intr_init(void);
 
+/*
+ * Machine-dependent: find and attach devices. Runs in thread0 once the
+ * scheduler, interrupts, and every processor are up.
+ */
+void configure(void);
+
 /* Busy-wait for at least the given number of microseconds. */
 void drv_usecwait(unsigned long);
 

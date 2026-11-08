@@ -26,6 +26,9 @@ make test-reboot        # reboot through the ACPI reset register
 make test-all           # every test above
 ```
 
+Every QEMU run attaches `build/test-disk.img`, an 8 MB disk with a known
+pattern in each sector, as a virtio block device (`vd0`); it is built by
+`tools/mkdisk.c` with the host compiler (`HOSTCC`, default `cc`).
 `SMP=n` and `MEM=size` set the guest's processors and memory.
 `make INLINE_ASM=no` builds the out-of-line fallbacks for every inline
 assembly primitive, which is what a compiler without GNU extensions
@@ -40,6 +43,8 @@ downloads a pinned, checksummed Limine release into `build/`.
 | `sys/libkern` | freestanding C library routines |
 | `sys/sys` | machine-independent headers (`<sys/...>`) |
 | `sys/dev/ic` | drivers for chips, independent of the bus |
+| `sys/dev/acpi`, `sys/dev/pci` | ACPI tables, PCI bus support |
+| `sys/dev/virtio` | virtio transport, virtqueues, and drivers |
 | `sys/arch/amd64/amd64` | amd64 machine-dependent code |
 | `sys/arch/amd64/include/machine` | amd64 headers (`<machine/...>`) |
 | `sys/arch/amd64/conf` | source lists and linker script |

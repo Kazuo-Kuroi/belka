@@ -49,6 +49,7 @@ static void selftest_atomic(void);
 static void selftest_spinlock(void);
 static void selftest_mp(void);
 int selftest_sched(void);
+int selftest_dev(void);
 static void selftest_clock(void);
 static void selftest_kmem(void);
 static void selftest_kva(void);
@@ -673,5 +674,6 @@ selftest_run(void)
         selftest_clock();
         selftest_mp();
         selftest_failures += selftest_sched();
+        selftest_failures += selftest_dev();
         return selftest_failures + md_selftest();
 }

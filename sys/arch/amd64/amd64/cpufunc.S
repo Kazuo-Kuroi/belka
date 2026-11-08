@@ -243,3 +243,18 @@ ENTRY(cpu_curthread)
         movq    %gs:8, %rax
         ret
 END(cpu_curthread)
+
+/* void outl(uint16_t port, uint32_t value) */
+ENTRY(outl)
+        movl    %edi, %edx
+        movl    %esi, %eax
+        outl    %eax, %dx
+        ret
+END(outl)
+
+/* uint32_t inl(uint16_t port) */
+ENTRY(inl)
+        movl    %edi, %edx
+        inl     %dx, %eax
+        ret
+END(inl)

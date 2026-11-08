@@ -86,6 +86,12 @@ struct intrsource {
         volatile uint64_t is_count;     /* hardware interrupts */
 };
 
+#define INTR_NOGSI      UINT32_MAX      /* message-signalled source */
+
+/* MSI message address: the local APIC window, physical destination. */
+#define MSI_ADDR_BASE   UINT64_C(0xfee00000)
+#define MSI_ADDR_DEST_SHIFT 12
+
 static struct intrsource *volatile intr_sources[NIDT];
 static int intr_next_vector = DEVICE_VECTOR_FIRST;
 static struct mutex intr_mutex;
@@ -139,7 +145,7 @@ intr_device(struct intrsource *src)
                                 ih->ih_count++;
                 }
         } else {
-                if (src->is_level)
+                if (src->is_level && src->is_gsi != INTR_NOGSI)
                         ioapic_mask(src->is_gsi);
                 vsema(&src->is_sema);
         }
@@ -168,7 +174,7 @@ intr_thread(void *arg)
                                 ih->ih_count++;
                 }
                 atomic_store_32(&src->is_busy, 0);
-                if (src->is_level)
+                if (src->is_level && src->is_gsi != INTR_NOGSI)
                         ioapic_unmask(src->is_gsi);
         }
 }
@@ -206,7 +212,8 @@ intr_establish(int irq, int flags, int (*fn)(void *), void *arg,
 
         mutex_lock(&intr_mutex);
         for (int v = DEVICE_VECTOR_FIRST; v < intr_next_vector; v++) {
-                if (intr_sources[v] != NULL && intr_sources[v]->is_gsi == gsi) {
+                if (intr_sources[v] != NULL && intr_sources[v]->is_gsi == gsi &&
+                    gsi != INTR_NOGSI) {
                         src = intr_sources[v];
                         break;
                 }
@@ -282,7 +289,7 @@ intr_disestablish(void *cookie)
                         break;
                 }
         }
-        if (src->is_handlers == NULL)
+        if (src->is_handlers == NULL && src->is_gsi != INTR_NOGSI)
                 ioapic_mask(src->is_gsi);
 
         /*
@@ -295,6 +302,54 @@ intr_disestablish(void *cookie)
                 delay(1);
         mutex_unlock(&intr_mutex);
         kmem_free(ih, sizeof(*ih));
+}
+
+/*
+ * Message-signalled interrupts get a source of their own, with no I/O
+ * APIC pin. The message targets the bootstrap processor's local APIC in
+ * physical mode, fixed delivery, edge-triggered.
+ */
+void *
+intr_establish_msi(int flags, int (*fn)(void *), void *arg,
+    const char *name, uint64_t *addrp, uint32_t *datap)
+{
+        struct intrsource *src;
+        struct intrhand *ih;
+        uint32_t dest = cpu_info_primary.ci_lapic_id;
+
+        if (dest > 0xff)
+                return NULL;            /* needs interrupt remapping */
+        mutex_lock(&intr_mutex);
+        if (intr_next_vector > DEVICE_VECTOR_LAST) {
+                mutex_unlock(&intr_mutex);
+                return NULL;
+        }
+        src = kmem_zalloc(sizeof(*src), KM_SLEEP);
+        src->is_gsi = INTR_NOGSI;
+        src->is_vector = intr_next_vector++;
+        src->is_fast = (flags & INTR_FAST) != 0;
+        sema_init(&src->is_sema, 0, "intr");
+        if (!src->is_fast) {
+                char tname[KT_NAMELEN];
+
+                snprintf(tname, sizeof(tname), "msi%d", src->is_vector);
+                src->is_thread = kthread_create(intr_thread, src, PRI_INTR,
+                    tname);
+                (void)kthread_setclass(src->is_thread, SCHED_FIFO, PRI_INTR);
+        }
+        ih = kmem_zalloc(sizeof(*ih), KM_SLEEP);
+        ih->ih_fn = fn;
+        ih->ih_arg = arg;
+        ih->ih_src = src;
+        ih->ih_name = name;
+        src->is_handlers = ih;
+        membar_producer();
+        intr_sources[src->is_vector] = src;
+        mutex_unlock(&intr_mutex);
+
+        *addrp = MSI_ADDR_BASE | ((uint64_t)dest << MSI_ADDR_DEST_SHIFT);
+        *datap = (uint32_t)src->is_vector;
+        return ih;
 }
 
 uint64_t

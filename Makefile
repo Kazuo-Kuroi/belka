@@ -36,6 +36,13 @@ LIMINE_VERSION  := 11.2.1
 LIMINE_DIR      := build/limine-$(LIMINE_VERSION)
 OVMF_CODE       ?= /usr/share/OVMF/OVMF_CODE_4M.fd
 
+# A test disk with a known pattern in every sector, attached as a
+# modern-only virtio block device. Tests write only to its last 384
+# sectors, so the pattern elsewhere survives from run to run.
+HOSTCC          ?= cc
+DISK            := build/test-disk.img
+MKDISK          := build/tools/mkdisk
+
 KERNEL          := $(BUILD)/belka
 ISO             := $(BUILD)/belka.iso
 TEST_ISO        := $(BUILD)/belka-test.iso
@@ -99,7 +106,7 @@ $(LIMINE_DIR)/.stamp: tools/fetch-limine.sh
 iso: $(ISO)
 
 # mkiso.sh kernel limine-dir timeout cmdline output
-ISO_DEPS        := $(KERNEL) $(LIMINE_DIR)/.stamp tools/mkiso.sh
+ISO_DEPS        := $(KERNEL) $(LIMINE_DIR)/.stamp tools/mkiso.sh $(DISK)
 
 $(ISO): $(ISO_DEPS)
 	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 3 "" $@
@@ -122,13 +129,23 @@ $(UAF_ISO): $(ISO_DEPS)
 $(REBOOT_ISO): $(ISO_DEPS)
 	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testreboot" $@
 
+
+$(MKDISK): tools/mkdisk.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -O2 -o $@ tools/mkdisk.c
+
+$(DISK): $(MKDISK)
+	$(MKDISK) $@
+
 QEMU            ?= qemu-system-x86_64
 QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
                    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
                    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+                   -drive file=$(DISK),if=none,id=vd0,format=raw \
+                   -device virtio-blk-pci,drive=vd0,disable-legacy=on \
                    -display none -no-reboot
 
-run: $(ISO)
+run: $(ISO) $(DISK)
 	$(QEMU) $(QEMU_FLAGS) -cdrom $(ISO) -serial mon:stdio
 
 # The kernel reports its result through the QEMU debug-exit device:

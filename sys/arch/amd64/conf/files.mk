@@ -25,13 +25,19 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_timeout.c \
                    sys/kern/sched_rt.c \
                    sys/kern/sched_ts.c \
+                   sys/kern/subr_blkdev.c \
                    sys/kern/subr_prf.c \
                    sys/kern/subr_selftest.c \
                    sys/kern/subr_selftest_sched.c \
+                   sys/kern/subr_selftest_dev.c \
                    sys/libkern/string.c \
                    sys/vm/vm_kva.c \
                    sys/vm/vm_page.c \
                    sys/dev/acpi/acpi.c \
+                   sys/dev/pci/pci.c \
+                   sys/dev/virtio/virtio.c \
+                   sys/dev/virtio/virtio_pci.c \
+                   sys/dev/virtio/vioblk.c \
                    sys/dev/ic/ns16550.c
 
 MD_SRCS         := sys/arch/amd64/amd64/locore.S \
@@ -44,6 +50,7 @@ MD_SRCS         := sys/arch/amd64/amd64/locore.S \
                    sys/arch/amd64/amd64/intr.c \
                    sys/arch/amd64/amd64/ioapic.c \
                    sys/arch/amd64/amd64/acpi_machdep.c \
+                   sys/arch/amd64/amd64/pci_machdep.c \
                    sys/arch/amd64/amd64/lapic.c \
                    sys/arch/amd64/amd64/limine_boot.c \
                    sys/arch/amd64/amd64/machdep.c \

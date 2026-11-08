@@ -33,6 +33,15 @@
 void *intr_establish(int, int, int (*)(void *), void *, const char *);
 void intr_disestablish(void *);
 
+/*
+ * Attach a handler to a newly allocated message-signalled interrupt.
+ * Returns a cookie, and the address and data the device must write to
+ * raise it, or NULL if no vector is free. Only INTR_FAST is meaningful
+ * in flags; message-signalled interrupts are edge-triggered.
+ */
+void *intr_establish_msi(int, int (*)(void *), void *, const char *,
+    uint64_t *, uint32_t *);
+
 /* Times the handler claimed an interrupt. */
 uint64_t intr_handler_count(const void *);
 
