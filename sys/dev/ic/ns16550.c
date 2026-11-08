@@ -21,6 +21,7 @@
 #define TX_SPIN_LIMIT   100000
 
 static void ns16550_putc(struct consdev *, int);
+static void ns16550_flush(struct consdev *);
 
 static void
 ns16550_putc(struct consdev *cp, int c)
@@ -38,6 +39,21 @@ ns16550_putc(struct consdev *cp, int c)
         outb(sc->sc_iobase + COM_DATA, (uint8_t)c);
 }
 
+/* Wait for the FIFO and shift register to drain. */
+static void
+ns16550_flush(struct consdev *cp)
+{
+        struct ns16550_softc *sc = cp->cn_private;
+
+        if (sc->sc_present == 0)
+                return;
+        for (int spin = 0; spin < TX_SPIN_LIMIT; spin++) {
+                if ((inb(sc->sc_iobase + COM_LSR) & LSR_TSRE) != 0)
+                        break;
+                cpu_spinwait();
+        }
+}
+
 /*
  * Program the UART at iobase for speed bps, 8 data bits, no parity, one
  * stop bit, with FIFOs enabled and interrupts off, and make it the
@@ -51,6 +67,7 @@ ns16550_cninit(struct ns16550_softc *sc, uint16_t iobase, unsigned int bps)
         sc->sc_iobase = iobase;
         sc->sc_present = 0;
         sc->sc_cons.cn_putc = ns16550_putc;
+        sc->sc_cons.cn_flush = ns16550_flush;
         sc->sc_cons.cn_private = sc;
         sc->sc_cons.cn_name = "com";
 

@@ -24,6 +24,7 @@ int vprintf(const char *, va_list) __printflike(1, 0);
 int snprintf(char *, size_t, const char *, ...) __printflike(3, 4);
 int vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
 void panic(const char *, ...) __dead __printflike(1, 2);
+extern const char *volatile panicstr;  /* format of the first panic */
 
 /* libkern/string.c */
 void *memcpy(void *, const void *, size_t);

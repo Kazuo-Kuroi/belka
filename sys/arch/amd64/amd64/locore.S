@@ -32,3 +32,21 @@ boot_stack:
         .skip   BOOT_STACK_SIZE
         .globl  boot_stack_top
 boot_stack_top:
+
+/*
+ * void stack_switch_call(uint64_t top, void (*fn)(void *), void *arg)
+ *
+ * Switch to the stack whose top is given and call fn(arg) there, with
+ * no frame to return to. Used to move a processor off the boot
+ * loader's stack.
+ */
+ENTRY(stack_switch_call)
+        movq    %rdi, %rsp
+        xorl    %ebp, %ebp
+        movq    %rdx, %rdi
+        call    *%rsi
+2:
+        cli
+        hlt
+        jmp     2b
+END(stack_switch_call)

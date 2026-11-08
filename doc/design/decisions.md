@@ -85,6 +85,29 @@ Recorded 2026-11-07.
   pages' identity (the IRIX behaviour), per-node locks, and nodes from
   ACPI SRAT.
 
+## Multiprocessor start-up and spin locks (2026-11-07)
+
+- **Spin locks** are test-and-test-and-set. Acquiring raises to splhi
+  and returns the previous level as a cookie (`s = spin_lock(&l)`,
+  `spin_unlock(&l, s)`), and interrupts stay enabled between attempts
+  when they were enabled on entry, as in IRIX. Queued locks were
+  rejected because they cannot let interrupts in while waiting. Locks
+  record their holder; recursion, a foreign release, and a wait of 2^32
+  polls panic.
+- **Interrupt levels:** `splhi()` and `splx()` only. Device interrupts
+  will be threads, so device priorities collapse into splhi.
+- **Secondary processors** are started through the Limine MP feature.
+  Each gets a 16 KB kernel stack and three interrupt stacks from the page
+  allocator, its own GDT and TSS, and a `cpu_info` in
+  `cpu_info_store[]`.
+- **Until the local APIC is driven**, secondary processors poll in an
+  idle loop with interrupts disabled. `smp_call_all()` and
+  `cpu_halt_others()` post requests that loop reads. They will become
+  IPIs, as IRIX's per-processor action queues are, without changing the
+  interface.
+- **Panic** stops every other processor and bypasses the console lock.
+- Lock order is kept in [lock-order.md](lock-order.md).
+
 ## File systems
 
 1. **tmpfs**, for testing.

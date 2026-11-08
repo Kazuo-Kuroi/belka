@@ -13,7 +13,7 @@
 #   WERROR      yes to treat warnings as errors
 #   SMP         number of CPUs given to QEMU (default 4)
 #
-# Targets: all, iso, run, test, test-fault, limine, clean, distclean.
+# Targets: all, iso, run, test, test-fault, test-apfault, limine, clean, distclean.
 #
 
 ARCH            ?= amd64
@@ -39,6 +39,7 @@ KERNEL          := $(BUILD)/belka
 ISO             := $(BUILD)/belka.iso
 TEST_ISO        := $(BUILD)/belka-test.iso
 FAULT_ISO       := $(BUILD)/belka-fault.iso
+APFAULT_ISO     := $(BUILD)/belka-apfault.iso
 
 INCLUDES        := -nostdinc -isystem $(CC_INCLUDE) \
                    -Isys -Isys/arch/$(ARCH)/include -Isys/external
@@ -67,7 +68,7 @@ LDFLAGS         := -nostdlib -static -z max-page-size=0x1000 \
 SRCS            := $(MI_SRCS) $(MD_SRCS)
 OBJS            := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS)))
 
-.PHONY: all iso run test test-fault limine clean distclean
+.PHONY: all iso run test test-fault test-apfault limine clean distclean
 
 all: $(KERNEL)
 
@@ -104,6 +105,9 @@ $(TEST_ISO): $(ISO_DEPS)
 $(FAULT_ISO): $(ISO_DEPS)
 	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testfault" $@
 
+$(APFAULT_ISO): $(ISO_DEPS)
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testapfault" $@
+
 QEMU            ?= qemu-system-x86_64
 QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
                    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
@@ -116,7 +120,8 @@ run: $(ISO)
 # The kernel reports its result through the QEMU debug-exit device:
 # QEMU exits with 33 after a clean halt and 35 after a panic. "test"
 # expects a clean run; "test-fault" makes the kernel touch an unmapped
-# address and expects the resulting panic.
+# address and expects the resulting panic; "test-apfault" does the same
+# on a secondary processor.
 test: $(TEST_ISO)
 	sh tools/qemu-test.sh pass $(BUILD)/test-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(TEST_ISO)
@@ -124,6 +129,10 @@ test: $(TEST_ISO)
 test-fault: $(FAULT_ISO)
 	sh tools/qemu-test.sh panic $(BUILD)/test-fault-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(FAULT_ISO)
+
+test-apfault: $(APFAULT_ISO)
+	sh tools/qemu-test.sh panic $(BUILD)/test-apfault-serial.log \
+	    $(QEMU) $(QEMU_FLAGS) -cdrom $(APFAULT_ISO)
 
 clean:
 	rm -rf $(BUILD)

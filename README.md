@@ -19,8 +19,10 @@ make TOOLCHAIN=clang    # build with Clang and ld.lld
 make run                # boot in QEMU with the serial console on stdio
 make test               # boot, run the self-tests, and report PASS/FAIL
 make test-fault         # boot, force a page fault, expect a clean panic
+make test-apfault       # the same, on a secondary processor
 ```
 
+`SMP=n` and `MEM=size` set the guest's processors and memory.
 `make INLINE_ASM=no` builds the out-of-line fallbacks for every inline
 assembly primitive, which is what a compiler without GNU extensions
 would use. `WERROR=yes` turns warnings into errors. The first ISO build

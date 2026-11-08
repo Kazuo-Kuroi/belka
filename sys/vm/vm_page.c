@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/spinlock.h>
 #include <sys/systm.h>
 
 #include <machine/param.h>
@@ -32,6 +33,7 @@ struct page_seg {
 };
 
 struct page_node {
+        struct spinlock pn_lock;
         struct page     *pn_free[PAGE_NORDERS];
         size_t          pn_nblocks[PAGE_NORDERS];
         size_t          pn_free_pages;
@@ -182,6 +184,8 @@ page_init(void)
         if (page_segs_dropped != 0)
                 printf("page_init: %d memory ranges ignored\n",
                     page_segs_dropped);
+        for (int n = 0; n < MAXNODES; n++)
+                spinlock_init(&page_nodes[n].pn_lock, "page_node");
 
         for (int i = 0; i < page_nsegs; i++) {
                 struct page_seg *ps = &page_segs[i];
@@ -226,9 +230,7 @@ page_init(void)
 struct page *
 page_alloc_node(int node, unsigned int order, int flags)
 {
-        struct page_node *pn = NULL;
-        struct page *pp;
-        unsigned int o = 0;
+        struct page *pp = NULL;
 
         if (!page_ready)
                 panic("page_alloc: called before page_init");
@@ -238,32 +240,35 @@ page_alloc_node(int node, unsigned int order, int flags)
                 node = 0;
 
         /* Try the preferred node, then the others in order. */
-        for (int i = 0; i < MAXNODES && pn == NULL; i++) {
-                struct page_node *cand = &page_nodes[(node + i) % MAXNODES];
+        for (int i = 0; i < MAXNODES && pp == NULL; i++) {
+                struct page_node *pn = &page_nodes[(node + i) % MAXNODES];
+                unsigned int o;
+                int s;
 
+                if (pn->pn_managed == 0)
+                        continue;
+                s = spin_lock(&pn->pn_lock);
                 for (o = order; o < PAGE_NORDERS; o++) {
-                        if (cand->pn_free[o] != NULL) {
-                                pn = cand;
+                        if (pn->pn_free[o] != NULL)
                                 break;
-                        }
                 }
+                if (o < PAGE_NORDERS) {
+                        pp = pn->pn_free[o];
+                        page_list_remove(pn, pp, o);
+
+                        /* Split, returning upper halves to the lists. */
+                        while (o > order) {
+                                o--;
+                                page_list_insert(pn, pp + ((size_t)1 << o),
+                                    o);
+                        }
+                        pp->p_flags = PG_ALLOC;
+                        pp->p_order = (uint8_t)order;
+                }
+                spin_unlock(&pn->pn_lock, s);
         }
-        if (pn == NULL)
-                return NULL;
 
-        pp = pn->pn_free[o];
-        page_list_remove(pn, pp, o);
-
-        /* Split, returning the upper halves to the free lists. */
-        while (o > order) {
-                o--;
-                page_list_insert(pn, pp + ((size_t)1 << o), o);
-        }
-
-        pp->p_flags = PG_ALLOC;
-        pp->p_order = (uint8_t)order;
-
-        if ((flags & PA_ZERO) != 0)
+        if (pp != NULL && (flags & PA_ZERO) != 0)
                 memset(page_to_kva(pp), 0, (size_t)PAGESIZE << order);
         return pp;
 }
@@ -284,7 +289,10 @@ page_free(struct page *pp, unsigned int order)
         struct page_node *pn;
         struct page_seg *ps;
         pfn_t pfn;
+        int s;
 
+        pn = &page_nodes[pp->p_node];
+        s = spin_lock(&pn->pn_lock);
         if ((pp->p_flags & PG_ALLOC) == 0)
                 panic("page_free: page %#jx is not allocated",
                     (uintmax_t)page_to_pa(pp));
@@ -293,7 +301,6 @@ page_free(struct page *pp, unsigned int order)
                     "allocated with %u", (uintmax_t)page_to_pa(pp),
                     order, pp->p_order);
 
-        pn = &page_nodes[pp->p_node];
         ps = page_seg_find(pp->p_pfn);
         pfn = pp->p_pfn;
         pp->p_flags = 0;
@@ -314,6 +321,7 @@ page_free(struct page *pp, unsigned int order)
         }
 
         page_list_insert(pn, &ps->ps_pages[pfn - ps->ps_start], order);
+        spin_unlock(&pn->pn_lock, s);
 }
 
 /* Return the struct page for a managed physical address, or NULL. */
@@ -340,11 +348,16 @@ page_get_stats(struct page_stats *st)
 {
         memset(st, 0, sizeof(*st));
         for (int n = 0; n < MAXNODES; n++) {
-                const struct page_node *pn = &page_nodes[n];
+                struct page_node *pn = &page_nodes[n];
+                int s;
 
+                if (pn->pn_managed == 0)
+                        continue;
+                s = spin_lock(&pn->pn_lock);
                 st->ps_managed += pn->pn_managed;
                 st->ps_free += pn->pn_free_pages;
                 for (int o = 0; o < PAGE_NORDERS; o++)
                         st->ps_blocks[o] += pn->pn_nblocks[o];
+                spin_unlock(&pn->pn_lock, s);
         }
 }

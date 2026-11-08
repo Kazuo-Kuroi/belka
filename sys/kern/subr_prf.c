@@ -18,9 +18,12 @@
 #include <stdint.h>
 
 #include <sys/cons.h>
+#include <sys/smp.h>
+#include <sys/spinlock.h>
 #include <sys/systm.h>
 #include <sys/uadmin.h>
 
+#include <machine/atomic.h>
 #include <machine/cpufunc.h>
 
 /* Where formatted characters go. */
@@ -52,7 +55,14 @@ static int prf_number(struct prf_sink *, uintmax_t, int, const char *,
     int, int);
 static int kvprintf(struct prf_sink *, const char *, va_list);
 
-static int panicking;
+/*
+ * prf_lock keeps each printf() call's output together when several
+ * processors print at once. Once the system panics it is ignored,
+ * because its holder may be the processor that failed.
+ */
+static struct spinlock prf_lock = SPINLOCK_INITIALIZER("prf");
+static volatile uint32_t panicking;
+const char *volatile panicstr;
 
 static void
 prf_cons_put(struct prf_sink *ps __unused, int c)
@@ -341,11 +351,22 @@ int
 vprintf(const char *fmt, va_list ap)
 {
         struct prf_sink ps;
+        int count;
+        int s = 0;
+        int locked = 0;
 
         ps.ps_put = prf_cons_put;
         ps.ps_buf = NULL;
         ps.ps_left = 0;
-        return kvprintf(&ps, fmt, ap);
+
+        if (panicstr == NULL) {
+                s = spin_lock(&prf_lock);
+                locked = 1;
+        }
+        count = kvprintf(&ps, fmt, ap);
+        if (locked)
+                spin_unlock(&prf_lock, s);
+        return count;
 }
 
 int
@@ -393,8 +414,10 @@ snprintf(char *buf, size_t size, const char *fmt, ...)
 }
 
 /*
- * Report a fatal error and stop. A panic while panicking stops at once
- * without formatting, in case the formatter itself is at fault.
+ * Report a fatal error and stop the system. Only the first processor to
+ * panic reports; the others stop at once. A nested panic on the same
+ * processor also stops without formatting, in case the formatter itself
+ * is at fault.
  */
 void
 panic(const char *fmt, ...)
@@ -402,12 +425,17 @@ panic(const char *fmt, ...)
         va_list ap;
 
         disable_intr();
-        if (panicking++ == 0) {
-                printf("\npanic: ");
-                va_start(ap, fmt);
-                vprintf(fmt, ap);
-                va_end(ap);
-                printf("\n");
+        if (atomic_swap_32(&panicking, 1) != 0) {
+                for (;;)
+                        cpu_halt();
         }
+        panicstr = fmt;
+        cpu_halt_others();
+
+        printf("\npanic: ");
+        va_start(ap, fmt);
+        vprintf(fmt, ap);
+        va_end(ap);
+        printf("\n");
         mdboot(AD_HALT, 1);
 }

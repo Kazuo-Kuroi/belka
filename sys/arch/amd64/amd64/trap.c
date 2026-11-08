@@ -19,6 +19,7 @@
 #include <sys/compiler.h>
 #include <sys/systm.h>
 
+#include <machine/cpu.h>
 #include <machine/cpufunc.h>
 #include <machine/frame.h>
 #include <machine/frameasm.h>
@@ -167,7 +168,7 @@ trap(struct trapframe *tf)
         }
 
         name = (vector < NEXCEPTIONS) ? trap_names[vector] : "unknown trap";
-        printf("\nfatal %s trap: %s (vector %ju)\n",
+        printf("\ncpu%u: fatal %s trap: %s (vector %ju)\n", cpu_number(),
             user ? "user" : "kernel", name, (uintmax_t)vector);
         if (vector == PGFLT) {
                 printf("fault address %016jx: %s %s, %s\n",

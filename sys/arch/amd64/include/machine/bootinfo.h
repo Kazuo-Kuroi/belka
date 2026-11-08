@@ -15,6 +15,8 @@
 
 #include <stdint.h>
 
+#include <machine/param.h>
+
 #define BOOTMEM_MAX     128     /* memory map entries kept */
 
 enum bootmem_type {
@@ -43,8 +45,10 @@ struct bootinfo {
         uint64_t        bi_kernel_pa;   /* physical load address */
         uint64_t        bi_kernel_va;   /* virtual load address */
         uint64_t        bi_rsdp;        /* ACPI RSDP, direct-map VA, or 0 */
-        uint64_t        bi_ncpu;
+        uint64_t        bi_ncpu;        /* processors listed, at most MAXCPUS */
+        uint64_t        bi_ncpu_dropped; /* processors beyond MAXCPUS */
         uint32_t        bi_bsp_lapic_id;
+        uint32_t        bi_cpu_lapic[MAXCPUS]; /* in boot loader order */
         uint32_t        bi_nmem;        /* entries used in bi_mem */
         uint32_t        bi_mem_dropped; /* entries that did not fit */
         struct bootmem  bi_mem[BOOTMEM_MAX];
@@ -58,6 +62,13 @@ extern struct bootinfo bootinfo;
  * the kernel was built for.
  */
 int limine_boot_collect(struct bootinfo *);
+
+/*
+ * Start the processor at index i of bi_cpu_lapic, which must not be the
+ * bootstrap processor. It calls fn(arg) on a small boot loader stack
+ * with interrupts disabled, and fn must not return.
+ */
+void limine_cpu_start(unsigned int, void (*)(void *), void *);
 
 /* Return nonzero if word appears as a whole word in the command line. */
 int boot_option(const char *);

@@ -61,13 +61,13 @@ idt_init(void)
 
 /*
  * Give processor ci its own GDT and TSS and load them, load the shared
- * IDT, and point the GS base at ci. rsp0 is the stack for entry from
- * user mode, and ist_top holds the tops of the NIST interrupt stacks.
+ * IDT, and point the GS base at ci. ci_stack_top becomes the stack for
+ * entry from user mode, and ci_ist_top holds the interrupt stacks.
  *
  * Interrupts must be disabled.
  */
 void
-cpu_tables_init(struct cpu_info *ci, uint64_t rsp0, const uint64_t *ist_top)
+cpu_tables_init(struct cpu_info *ci)
 {
         ci->ci_self = ci;
 
@@ -81,9 +81,9 @@ cpu_tables_init(struct cpu_info *ci, uint64_t rsp0, const uint64_t *ist_top)
         ci->ci_gdt[GDT_LDT + 1] = 0;
 
         memset(ci->ci_tss, 0, sizeof(ci->ci_tss));
-        tss_set64(ci->ci_tss, TSS_RSP0, rsp0);
+        tss_set64(ci->ci_tss, TSS_RSP0, ci->ci_stack_top);
         for (int i = 1; i <= NIST; i++)
-                tss_set64(ci->ci_tss, TSS_IST(i), ist_top[i - 1]);
+                tss_set64(ci->ci_tss, TSS_IST(i), ci->ci_ist_top[i - 1]);
         /* An I/O map base past the limit means no I/O permission map. */
         ci->ci_tss[TSS_IOBASE] = (uint32_t)TSS_SIZE << 16;
         set_sys_desc(&ci->ci_gdt[GDT_TSS], (uint64_t)(uintptr_t)ci->ci_tss,

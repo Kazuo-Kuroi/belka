@@ -11,9 +11,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/cons.h>
+#include <sys/smp.h>
 #include <sys/systm.h>
 #include <sys/uadmin.h>
 
+#include <machine/atomic.h>
 #include <machine/bootinfo.h>
 #include <machine/cpu.h>
 #include <machine/cpufunc.h>
@@ -42,7 +45,6 @@
 #define UNMAPPED_VA     UINT64_C(0x00007fffdead0000)
 
 struct bootinfo bootinfo;
-struct cpu_info cpu_info_primary;
 vaddr_t dmap_base;
 
 /* Interrupt stacks for the bootstrap processor. */
@@ -64,6 +66,17 @@ static const char *const bootmem_names[] = {
 
 static void print_memory_map(const struct bootinfo *);
 static uint64_t stack_top(const void *, size_t);
+static void md_fault_on_cpu1(void *);
+static void cpu_halt_self_forever(void) __dead;
+
+static void
+cpu_halt_self_forever(void)
+{
+        for (;;) {
+                disable_intr();
+                cpu_halt();
+        }
+}
 
 static void
 print_memory_map(const struct bootinfo *bi)
@@ -101,23 +114,25 @@ void
 amd64_init(void)
 {
         struct bootinfo *bi = &bootinfo;
-        uint64_t ist_top[NIST];
+        struct cpu_info *ci = &cpu_info_primary;
         int collected;
 
-        (void)ns16550_cninit(&console_softc, CONSOLE_IOBASE, CONSOLE_SPEED);
-
         /*
-         * Take over the descriptor tables before anything else can
-         * fault, so that faults are reported instead of resetting the
-         * machine.
+         * Take over the descriptor tables and the GS base first. After
+         * this, faults are reported instead of resetting the machine,
+         * and curcpu() works, which spin locks (and so printf) need.
          */
+        ci->ci_cpuid = 0;
+        ci->ci_flags = CPUF_PRESENT | CPUF_BSP | CPUF_RUNNING;
+        ci->ci_stack_top = stack_top(boot_stack,
+            (size_t)(boot_stack_top - boot_stack));
         for (int i = 0; i < NIST; i++)
-                ist_top[i] = stack_top(bsp_ist_stacks[i],
+                ci->ci_ist_top[i] = stack_top(bsp_ist_stacks[i],
                     sizeof(bsp_ist_stacks[i]));
         idt_init();
-        cpu_tables_init(&cpu_info_primary,
-            stack_top(boot_stack, (size_t)(boot_stack_top - boot_stack)),
-            ist_top);
+        cpu_tables_init(ci);
+
+        (void)ns16550_cninit(&console_softc, CONSOLE_IOBASE, CONSOLE_SPEED);
 
         collected = limine_boot_collect(bi);
         if (collected != 0)
@@ -135,6 +150,7 @@ amd64_init(void)
         printf("ACPI RSDP at %p\n", (void *)(uintptr_t)bi->bi_rsdp);
         printf("processors: %ju (bootstrap LAPIC id %u)\n",
             (uintmax_t)bi->bi_ncpu, bi->bi_bsp_lapic_id);
+        ci->ci_lapic_id = bi->bi_bsp_lapic_id;
         print_memory_map(bi);
 
         /*
@@ -154,10 +170,20 @@ amd64_init(void)
         main();
 }
 
+/* Touch an unmapped address on processor 1 only. */
+static void
+md_fault_on_cpu1(void *arg __unused)
+{
+        if (cpu_number() == 1)
+                *(volatile uint64_t *)(uintptr_t)UNMAPPED_VA = 1;
+}
+
 /*
  * amd64 self-tests: per-processor data and exception delivery. With the
  * "testfault" boot option, finish by touching an unmapped address, which
  * must end in a page-fault panic; the test harness checks for that.
+ * "testapfault" does the same on processor 1, to check that a panic on
+ * a secondary processor stops the system.
  */
 int
 md_selftest(void)
@@ -185,6 +211,14 @@ md_selftest(void)
         if (trap_expect_seen != 2 || trap_expect != -1) {
                 printf("selftest: %d of 2 expected traps seen\n",
                     trap_expect_seen);
+                failures++;
+        }
+
+        if (boot_option("testapfault") && ncpus > 1) {
+                printf("selftest: faulting on cpu1; a page fault panic "
+                    "should follow\n");
+                smp_call_all(md_fault_on_cpu1, NULL);
+                printf("selftest: no fault was raised\n");
                 failures++;
         }
 
@@ -220,20 +254,26 @@ boot_option(const char *word)
 }
 
 /*
- * Stop this processor. Rebooting is not implemented yet, so every
- * function halts. Other processors are not running yet.
+ * Stop the system. Rebooting is not implemented yet, so every function
+ * halts.
  */
 void
 mdboot(int fcn, int status)
 {
-        static int reported;
+        static volatile uint32_t reported;
+
+        disable_intr();
+        cpu_halt_others();
+        if (atomic_swap_32(&reported, 1) != 0)
+                cpu_halt_self_forever();
 
         if (fcn != AD_HALT)
                 printf("mdboot: reboot not implemented, halting\n");
 
         printf("halted\n");
+        cnflush();
 
-        if (reported++ == 0 && boot_option("debugexit"))
+        if (boot_option("debugexit"))
                 outb(DEBUG_EXIT_PORT,
                     status == 0 ? DEBUG_EXIT_PASS : DEBUG_EXIT_FAIL);
 

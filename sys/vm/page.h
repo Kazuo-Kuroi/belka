@@ -21,9 +21,8 @@
  *   object layer; today every free page is anonymous.
  * - Memory is divided into nodes for NUMA. There is one node until ACPI
  *   SRAT parsing exists; page_alloc_node() is already the primitive.
- * - Each node's lists will be protected by a per-node spinlock. Until
- *   the synchronisation primitives exist only the bootstrap processor
- *   runs, with interrupts disabled, and the allocator is unlocked.
+ * - Each node's free lists are protected by a per-node spin lock, so
+ *   allocation is safe from any processor and at splhi.
  */
 
 #ifndef _VM_PAGE_H_

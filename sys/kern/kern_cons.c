@@ -33,3 +33,11 @@ cnputc(int c)
                 cn_tab->cn_putc(cn_tab, '\r');
         cn_tab->cn_putc(cn_tab, c);
 }
+
+/* Wait until everything written to the console has left the device. */
+void
+cnflush(void)
+{
+        if (cn_tab != NULL && cn_tab->cn_flush != NULL)
+                cn_tab->cn_flush(cn_tab);
+}

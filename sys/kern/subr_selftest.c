@@ -12,9 +12,13 @@
 
 #include <stdint.h>
 
+#include <sys/smp.h>
+#include <sys/spinlock.h>
 #include <sys/systm.h>
 
 #include <machine/atomic.h>
+#include <machine/cpu.h>
+#include <machine/intr.h>
 #include <machine/param.h>
 
 #include <vm/page.h>
@@ -33,7 +37,15 @@ static int selftest_failures;
 #define PAGE_STRESS_SLOTS       256
 #define PAGE_STRESS_ROUNDS      20000
 
+#define MP_LOCK_ROUNDS          200000
+#define MP_PAGE_SLOTS           64
+#define MP_PAGE_ROUNDS          20000
+
 static void selftest_atomic(void);
+static void selftest_spinlock(void);
+static void selftest_mp(void);
+static void mp_lock_worker(void *);
+static void mp_page_worker(void *);
 static void selftest_page(void);
 static int page_stats_equal(const struct page_stats *,
     const struct page_stats *);
@@ -286,6 +298,145 @@ selftest_page(void)
         CHECK(page_stats_equal(&before, &after));
 }
 
+/* Single-processor checks of the spin lock interface. */
+static void
+selftest_spinlock(void)
+{
+        struct spinlock lk;
+        int s, s2;
+
+        spinlock_init(&lk, "selftest");
+        CHECK(!spin_held(&lk));
+        s = spin_lock(&lk);
+        CHECK(spin_held(&lk));
+        CHECK(intr_blocked());
+        CHECK(spin_trylock(&lk, &s2) == 0);
+        spin_unlock(&lk, s);
+        CHECK(!spin_held(&lk));
+        CHECK(spin_trylock(&lk, &s2) == 1);
+        CHECK(spin_held(&lk));
+        spin_unlock(&lk, s2);
+}
+
+static struct spinlock mp_lock = SPINLOCK_INITIALIZER("selftest_mp");
+static volatile uint64_t mp_locked_count;
+static volatile uint32_t mp_atomic_count;
+static volatile uint32_t mp_workers;
+static volatile uint64_t mp_seen[MAXCPUS / 64];
+static volatile uint32_t mp_failures;
+
+/*
+ * Every processor increments a counter under the lock with a separate
+ * load and store, so a lock that lets two holders in loses updates.
+ * Every processor also increments an atomic counter without the lock.
+ */
+static void
+mp_lock_worker(void *arg __unused)
+{
+        unsigned int me = cpu_number();
+
+        atomic_inc_32_nv(&mp_workers);
+        atomic_or_64(&mp_seen[me / 64], UINT64_C(1) << (me % 64));
+        if (curcpu()->ci_self != curcpu() || me >= ncpus)
+                atomic_inc_32_nv(&mp_failures);
+
+        for (int i = 0; i < MP_LOCK_ROUNDS; i++) {
+                uint64_t v;
+                int s;
+
+                s = spin_lock(&mp_lock);
+                v = mp_locked_count;
+                mp_locked_count = v + 1;
+                spin_unlock(&mp_lock, s);
+                atomic_inc_32_nv(&mp_atomic_count);
+        }
+}
+
+/*
+ * Every processor allocates and frees pages at random at the same time,
+ * stamping each block with its address to catch blocks handed to two
+ * processors. Its slot table lives in a page of its own.
+ */
+static void
+mp_page_worker(void *arg __unused)
+{
+        uint32_t seed = cpu_number() * 7919u + 1u;
+        struct page *table_page;
+        struct page **slot;
+        unsigned int *order;
+
+        if ((table_page = page_alloc(0, PA_ZERO)) == NULL) {
+                atomic_inc_32_nv(&mp_failures);
+                return;
+        }
+        slot = page_to_kva(table_page);
+        order = (unsigned int *)(void *)&slot[MP_PAGE_SLOTS];
+
+        for (int round = 0; round < MP_PAGE_ROUNDS; round++) {
+                unsigned int i;
+                uint64_t *word;
+
+                seed = seed * 1103515245u + 12345u;
+                i = (seed >> 8) % MP_PAGE_SLOTS;
+                if (slot[i] == NULL) {
+                        seed = seed * 1103515245u + 12345u;
+                        order[i] = (seed >> 8) % 4;
+                        if ((slot[i] = page_alloc(order[i], 0)) == NULL)
+                                continue;
+                        word = page_to_kva(slot[i]);
+                        word[0] = page_to_pa(slot[i]);
+                        word[(PAGESIZE << order[i]) / sizeof(*word) - 1] =
+                            page_to_pa(slot[i]);
+                } else {
+                        word = page_to_kva(slot[i]);
+                        if (word[0] != page_to_pa(slot[i]) ||
+                            word[(PAGESIZE << order[i]) / sizeof(*word) - 1]
+                            != page_to_pa(slot[i]))
+                                atomic_inc_32_nv(&mp_failures);
+                        page_free(slot[i], order[i]);
+                        slot[i] = NULL;
+                }
+        }
+        for (unsigned int i = 0; i < MP_PAGE_SLOTS; i++) {
+                if (slot[i] != NULL)
+                        page_free(slot[i], order[i]);
+        }
+        page_free(table_page, 0);
+}
+
+static void
+selftest_mp(void)
+{
+        struct page_stats before, after;
+        unsigned int n = ncpus;
+        unsigned int seen = 0;
+
+        mp_locked_count = 0;
+        mp_atomic_count = 0;
+        mp_workers = 0;
+        mp_failures = 0;
+        for (unsigned int i = 0; i < MAXCPUS / 64; i++)
+                mp_seen[i] = 0;
+
+        smp_call_all(mp_lock_worker, NULL);
+        CHECK(mp_workers == n);
+        for (unsigned int i = 0; i < MAXCPUS; i++)
+                seen += (mp_seen[i / 64] >> (i % 64)) & 1;
+        CHECK(seen == n);
+        CHECK(mp_locked_count == (uint64_t)n * MP_LOCK_ROUNDS);
+        CHECK(mp_atomic_count == n * MP_LOCK_ROUNDS);
+
+        page_get_stats(&before);
+        smp_call_all(mp_page_worker, NULL);
+        page_get_stats(&after);
+        CHECK(page_stats_equal(&before, &after));
+
+        CHECK(mp_failures == 0);
+        printf("selftest: %u processors: %ju locked increments, "
+            "%u atomic\n", n, (uintmax_t)mp_locked_count,
+            mp_atomic_count);
+}
+
 /* Run all self-tests and return the number of failed checks. */
 int
 selftest_run(void)
@@ -295,5 +446,7 @@ selftest_run(void)
         selftest_prf();
         selftest_string();
         selftest_page();
+        selftest_spinlock();
+        selftest_mp();
         return selftest_failures + md_selftest();
 }

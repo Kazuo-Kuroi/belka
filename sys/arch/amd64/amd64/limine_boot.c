@@ -21,8 +21,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/systm.h>
+
 #include <limine/limine.h>
 
+#include <machine/atomic.h>
 #include <machine/bootinfo.h>
 
 #define BELKA_LIMINE_REVISION   6
@@ -50,6 +53,11 @@ static volatile struct {
         { LIMINE_MP_REQUEST_ID, 0, NULL, 0 },
         LIMINE_REQUESTS_END_MARKER
 };
+
+static struct limine_mp_response *limine_mp;
+static void (*limine_cpu_fn)(void *);
+
+static void limine_cpu_entry(struct limine_mp_info *);
 
 static enum bootmem_type
 limine_memtype(uint64_t type)
@@ -107,10 +115,20 @@ limine_boot_collect(struct bootinfo *bi)
         if ((rsdp = limine_requests.rsdp.response) != NULL)
                 bi->bi_rsdp = (uint64_t)(uintptr_t)rsdp->address;
         if ((mp = limine_requests.mp.response) != NULL) {
-                bi->bi_ncpu = mp->cpu_count;
+                limine_mp = mp;
                 bi->bi_bsp_lapic_id = mp->bsp_lapic_id;
+                bi->bi_ncpu = 0;
+                for (uint64_t i = 0; i < mp->cpu_count; i++) {
+                        if (bi->bi_ncpu == MAXCPUS) {
+                                bi->bi_ncpu_dropped++;
+                                continue;
+                        }
+                        bi->bi_cpu_lapic[bi->bi_ncpu++] =
+                            mp->cpus[i]->lapic_id;
+                }
         } else {
                 bi->bi_ncpu = 1;
+                bi->bi_cpu_lapic[0] = 0;
         }
 
         if ((memmap = limine_requests.memmap.response) != NULL) {
@@ -130,4 +148,36 @@ limine_boot_collect(struct bootinfo *bi)
         }
 
         return 0;
+}
+
+/* First code run by a secondary processor started by Limine. */
+static void
+limine_cpu_entry(struct limine_mp_info *info)
+{
+        limine_cpu_fn((void *)(uintptr_t)info->extra_argument);
+        panic("limine_cpu_entry: start function returned");
+}
+
+void
+limine_cpu_start(unsigned int i, void (*fn)(void *), void *arg)
+{
+        struct limine_mp_info *info;
+
+        if (limine_mp == NULL || i >= limine_mp->cpu_count)
+                panic("limine_cpu_start: no processor %u", i);
+        info = limine_mp->cpus[i];
+        if (info->lapic_id == limine_mp->bsp_lapic_id)
+                panic("limine_cpu_start: processor %u is the BSP", i);
+
+        /*
+         * The processor polls goto_address, so everything it reads must
+         * be in place before that store. amd64 keeps stores in order, so
+         * compiler barriers on both sides are enough. The aligned 64-bit
+         * store is a single instruction, which the processor sees whole.
+         */
+        limine_cpu_fn = fn;
+        info->extra_argument = (uint64_t)(uintptr_t)arg;
+        membar_producer();
+        info->goto_address = limine_cpu_entry;
+        membar_producer();
 }

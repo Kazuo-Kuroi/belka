@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 
+#include <sys/smp.h>
 #include <sys/systm.h>
 #include <sys/uadmin.h>
 
@@ -41,6 +42,8 @@ main(void)
         printf("pages: %zu managed, %zu free (%ju KB)\n",
             st.ps_managed, st.ps_free,
             (uintmax_t)(ptob(st.ps_free) / 1024));
+
+        cpu_boot_secondary_processors();
 
         failures = selftest_run();
         if (failures != 0)

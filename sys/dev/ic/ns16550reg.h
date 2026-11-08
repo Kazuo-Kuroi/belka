@@ -36,6 +36,7 @@
 
 #define LSR_RXRDY       0x01
 #define LSR_TXRDY       0x20    /* transmit holding register empty */
+#define LSR_TSRE        0x40    /* transmitter completely empty */
 
 #define COM_FREQ        1843200 /* standard input clock, Hz */
 

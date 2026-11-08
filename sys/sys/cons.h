@@ -15,11 +15,13 @@
 
 struct consdev {
         void    (*cn_putc)(struct consdev *, int);
+        void    (*cn_flush)(struct consdev *);  /* may be NULL */
         void    *cn_private;
         const char *cn_name;
 };
 
 void cninit(struct consdev *);
 void cnputc(int);
+void cnflush(void);
 
 #endif /* _SYS_CONS_H_ */
