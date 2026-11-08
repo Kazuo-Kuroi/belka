@@ -73,6 +73,8 @@ static int md_expect_write_fault(uint64_t, uint64_t, uint64_t);
 static void md_kva_read_all(void *);
 static void md_kva_fault_all(void *);
 static int md_selftest_hat(void);
+static int md_selftest_intr(void);
+static void md_note_ipi(void *);
 static void cpu_halt_self_forever(void) __dead;
 
 static void
@@ -283,14 +285,14 @@ md_selftest_hat(void)
         HCHECK(hat_kextract((vaddr_t)(uintptr_t)kernel_start, &pa) == 0);
         HCHECK(hat_kextract(dmap_base + UINT64_C(0x200000), &pa) == 0 &&
             pa == UINT64_C(0x200000));
-        HCHECK(hat_kextract(KVA_BASE, &pa) != 0);
+        HCHECK(hat_kextract(KVA_FIXED_END, &pa) != 0);
 
         /* KVA mappings, and their removal from every processor's TLB. */
         if ((pp = page_alloc(0, PA_ZERO)) == NULL) {
                 HCHECK(pp != NULL);
                 return failures;
         }
-        va = KVA_BASE + 16 * PAGESIZE;
+        va = KVA_FIXED_END + 16 * PAGESIZE;
         HCHECK(hat_kenter(va, page_to_pa(pp), HAT_WRITE) == 0);
         HCHECK(hat_kenter(va, page_to_pa(pp), HAT_WRITE) != 0);
         HCHECK(hat_kextract(va, &pa) == 0 && pa == page_to_pa(pp));
@@ -316,6 +318,53 @@ md_selftest_hat(void)
         page_free(pp, 0);
         return failures;
 #undef HCHECK
+}
+
+static volatile uint32_t md_ipi_seen[MAXCPUS];
+
+static void
+md_note_ipi(void *arg __unused)
+{
+        md_ipi_seen[cpu_number()]++;
+}
+
+/*
+ * Every processor ticks, and each can be sent an action IPI on its own.
+ */
+static int
+md_selftest_intr(void)
+{
+        uint64_t before[MAXCPUS];
+        int failures = 0;
+        unsigned int n = ncpus;
+
+        for (unsigned int i = 0; i < n; i++)
+                before[i] = cpu_info_store[i].ci_ticks;
+        drv_usecwait(100000);
+        for (unsigned int i = 0; i < n; i++) {
+                uint64_t ticks = cpu_info_store[i].ci_ticks - before[i];
+
+                if (ticks < 5) {
+                        printf("selftest: cpu%u ticked %ju times in "
+                            "100 ms\n", i, (uintmax_t)ticks);
+                        failures++;
+                }
+        }
+
+        for (unsigned int i = 1; i < n; i++) {
+                uint32_t seen = md_ipi_seen[i];
+                unsigned int waited;
+
+                cpu_action(&cpu_info_store[i], md_note_ipi, NULL);
+                for (waited = 0; waited < 100000 && md_ipi_seen[i] == seen;
+                    waited += 10)
+                        drv_usecwait(10);
+                if (md_ipi_seen[i] != seen + 1) {
+                        printf("selftest: cpu%u did not run its action\n", i);
+                        failures++;
+                }
+        }
+        return failures;
 }
 
 /*
@@ -354,6 +403,7 @@ md_selftest(void)
         }
 
         failures += md_selftest_hat();
+        failures += md_selftest_intr();
 
         if (boot_option("testapfault") && ncpus > 1) {
                 printf("selftest: faulting on cpu1; a page fault panic "

@@ -36,6 +36,13 @@ splx(int s)
                 enable_intr();
 }
 
+/* Enable interrupts unconditionally. */
+static inline void
+spl0(void)
+{
+        enable_intr();
+}
+
 /* Nonzero if maskable interrupts are blocked on this processor. */
 static inline int
 intr_blocked(void)

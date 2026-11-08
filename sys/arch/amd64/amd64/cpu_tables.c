@@ -14,12 +14,15 @@
 
 #include <machine/cpu.h>
 #include <machine/cpufunc.h>
+#include <machine/intrdefs.h>
 #include <machine/segments.h>
 #include <machine/trap.h>
 #include <machine/tss.h>
 
 /* Entry stubs for vectors 0 to 31, defined in vector.S. */
 extern const uint64_t trap_vector_table[NEXCEPTIONS];
+
+
 
 /* The IDT is shared by all processors; each gate takes two words. */
 static uint64_t idt[NIDT * 2];
@@ -28,8 +31,8 @@ static uint64_t idt[NIDT * 2];
  * Build the IDT. Exceptions that can arrive on a bad kernel stack
  * switch to a dedicated stack through the IST. The breakpoint gate is
  * reachable from user mode so that int3 can serve debuggers later.
- * Vectors above 31 stay not-present until interrupt handling exists;
- * delivering one raises a general-protection fault.
+ * Vectors 32 to 255 are interrupts; all go to intr_dispatch() through
+ * alltraps and trap().
  */
 void
 idt_init(void)
@@ -57,6 +60,12 @@ idt_init(void)
                 set_gate_desc(&idt[v * 2], trap_vector_table[v], KCSEL, ist,
                     SDT_SYS386IGT, dpl);
         }
+
+        /* intr_init() checks the stub spacing once the console is up. */
+        for (int v = NEXCEPTIONS; v < NIDT; v++)
+                set_gate_desc(&idt[v * 2],
+                    (uint64_t)(uintptr_t)&intr_stubs[(v - NEXCEPTIONS) *
+                    INTR_STUB_SIZE], KCSEL, 0, SDT_SYS386IGT, SEL_KPL);
 }
 
 /*

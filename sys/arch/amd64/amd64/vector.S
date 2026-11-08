@@ -136,3 +136,24 @@ trap_vector_table:
         .quad   Xtrap20, Xtrap21, Xtrap22, Xtrap23
         .quad   Xtrap24, Xtrap25, Xtrap26, Xtrap27
         .quad   Xtrap28, Xtrap29, Xtrap30, Xtrap31
+
+/*
+ * Stubs for vectors 32 to 255, each aligned to 16 bytes so that the
+ * stub for vector v is at intr_stubs + 16 * (v - 32). idt_init() checks
+ * that the assembler kept every stub within its slot.
+ */
+        .text
+        .p2align 4
+        .globl  intr_stubs
+intr_stubs:
+        .set    intr_vec, 32
+        .rept   224
+        .p2align 4
+        pushq   $0
+        pushq   $intr_vec
+        jmp     alltraps
+        .set    intr_vec, intr_vec + 1
+        .endr
+        .p2align 4
+        .globl  intr_stubs_end
+intr_stubs_end:

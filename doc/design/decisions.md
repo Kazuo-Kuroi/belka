@@ -101,11 +101,6 @@ Recorded 2026-11-07.
   Each gets a 16 KB kernel stack and three interrupt stacks from the page
   allocator, its own GDT and TSS, and a `cpu_info` in
   `cpu_info_store[]`.
-- **Until the local APIC is driven**, secondary processors poll in an
-  idle loop with interrupts disabled. `smp_call_all()` and
-  `cpu_halt_others()` post requests that loop reads. They will become
-  IPIs, as IRIX's per-processor action queues are, without changing the
-  interface.
 - **Panic** stops every other processor and bypasses the console lock.
 - Lock order is kept in [lock-order.md](lock-order.md).
 
@@ -134,6 +129,31 @@ Recorded 2026-11-07.
 - Boot loader strings are copied into `bootinfo`, and the RSDP is kept
   as a physical address, so nothing points into loader memory after it
   is reclaimed.
+
+## Interrupts, clock, and IPIs (2026-11-07)
+
+- **Local APIC** in x2APIC mode when the bootstrap processor supports
+  it, else xAPIC through an uncached fixed KVA mapping; all processors
+  use the same mode. The 8259s are remapped to 0x20 and fully masked.
+- **Vectors** (`<machine/intrdefs.h>`): 0x30-0xef for devices later,
+  0xf0 timer, 0xf1 action IPI, 0xfe APIC error, 0xff spurious. Vectors
+  32-255 have 16-byte stubs that all enter `trap()`.
+- **Clock:** the TSC and APIC timer are calibrated against PIT channel
+  2 (median of five 10 ms intervals). Every processor runs a periodic
+  APIC tick at HZ = 100; the bootstrap processor's also drives the
+  machine-independent `clock()` and `lbolt`. `drv_usecwait()` is
+  TSC-based. HPET or CPUID frequency leaves will be needed on hardware
+  without a PIT.
+- **Cross-processor actions** follow IRIX: a per-processor FIFO of
+  function calls, posted with `cpu_action()` plus an IPI and run at
+  splhi. `smp_call_all()` is built on them. Every waiter serves its own
+  queue while it waits, so overlapping and nested calls, even from
+  interrupt context, complete.
+- **Halting** sets a flag and sends an NMI to every other processor;
+  the NMI handler halts when the flag is set.
+- **Idle** processors sleep with `sti; hlt` and wake for ticks and
+  IPIs. Interrupt handlers run with interrupts disabled and do not nest.
+  Device interrupts will be dispatched to interrupt threads.
 
 ## File systems
 

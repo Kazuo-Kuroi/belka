@@ -22,6 +22,7 @@
 #include <stdint.h>
 
 #include <sys/compiler.h>
+#include <sys/spinlock.h>
 
 #include <machine/param.h>
 #include <machine/segments.h>
@@ -29,6 +30,13 @@
 
 #define KSTACK_ORDER    2               /* kernel stacks: 16 KB */
 #define IST_STACK_SIZE  16384
+#define CPU_ACTIONS     64              /* action queue entries */
+
+/* A request queued for a processor by cpu_action(). */
+struct cpu_action {
+        void            (*ca_fn)(void *);
+        void            *ca_arg;
+};
 
 struct cpu_info {
         struct cpu_info *ci_self;       /* must be first: read via %gs:0 */
@@ -40,6 +48,20 @@ struct cpu_info {
         uint64_t        ci_ist_top[NIST];
         uint64_t        ci_gdt[NGDT];
         uint32_t        ci_tss[TSS_WORDS];
+
+        /* Clock and interrupt counts. */
+        volatile uint64_t ci_ticks;
+        volatile uint64_t ci_nintr;
+        volatile uint64_t ci_nipi;
+
+        /*
+         * Action queue: functions other processors ask this one to run,
+         * in order, at splhi. Protected by ci_act_lock.
+         */
+        struct spinlock ci_act_lock;
+        unsigned int    ci_act_head;    /* next entry to run */
+        unsigned int    ci_act_count;
+        struct cpu_action ci_act[CPU_ACTIONS];
 
         /* Expected-trap state for self-tests; see trap_expect(). */
         volatile int    ci_texp_vec;    /* vector + 1, or 0 for none */
@@ -74,6 +96,16 @@ struct cpu_info *curcpu(void);
 /* cpu_tables.c */
 void idt_init(void);
 void cpu_tables_init(struct cpu_info *);
+
+/* intr.c */
+struct trapframe;
+void intr_init(void);
+void intr_cpu_init(struct cpu_info *);
+void intr_dispatch(struct trapframe *);
+void cpu_action(struct cpu_info *, void (*)(void *), void *);
+void cpu_action_drain(void);
+void cpu_halt_self(void) __dead;
+int cpu_halt_requested(void);
 
 /* locore.S: run fn(arg) on the stack whose top is given; never returns. */
 void stack_switch_call(uint64_t, void (*)(void *), void *) __dead;

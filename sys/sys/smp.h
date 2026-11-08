@@ -5,14 +5,9 @@
  */
 
 /*
- * Multiprocessor control, the machine-independent view.
- *
- * Until the interrupt controller is driven, secondary processors wait
- * in a polling idle loop with interrupts disabled. smp_call_all() and
- * cpu_halt_others() work by posting requests that loop picks up. When
- * inter-processor interrupts exist they will be delivered as IPIs, in
- * the manner of IRIX's per-processor action queues, and the interfaces
- * below stay the same.
+ * Multiprocessor control, the machine-independent view. Requests travel
+ * between processors as inter-processor interrupts, through per-
+ * processor action queues in the manner of IRIX.
  */
 
 #ifndef _SYS_SMP_H_
@@ -25,12 +20,16 @@ extern volatile unsigned int ncpus;
 void cpu_boot_secondary_processors(void);
 
 /*
- * Run fn(arg) on every running processor, this one included, and
- * return when all have finished. Only one call may be in progress.
+ * Run fn(arg) at splhi on every running processor, this one included,
+ * and return when all have finished. Calls from several processors may
+ * overlap, and a call may be made from inside fn.
  */
 void smp_call_all(void (*)(void *), void *);
 
-/* Stop every other processor; used on panic and shutdown. */
+/* Stop every other processor, even with interrupts disabled. */
 void cpu_halt_others(void);
+
+/* Nonzero once the system has begun stopping its processors. */
+int smp_halting(void);
 
 #endif /* _SYS_SMP_H_ */

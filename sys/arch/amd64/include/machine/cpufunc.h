@@ -61,6 +61,15 @@ cpu_spinwait(void)
 }
 
 static inline uint64_t
+rdtsc(void)
+{
+        uint32_t lo, hi;
+
+        __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+        return ((uint64_t)hi << 32) | lo;
+}
+
+static inline uint64_t
 read_rflags(void)
 {
         uint64_t rflags;
@@ -77,6 +86,7 @@ void disable_intr(void);
 void enable_intr(void);
 void cpu_halt(void);
 void cpu_spinwait(void);
+uint64_t rdtsc(void);
 uint64_t read_rflags(void);
 
 #endif /* HAVE_INLINE_ASM */
@@ -100,6 +110,13 @@ void invlpg(uint64_t);
 void cpuid(uint32_t, uint32_t, uint32_t *);
 void breakpoint(void);
 void cpu_ud2(void);
+
+/*
+ * Enable interrupts and halt until one arrives, with no window between
+ * the two in which an interrupt could be missed. Returns with
+ * interrupts enabled.
+ */
+void cpu_wait_for_interrupt(void);
 
 /*
  * Probes for the fault self-tests. Each performs one memory access with

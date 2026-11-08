@@ -5,11 +5,12 @@
  */
 
 /*
- * Secondary processor start-up and the polling idle loop.
+ * Secondary processor start-up and the idle loop.
  *
  * Limine has already brought every processor into 64-bit mode and
  * parked it. Starting one gives it its own kernel stack, interrupt
- * stacks, GDT, and TSS, then sends it to cpu_idle_loop().
+ * stacks, GDT, and TSS, switches it to the kernel's page tables, starts
+ * its local APIC and tick, and sends it to cpu_idle_loop().
  */
 
 #include <stddef.h>
@@ -27,27 +28,17 @@
 #include <vm/hat.h>
 #include <vm/page.h>
 
-/* Polls to wait for a processor to report in; KVM needs far fewer. */
-#define CPU_START_SPINS UINT64_C(2000000000)
+/* How long to wait for a processor to report in. */
+#define CPU_START_USECS 1000000
+#define CPU_START_POLL  10
 
 struct cpu_info cpu_info_store[MAXCPUS];
 volatile unsigned int ncpus = 1;
 
-/* The request posted by smp_call_all(). */
-static struct {
-        void            (*sc_fn)(void *);
-        void            *sc_arg;
-        volatile uint32_t sc_gen;       /* bumped to post a request */
-        volatile uint32_t sc_done;      /* processors that finished */
-} smp_call;
-
-static volatile uint32_t cpus_halting;
-
 static uint64_t cpu_alloc_stack(void);
 static void cpu_hatch_entry(void *);
 static void cpu_hatch(void *);
-static void cpu_idle_loop(struct cpu_info *) __dead;
-static void cpu_halt_self(void) __dead;
+static void cpu_idle_loop(void) __dead;
 
 /* Allocate a kernel stack and return its top. */
 static uint64_t
@@ -81,41 +72,25 @@ cpu_hatch(void *arg)
          */
         hat_cpu_init();
         cpu_tables_init(ci);
+        intr_cpu_init(ci);
         atomic_or_32(&ci->ci_flags, CPUF_RUNNING);
-        cpu_idle_loop(ci);
+        cpu_idle_loop();
 }
 
 /*
- * Wait for work with interrupts disabled. This is a stand-in for the
- * scheduler's idle thread, which arrives with interrupt handling.
+ * Sleep until an interrupt arrives, then serve it. This stands in for
+ * the scheduler's idle thread. Requests from other processors arrive as
+ * action IPIs and are run by the interrupt handler.
  */
 static void
-cpu_idle_loop(struct cpu_info *ci __unused)
-{
-        uint32_t seen = atomic_load_32(&smp_call.sc_gen);
-
-        for (;;) {
-                uint32_t gen;
-
-                if (atomic_load_32(&cpus_halting) != 0)
-                        cpu_halt_self();
-                gen = atomic_load_32(&smp_call.sc_gen);
-                if (gen != seen) {
-                        seen = gen;
-                        membar_consumer();
-                        smp_call.sc_fn(smp_call.sc_arg);
-                        atomic_inc_32_nv(&smp_call.sc_done);
-                }
-                cpu_spinwait();
-        }
-}
-
-static void
-cpu_halt_self(void)
+cpu_idle_loop(void)
 {
         for (;;) {
                 disable_intr();
-                cpu_halt();
+                if (cpu_halt_requested())
+                        cpu_halt_self();
+                cpu_action_drain();
+                cpu_wait_for_interrupt();
         }
 }
 
@@ -131,7 +106,7 @@ cpu_boot_secondary_processors(void)
 
         for (unsigned int i = 0; i < bi->bi_ncpu; i++) {
                 struct cpu_info *ci;
-                uint64_t spins;
+                unsigned int waited;
 
                 if (bi->bi_cpu_lapic[i] == bi->bi_bsp_lapic_id)
                         continue;
@@ -146,48 +121,25 @@ cpu_boot_secondary_processors(void)
                         ci->ci_ist_top[j] = cpu_alloc_stack();
 
                 limine_cpu_start(i, cpu_hatch_entry, ci);
-                for (spins = 0; spins < CPU_START_SPINS; spins++) {
+                for (waited = 0; waited < CPU_START_USECS;
+                    waited += CPU_START_POLL) {
                         if ((atomic_load_32(&ci->ci_flags) &
                             CPUF_RUNNING) != 0)
                                 break;
-                        cpu_spinwait();
+                        drv_usecwait(CPU_START_POLL);
                 }
-                if (spins == CPU_START_SPINS) {
+                if (waited >= CPU_START_USECS) {
                         printf("cpu%u: LAPIC id %u did not start\n",
-                            next, ci->ci_lapic_id);
+                            next, bi->bi_cpu_lapic[i]);
                         continue;
                 }
+                if (ci->ci_lapic_id != bi->bi_cpu_lapic[i])
+                        printf("cpu%u: LAPIC id %u, boot loader said %u\n",
+                            next, ci->ci_lapic_id, bi->bi_cpu_lapic[i]);
                 next++;
                 atomic_inc_32_nv((volatile uint32_t *)&ncpus);
         }
 
         printf("cpu: %u of %ju processors running\n", ncpus,
             (uintmax_t)bi->bi_ncpu);
-}
-
-void
-smp_call_all(void (*fn)(void *), void *arg)
-{
-        unsigned int others = ncpus - 1;
-
-        smp_call.sc_fn = fn;
-        smp_call.sc_arg = arg;
-        atomic_store_32(&smp_call.sc_done, 0);
-        membar_producer();
-        atomic_inc_32_nv(&smp_call.sc_gen);
-
-        fn(arg);
-
-        while (atomic_load_32(&smp_call.sc_done) != others) {
-                if (panicstr != NULL)
-                        cpu_halt_self();
-                cpu_spinwait();
-        }
-}
-
-void
-cpu_halt_others(void)
-{
-        atomic_store_32(&cpus_halting, 1);
-        membar_sync();
 }

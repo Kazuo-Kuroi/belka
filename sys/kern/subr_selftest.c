@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 
+#include <sys/param.h>
 #include <sys/smp.h>
 #include <sys/spinlock.h>
 #include <sys/systm.h>
@@ -44,6 +45,9 @@ static int selftest_failures;
 static void selftest_atomic(void);
 static void selftest_spinlock(void);
 static void selftest_mp(void);
+static void selftest_clock(void);
+static void mp_nested_inner(void *);
+static void mp_nested_outer(void *);
 static void mp_lock_worker(void *);
 static void mp_page_worker(void *);
 static void selftest_page(void);
@@ -404,6 +408,44 @@ mp_page_worker(void *arg __unused)
         page_free(table_page, 0);
 }
 
+static volatile uint32_t mp_nested_count;
+
+static void
+mp_nested_inner(void *arg __unused)
+{
+        atomic_inc_32_nv(&mp_nested_count);
+}
+
+/*
+ * Run on every processor at once; each then calls smp_call_all() itself,
+ * from inside an action with interrupts disabled. Every processor ends
+ * up waiting for every other, which only completes if waiters keep
+ * serving their own action queues.
+ */
+static void
+mp_nested_outer(void *arg __unused)
+{
+        smp_call_all(mp_nested_inner, NULL);
+}
+
+/*
+ * The clock: ticks arrive at HZ, measured against the TSC. The bounds
+ * are loose because a virtual machine's vCPU can be descheduled.
+ */
+static void
+selftest_clock(void)
+{
+        uint64_t start;
+        uint64_t ticks;
+
+        CHECK(!intr_blocked());
+        start = lbolt;
+        drv_usecwait(200000);
+        ticks = lbolt - start;
+        CHECK(ticks >= HZ / 5 / 2 && ticks <= HZ / 5 * 2);
+        printf("selftest: %ju ticks in 200 ms\n", (uintmax_t)ticks);
+}
+
 static void
 selftest_mp(void)
 {
@@ -431,10 +473,14 @@ selftest_mp(void)
         page_get_stats(&after);
         CHECK(page_stats_equal(&before, &after));
 
+        mp_nested_count = 0;
+        smp_call_all(mp_nested_outer, NULL);
+        CHECK(mp_nested_count == n * n);
+
         CHECK(mp_failures == 0);
         printf("selftest: %u processors: %ju locked increments, "
-            "%u atomic\n", n, (uintmax_t)mp_locked_count,
-            mp_atomic_count);
+            "%u atomic, %u nested calls\n", n, (uintmax_t)mp_locked_count,
+            mp_atomic_count, mp_nested_count);
 }
 
 /* Run all self-tests and return the number of failed checks. */
@@ -447,6 +493,7 @@ selftest_run(void)
         selftest_string();
         selftest_page();
         selftest_spinlock();
+        selftest_clock();
         selftest_mp();
         return selftest_failures + md_selftest();
 }

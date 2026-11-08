@@ -217,3 +217,23 @@ ENTRY(cpu_call_probe)
         call    *%rdi
         ret
 END(cpu_call_probe)
+
+/* uint64_t rdtsc(void) */
+ENTRY(rdtsc)
+        rdtsc
+        shlq    $32, %rdx
+        orq     %rdx, %rax
+        ret
+END(rdtsc)
+
+/*
+ * void cpu_wait_for_interrupt(void)
+ *
+ * sti takes effect after the following instruction, so no interrupt
+ * can be taken between it and the hlt.
+ */
+ENTRY(cpu_wait_for_interrupt)
+        sti
+        hlt
+        ret
+END(cpu_wait_for_interrupt)

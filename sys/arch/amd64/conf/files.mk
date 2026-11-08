@@ -13,6 +13,7 @@ MD_ASFLAGS      :=
 LDSCRIPT        := sys/arch/amd64/conf/kernel.ld
 
 MI_SRCS         := sys/kern/init_main.c \
+                   sys/kern/kern_clock.c \
                    sys/kern/kern_cons.c \
                    sys/kern/kern_spinlock.c \
                    sys/kern/subr_prf.c \
@@ -28,6 +29,8 @@ MD_SRCS         := sys/arch/amd64/amd64/locore.S \
                    sys/arch/amd64/amd64/cpu_tables.c \
                    sys/arch/amd64/amd64/trap.c \
                    sys/arch/amd64/amd64/hat.c \
+                   sys/arch/amd64/amd64/intr.c \
+                   sys/arch/amd64/amd64/lapic.c \
                    sys/arch/amd64/amd64/limine_boot.c \
                    sys/arch/amd64/amd64/machdep.c \
                    sys/arch/amd64/amd64/mp_machdep.c

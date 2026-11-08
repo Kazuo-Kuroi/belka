@@ -31,6 +31,13 @@
 #define DMAP_MAXSIZE    UINT64_C(0x0000400000000000)    /* 64 TB */
 #define KVA_BASE        UINT64_C(0xffffc00000000000)
 #define KVA_END         UINT64_C(0xffffc08000000000)    /* 512 GB */
+
+/*
+ * The first 2 MB of KVA hold fixed mappings, one page each, set up at
+ * boot. Run-time allocations start at KVA_FIXED_END.
+ */
+#define KVA_LAPIC       (KVA_BASE + 0 * 4096)
+#define KVA_FIXED_END   (KVA_BASE + UINT64_C(0x200000))
 #define KERNBASE        UINT64_C(0xffffffff80000000)
 
 extern vaddr_t dmap_base;

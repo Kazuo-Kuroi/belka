@@ -57,8 +57,8 @@ static int kvprintf(struct prf_sink *, const char *, va_list);
 
 /*
  * prf_lock keeps each printf() call's output together when several
- * processors print at once. Once the system panics it is ignored,
- * because its holder may be the processor that failed.
+ * processors print at once. Once the system panics or halts it is
+ * ignored, because its holder may have been stopped.
  */
 static struct spinlock prf_lock = SPINLOCK_INITIALIZER("prf");
 static volatile uint32_t panicking;
@@ -359,7 +359,11 @@ vprintf(const char *fmt, va_list ap)
         ps.ps_buf = NULL;
         ps.ps_left = 0;
 
-        if (panicstr == NULL) {
+        /*
+         * Once processors are being stopped, one may have been stopped
+         * holding the lock.
+         */
+        if (panicstr == NULL && !smp_halting()) {
                 s = spin_lock(&prf_lock);
                 locked = 1;
         }

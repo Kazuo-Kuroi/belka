@@ -14,6 +14,7 @@
 #include <sys/systm.h>
 #include <sys/uadmin.h>
 
+#include <machine/intr.h>
 #include <machine/param.h>
 
 #include <vm/hat.h>
@@ -45,8 +46,10 @@ main(void)
             (uintmax_t)(ptob(st.ps_free) / 1024));
 
         hat_init();
+        intr_init();
         cpu_boot_secondary_processors();
         bootloader_reclaim();
+        spl0();
 
         failures = selftest_run();
         if (failures != 0)

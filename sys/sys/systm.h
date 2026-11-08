@@ -15,6 +15,7 @@
 
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include <sys/compiler.h>
 
@@ -34,6 +35,19 @@ int memcmp(const void *, const void *, size_t);
 size_t strlen(const char *);
 int strcmp(const char *, const char *);
 int strncmp(const char *, const char *, size_t);
+
+/* kern_clock.c */
+extern volatile uint64_t lbolt;         /* clock ticks since start */
+void clock(void);
+
+/*
+ * Machine-dependent: set up interrupt controllers and start the clock on
+ * the bootstrap processor, leaving interrupts disabled.
+ */
+void intr_init(void);
+
+/* Busy-wait for at least the given number of microseconds. */
+void drv_usecwait(unsigned long);
 
 /* init_main.c: machine-independent startup, entered from MD code. */
 void main(void) __dead;

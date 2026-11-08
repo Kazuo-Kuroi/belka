@@ -173,6 +173,15 @@ trap(struct trapframe *tf)
         int user = (tf->tf_cs & SEL_RPL_MASK) != 0;
         const char *name;
 
+        if (vector >= NEXCEPTIONS) {
+                intr_dispatch(tf);
+                return;
+        }
+
+        /* An NMI is how a halting system stops the other processors. */
+        if (vector == NMIFLT && cpu_halt_requested())
+                cpu_halt_self();
+
         if (!user && ci->ci_texp_vec != 0 &&
             vector == (uint64_t)(ci->ci_texp_vec - 1)) {
                 ci->ci_texp_vec = 0;

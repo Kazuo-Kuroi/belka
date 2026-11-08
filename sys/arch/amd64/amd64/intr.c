@@ -1,0 +1,275 @@
+/*
+ * Copyright (c) 2026 Setsuna Software L.C.
+ * Created: 2026-11-07
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * Interrupt dispatch, the clock tick, and cross-processor actions.
+ *
+ * Interrupts arrive through interrupt gates, so handlers run with
+ * interrupts disabled and never nest. Only local APIC sources exist so
+ * far: the timer, the action IPI, errors, and spurious interrupts.
+ * Device interrupts will be dispatched to interrupt threads, as in
+ * IRIX, so that device drivers can block.
+ *
+ * Cross-processor actions follow the IRIX design: each processor has a
+ * FIFO of function calls that others post with cpu_action(), followed
+ * by an IPI. The target runs them in order at splhi. smp_call_all() is
+ * built on them. Any processor that waits for another to act keeps
+ * draining its own queue while it waits, so two processors that wait
+ * on each other, even with interrupts disabled, both make progress.
+ *
+ * Halting the system uses NMIs, which reach processors even when they
+ * have interrupts disabled.
+ */
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include <sys/smp.h>
+#include <sys/spinlock.h>
+#include <sys/systm.h>
+
+#include <machine/atomic.h>
+#include <machine/cpu.h>
+#include <machine/cpufunc.h>
+#include <machine/frame.h>
+#include <machine/intr.h>
+#include <machine/intrdefs.h>
+#include <machine/lapic.h>
+#include <machine/segments.h>
+#include <machine/trap.h>
+
+/* An smp_call_all() in progress. It lives on the caller's stack. */
+struct smp_call {
+        void            (*sc_fn)(void *);
+        void            *sc_arg;
+        volatile uint32_t sc_pending;   /* processors yet to finish */
+};
+
+static volatile uint32_t cpus_halting;
+static volatile uint32_t stray_reported;
+
+static void smp_call_run(void *);
+
+/*
+ * Set up interrupts on the bootstrap processor: the local APIC, clock
+ * calibration, and the periodic tick. Interrupts stay disabled until
+ * the caller enables them.
+ */
+void
+intr_init(void)
+{
+        if (intr_stubs_end - intr_stubs !=
+            (NIDT - NEXCEPTIONS) * INTR_STUB_SIZE)
+                panic("intr_init: interrupt stubs are %td bytes, expected %d",
+                    intr_stubs_end - intr_stubs,
+                    (NIDT - NEXCEPTIONS) * INTR_STUB_SIZE);
+
+        spinlock_init(&cpu_info_primary.ci_act_lock, "cpu_act");
+        lapic_init();
+        clock_calibrate();
+        lapic_timer_start();
+}
+
+/*
+ * Set up interrupts on a secondary processor, before it is marked
+ * running. Interrupts stay disabled.
+ */
+void
+intr_cpu_init(struct cpu_info *ci)
+{
+        spinlock_init(&ci->ci_act_lock, "cpu_act");
+        lapic_cpu_init();
+        lapic_timer_start();
+}
+
+/* Called from trap() for vectors 32 to 255, with interrupts disabled. */
+void
+intr_dispatch(struct trapframe *tf)
+{
+        struct cpu_info *ci = curcpu();
+        int vector = (int)tf->tf_trapno;
+
+        ci->ci_nintr++;
+        switch (vector) {
+        case LAPIC_TIMER_VECTOR:
+                ci->ci_ticks++;
+                lapic_eoi();
+                if (ci == &cpu_info_primary)
+                        clock();
+                break;
+        case IPI_ACTION_VECTOR:
+                ci->ci_nipi++;
+                /* EOI first, so a request posted while draining raises a
+                 * new IPI rather than being missed. */
+                lapic_eoi();
+                cpu_action_drain();
+                break;
+        case LAPIC_ERROR_VECTOR:
+                printf("cpu%u: local APIC error\n", ci->ci_cpuid);
+                lapic_eoi();
+                break;
+        case LAPIC_SPURIOUS_VECTOR:
+                /* Spurious interrupts take no EOI. */
+                break;
+        default:
+                if (vector >= ICU_OFFSET && vector < ICU_OFFSET + 16)
+                        break;  /* spurious 8259 interrupt; all are masked */
+                if (atomic_swap_32(&stray_reported, 1) == 0)
+                        printf("cpu%u: stray interrupt, vector %d\n",
+                            ci->ci_cpuid, vector);
+                lapic_eoi();
+                break;
+        }
+}
+
+/*
+ * Ask processor ci to run fn(arg) at splhi, after any requests already
+ * queued for it. Returns once the request is queued, not when it has
+ * run. A request for the calling processor runs at once.
+ */
+void
+cpu_action(struct cpu_info *ci, void (*fn)(void *), void *arg)
+{
+        int s;
+
+        if (ci == curcpu()) {
+                s = splhi();
+                fn(arg);
+                splx(s);
+                return;
+        }
+
+        for (;;) {
+                s = spin_lock(&ci->ci_act_lock);
+                if (ci->ci_act_count < CPU_ACTIONS) {
+                        struct cpu_action *ca = &ci->ci_act[
+                            (ci->ci_act_head + ci->ci_act_count) %
+                            CPU_ACTIONS];
+
+                        ca->ca_fn = fn;
+                        ca->ca_arg = arg;
+                        ci->ci_act_count++;
+                        spin_unlock(&ci->ci_act_lock, s);
+                        break;
+                }
+                spin_unlock(&ci->ci_act_lock, s);
+                /* The target may be waiting on us; serve our own queue. */
+                cpu_action_drain();
+                cpu_spinwait();
+        }
+        lapic_send_ipi(ci->ci_lapic_id, IPI_ACTION_VECTOR);
+}
+
+/* Run every request queued for the calling processor, in order. */
+void
+cpu_action_drain(void)
+{
+        int s = splhi();
+        struct cpu_info *ci = curcpu();
+
+        for (;;) {
+                struct cpu_action ca;
+                int s2;
+
+                s2 = spin_lock(&ci->ci_act_lock);
+                if (ci->ci_act_count == 0) {
+                        spin_unlock(&ci->ci_act_lock, s2);
+                        break;
+                }
+                ca = ci->ci_act[ci->ci_act_head];
+                ci->ci_act_head = (ci->ci_act_head + 1) % CPU_ACTIONS;
+                ci->ci_act_count--;
+                spin_unlock(&ci->ci_act_lock, s2);
+                ca.ca_fn(ca.ca_arg);
+        }
+        splx(s);
+}
+
+static void
+smp_call_run(void *arg)
+{
+        struct smp_call *sc = arg;
+
+        sc->sc_fn(sc->sc_arg);
+        membar_exit();
+        atomic_dec_32_nv(&sc->sc_pending);
+}
+
+/*
+ * Run fn(arg) on every running processor and return when all have
+ * finished. May be called from any processor, with interrupts enabled
+ * or disabled, and from inside an action, but not while holding a spin
+ * lock that fn or another processor's pending action might take.
+ */
+void
+smp_call_all(void (*fn)(void *), void *arg)
+{
+        struct cpu_info *self = curcpu();
+        struct smp_call sc;
+        unsigned int n = ncpus;
+
+        sc.sc_fn = fn;
+        sc.sc_arg = arg;
+        sc.sc_pending = 0;
+        for (unsigned int i = 0; i < n; i++) {
+                struct cpu_info *ci = &cpu_info_store[i];
+
+                if (ci != self && (ci->ci_flags & CPUF_RUNNING) != 0)
+                        sc.sc_pending++;
+        }
+        membar_producer();
+        for (unsigned int i = 0; i < n; i++) {
+                struct cpu_info *ci = &cpu_info_store[i];
+
+                if (ci != self && (ci->ci_flags & CPUF_RUNNING) != 0)
+                        cpu_action(ci, smp_call_run, &sc);
+        }
+
+        {
+                int s = splhi();
+
+                fn(arg);
+                splx(s);
+        }
+
+        while (atomic_load_32(&sc.sc_pending) != 0) {
+                if (cpu_halt_requested())
+                        cpu_halt_self();
+                cpu_action_drain();
+                cpu_spinwait();
+        }
+        membar_enter();
+}
+
+/* Stop every other processor, whatever its interrupt state. */
+void
+cpu_halt_others(void)
+{
+        atomic_store_32(&cpus_halting, 1);
+        membar_sync();
+        lapic_send_nmi_others();
+}
+
+int
+cpu_halt_requested(void)
+{
+        return atomic_load_32(&cpus_halting) != 0;
+}
+
+int
+smp_halting(void)
+{
+        return cpu_halt_requested();
+}
+
+void
+cpu_halt_self(void)
+{
+        for (;;) {
+                disable_intr();
+                cpu_halt();
+        }
+}
