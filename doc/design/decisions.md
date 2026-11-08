@@ -214,8 +214,7 @@ Recorded 2026-11-07.
   an object lock and its own thread lock together.
 - **Callouts:** System V `timeout()`, `untimeout()`, and `delay()`, on
   one sorted list run from the bootstrap processor's tick.
-- **Not yet:** scheduling classes (IRIX fair-share time-share, real-time,
-  gang, batch, frame scheduler), interrupt threads, transitive priority
+- **Not yet:** gang, batch, and frame scheduling, transitive priority
   inheritance, per-processor callouts, and timed or interruptible sleeps.
 
 ## ACPI, the I/O APIC, and interrupt threads (2026-11-08)
@@ -240,6 +239,36 @@ Recorded 2026-11-07.
   (100), which runs the handlers and unmasks the line, so handlers can
   take mutexes. `INTR_FAST` runs a handler in the hardware interrupt.
 - **Test device:** the CMOS RTC's periodic interrupt (ISA IRQ 8).
+
+## Scheduling classes (2026-11-08)
+
+- **Organisation** after UnixWare: a class operations vector (enter,
+  leave, tick, slice expiry) per class, all mapping onto the one
+  dispatcher priority scale. **Policies** after IRIX.
+- **SCHED_TS**, fair-share time sharing (the IRIX weighted tree): two
+  dispatch levels only, `PRI_TS_CREDIT` (2) and `PRI_TS_OVER` (1). Each
+  job has a weight from the IRIX table (`w[1] = 1000`,
+  `w[i+1] = w[i] + w[i]/10`) and a microsecond balance. Each tick debits
+  the running job; once per tick, on a rotating processor, the debits
+  are returned to active jobs in proportion to weight, and threads move
+  between the levels by the sign of their balance. Credit is capped at
+  two slices per thread. Threads joined with `ts_join()` share a job, as
+  the threads of a process will.
+- **Deviations from a literal reading:** a running thread is not lowered
+  by redistribution, only at the end of its slice (IRIX does the same);
+  and within a time-share level the run queue orders threads by when
+  they last ran, because whole jobs move between levels at once and job
+  list order would otherwise starve one of a job's threads.
+- **SCHED_RR / SCHED_FIFO:** fixed priorities from `PRI_TS_BOOST` (3) up;
+  RR is sliced among equals, FIFO never. Kernel threads default to RR;
+  interrupt threads are FIFO at `PRI_INTR`.
+- **IRIX lock rules:** only RR/FIFO ("priority scheduled") waiters are
+  ordered by priority on sleep queues and cause inheritance; time-share
+  waiters queue FIFO behind them. A time-share thread handed a mutex is
+  boosted to `PRI_TS_BOOST` until it releases it.
+- **Not yet:** a `priocntl`/`schedctl` system call interface, nice
+  values from user processes, batch (Miser), gang, and the frame
+  scheduler.
 
 ## File systems
 

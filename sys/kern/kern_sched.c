@@ -40,6 +40,7 @@
 
 #include <sys/kthread.h>
 #include <sys/sched.h>
+#include <sys/schedclass.h>
 #include <sys/smp.h>
 #include <sys/spinlock.h>
 #include <sys/systm.h>
@@ -77,11 +78,38 @@ runq_insert(struct runq *rq, struct kthread *kt, int at_head)
 {
         int pri = kt->kt_pri;
 
+        if (kt->kt_rq != NULL)
+                panic("runq_insert: %s is already queued", kt->kt_name);
+
         if (at_head && rq->rq_head[pri] != NULL) {
                 kt->kt_prev = NULL;
                 kt->kt_next = rq->rq_head[pri];
                 rq->rq_head[pri]->kt_prev = kt;
                 rq->rq_head[pri] = kt;
+        } else if (!kthread_is_ps(kt) && rq->rq_tail[pri] != NULL) {
+                /*
+                 * Time-share threads share two levels, and whole jobs
+                 * move between them at once, so within a level they are
+                 * ordered by when they last ran, least recent first.
+                 * Otherwise the order of a job's thread list would decide
+                 * which of its threads ran, and could starve one.
+                 */
+                struct kthread *after = rq->rq_tail[pri];
+
+                while (after != NULL && after->kt_lastrun > kt->kt_lastrun)
+                        after = after->kt_prev;
+                kt->kt_prev = after;
+                if (after != NULL) {
+                        kt->kt_next = after->kt_next;
+                        after->kt_next = kt;
+                } else {
+                        kt->kt_next = rq->rq_head[pri];
+                        rq->rq_head[pri] = kt;
+                }
+                if (kt->kt_next != NULL)
+                        kt->kt_next->kt_prev = kt;
+                else
+                        rq->rq_tail[pri] = kt;
         } else {
                 kt->kt_next = NULL;
                 kt->kt_prev = rq->rq_tail[pri];
@@ -100,6 +128,12 @@ static void
 runq_remove(struct runq *rq, struct kthread *kt)
 {
         int pri = kt->kt_pri;
+
+        if (kt->kt_rq != rq ||
+            (kt->kt_prev == NULL && rq->rq_head[pri] != kt) ||
+            (kt->kt_next == NULL && rq->rq_tail[pri] != kt))
+                panic("runq_remove: %s is not queued at priority %d",
+                    kt->kt_name, pri);
 
         if (kt->kt_prev != NULL)
                 kt->kt_prev->kt_next = kt->kt_next;
@@ -253,6 +287,7 @@ swtch(int s)
                         panic("swtch: idle thread lock held");
         }
 
+        old->kt_lastrun = lbolt;
         new->kt_state = KT_ONPROC;
         new->kt_cpu = ci;
         new->kt_slice = SCHED_SLICE;
@@ -379,19 +414,45 @@ sched_setpri(struct kthread *kt, int pri)
                 struct cpu_info *ci = kt->kt_cpu;
                 int lower = pri < kt->kt_pri;
 
+                if (kt->kt_rq != NULL)
+                        panic("sched_setpri: %s running but queued",
+                            kt->kt_name);
                 kt->kt_pri = pri;
                 if (lower && runq_best_pri(&ci->ci_sched.sc_rq) > pri) {
                         ci->ci_sched.sc_want_resched = 1;
                         cpu_need_resched(ci);
                 }
         } else {
+                if (kt->kt_rq != NULL)
+                        panic("sched_setpri: %s queued in state %d",
+                            kt->kt_name, kt->kt_state);
                 kt->kt_pri = pri;
         }
 }
 
 /*
- * Clock tick on every processor, from the timer interrupt: charge the
- * running thread's time slice.
+ * Recompute kt's effective priority: its class's base priority, raised
+ * by priority inheritance and, for a time-share thread holding a mutex
+ * it was handed, by the time-share boost. The caller holds kt's lock.
+ */
+void
+sched_recompute(struct kthread *kt)
+{
+        int pri = kt->kt_basepri;
+        int inherited = mutex_inherited_pri(kt);
+
+        if (inherited > pri)
+                pri = inherited;
+        if (kt->kt_tsboost > 0 && pri < PRI_TS_BOOST)
+                pri = PRI_TS_BOOST;
+        sched_setpri(kt, pri);
+}
+
+/*
+ * Clock tick on every processor, from the timer interrupt: let the
+ * running thread's class account for the tick, charge its time slice
+ * unless the class is unsliced, and on one processor per tick, in
+ * rotation, redistribute time-share credit.
  */
 void
 sched_tick(void)
@@ -399,21 +460,33 @@ sched_tick(void)
         struct cpu_info *ci = curcpu();
         struct schedcpu *sc = &ci->ci_sched;
         struct kthread *kt = ci->ci_curthread;
+        const struct sched_class *cl;
 
         if (!sched_running || kt == NULL)
                 return;
+        if (ci->ci_cpuid == lbolt % ncpus)
+                ts_redistribute();
         if ((kt->kt_flags & KTF_IDLE) != 0) {
                 if (sc->sc_rq.rq_count != 0)
                         sc->sc_want_resched = 1;
                 return;
         }
-        if (--kt->kt_slice <= 0) {
+
+        kt->kt_ticks++;
+        (void)thread_lock(kt);
+        cl = kt->kt_class;
+        if (cl != NULL && cl->cl_tick != NULL)
+                cl->cl_tick(kt);
+        if ((cl == NULL || cl->cl_sliced) && --kt->kt_slice <= 0) {
                 kt->kt_slice = SCHED_SLICE;
+                if (cl != NULL && cl->cl_expire != NULL)
+                        cl->cl_expire(kt);
                 if (runq_best_pri(&sc->sc_rq) >= kt->kt_pri) {
                         sc->sc_slice_expired = 1;
                         sc->sc_want_resched = 1;
                 }
         }
+        thread_unlock(kt, 0);
 }
 
 /*

@@ -16,6 +16,7 @@
 
 #include <sys/kthread.h>
 #include <sys/param.h>
+#include <sys/schedclass.h>
 #include <sys/smp.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
@@ -550,6 +551,275 @@ test_bind(void)
         CHECK(bind_bad == 0);
 }
 
+/* --- Scheduling classes. --- */
+
+static struct sema ready;
+
+/* Enter the class encoded in arg, report ready, and spin until stop. */
+#define CLASSARG(cls, param)    ((void *)(uintptr_t)(((cls) << 8) | (param)))
+
+static void
+class_spinner(void *arg)
+{
+        uintptr_t a = (uintptr_t)arg;
+
+        if (kthread_setclass(curthread, (int)(a >> 8), (int)(a & 0xff)) != 0)
+                failures++;
+        vsema(&ready);
+        while (!stop)
+                continue;
+        vsema(&done);
+}
+
+static struct kthread *
+spawn(int cls, int param, const char *name)
+{
+        struct kthread *kt = kthread_create_bound(class_spinner,
+            CLASSARG(cls, param), PRI_KERNEL, name, test_cpu());
+
+        psema(&ready);
+        return kt;
+}
+
+static void
+test_ts_weights(void)
+{
+        CHECK(ts_weight(0) == 10 && ts_weight(1) == 1000);
+        for (int i = 1; i < TS_NWEIGHT; i++)
+                CHECK(ts_weight(i + 1) == ts_weight(i) + ts_weight(i) / 10);
+}
+
+static void
+class_switcher(void *arg __unused)
+{
+        struct kthread *kt = curthread;
+
+        if (kthread_getclass(kt) != SCHED_RR || kt->kt_pri != 30)
+                failures++;
+        if (kthread_setclass(kt, SCHED_TS, TS_DEFWEIGHT) != 0 ||
+            kthread_getclass(kt) != SCHED_TS || kt->kt_pri > PRI_TS_CREDIT)
+                failures++;
+        kthread_setpri(kt, 70);                 /* ignored for TS */
+        if (kt->kt_pri > PRI_TS_CREDIT)
+                failures++;
+        if (kthread_setclass(kt, SCHED_FIFO, 50) != 0 || kt->kt_pri != 50)
+                failures++;
+        if (kthread_setclass(kt, SCHED_TS, 0) == 0 ||
+            kthread_setclass(kt, SCHED_RR, PRI_TS_OVER) == 0 ||
+            kthread_setclass(kt, 9, 50) == 0)
+                failures++;
+        if (kthread_setclass(kt, SCHED_RR, 40) != 0 || kt->kt_pri != 40)
+                failures++;
+        vsema(&done);
+}
+
+static void
+test_class_switch(void)
+{
+        int before = failures;
+
+        (void)kthread_create(class_switcher, NULL, 30, "classes");
+        wait_done(1);
+        CHECK(failures == before);
+}
+
+/*
+ * Weights 20, 20, and 27 should share one processor about 1 : 1 : 1.95.
+ * With joined jobs the share follows jobs, not threads.
+ */
+static void
+test_fair_share(int join)
+{
+        struct kthread *kt[3];
+        uint64_t t0[3], d[3];
+
+        stop = 0;
+        kt[0] = spawn(SCHED_TS, TS_DEFWEIGHT, "ts_a");
+        kt[1] = spawn(SCHED_TS, TS_DEFWEIGHT, "ts_b");
+        kt[2] = spawn(SCHED_TS, join ? TS_DEFWEIGHT : TS_DEFWEIGHT + 7,
+            "ts_c");
+        if (join)
+                CHECK(ts_join(kt[1], kt[0]) == 0);
+        delay(10);
+        for (int i = 0; i < 3; i++)
+                t0[i] = kt[i]->kt_ticks;
+        delay(200);
+        for (int i = 0; i < 3; i++)
+                d[i] = kt[i]->kt_ticks - t0[i];
+        stop = 1;
+        wait_done(3);
+
+        printf("selftest: fair share%s: %ju %ju %ju ticks\n",
+            join ? " (a and b share a job)" : " (weights 20 20 27)",
+            (uintmax_t)d[0], (uintmax_t)d[1], (uintmax_t)d[2]);
+        /*
+         * a and b match to within two time slices: within one job,
+         * threads take turns a whole slice at a time, so over the window
+         * a slice either way is normal. c gets about twice either.
+         */
+        CHECK(d[0] + 2 * SCHED_SLICE >= d[1] && d[1] + 2 * SCHED_SLICE >= d[0]);
+        CHECK(d[2] * 20 >= (d[0] + d[1]) * 14 &&
+            d[2] * 20 <= (d[0] + d[1]) * 26);
+}
+
+/* A fixed-priority spinner starves time-share threads completely. */
+static void
+test_rr_over_ts(void)
+{
+        struct kthread *ts;
+        uint64_t before;
+
+        stop = 0;
+        ts = spawn(SCHED_TS, TS_DEFWEIGHT, "ts");
+        (void)spawn(SCHED_RR, 30, "rr");
+        delay(2);
+        before = ts->kt_ticks;
+        delay(30);
+        CHECK(ts->kt_ticks - before <= 1);
+        stop = 1;
+        wait_done(2);
+}
+
+/* Two FIFO threads of one priority: the second never runs meanwhile. */
+static void
+test_fifo(void)
+{
+        struct kthread *second;
+
+        stop = 0;
+        (void)spawn(SCHED_FIFO, 30, "fifo1");
+        second = kthread_create_bound(class_spinner,
+            CLASSARG(SCHED_FIFO, 30), 30, "fifo2", test_cpu());
+        delay(30);
+        CHECK(second->kt_ticks == 0);
+        stop = 1;
+        psema(&ready);
+        wait_done(2);
+}
+
+/* --- IRIX mutex rules for time-share threads. --- */
+
+static struct mutex rule_mutex;
+static volatile uint32_t rule_release;
+static volatile int owner_pri_after, waiter_pri_held, waiter_pri_after;
+static struct kthread *volatile rule_owner;
+
+static void
+rule_owner_thread(void *arg)
+{
+        (void)kthread_setclass(curthread, SCHED_TS, TS_DEFWEIGHT);
+        mutex_lock(&rule_mutex);
+        rule_owner = curthread;
+        vsema(&ready);
+        while (!rule_release)
+                continue;
+        mutex_unlock(&rule_mutex);
+        owner_pri_after = curthread->kt_pri;
+        (void)arg;
+        vsema(&done);
+}
+
+static void
+rule_waiter_thread(void *arg)
+{
+        uintptr_t a = (uintptr_t)arg;
+
+        (void)kthread_setclass(curthread, (int)(a >> 8), (int)(a & 0xff));
+        mutex_lock(&rule_mutex);
+        waiter_pri_held = curthread->kt_pri;
+        mutex_unlock(&rule_mutex);
+        waiter_pri_after = curthread->kt_pri;
+        vsema(&done);
+}
+
+static void
+wait_asleep(struct kthread *kt)
+{
+        for (int i = 0; i < 100 && kt->kt_state != KT_SLEEP; i++)
+                delay(1);
+}
+
+/*
+ * A time-share waiter does not raise a time-share owner, and is boosted
+ * while it holds the mutex it is handed. A fixed-priority waiter does
+ * raise a time-share owner.
+ */
+static void
+test_ts_mutex_rules(int waiter_class, int waiter_param)
+{
+        struct kthread *w;
+        int waiter_cpu = ncpus > 1 ? 0 : test_cpu();
+
+        mutex_init(&rule_mutex, "rules");
+        rule_release = 0;
+        rule_owner = NULL;
+        (void)kthread_create_bound(rule_owner_thread, NULL, PRI_KERNEL,
+            "rule_own", test_cpu());
+        psema(&ready);
+        w = kthread_create_bound(rule_waiter_thread,
+            CLASSARG(waiter_class, waiter_param), PRI_KERNEL, "rule_wait",
+            waiter_cpu);
+        wait_asleep(w);
+        if (waiter_class == SCHED_TS) {
+                /* A time-share waiter gives a time-share owner nothing. */
+                int ks = thread_lock(rule_owner);
+                int inherited = mutex_inherited_pri(rule_owner);
+                int pri = rule_owner->kt_pri, base = rule_owner->kt_basepri;
+
+                thread_unlock(rule_owner, ks);
+                CHECK(inherited == PRI_IDLE);
+                CHECK(pri == base && pri <= PRI_TS_CREDIT);
+        } else {
+                CHECK(rule_owner->kt_pri == waiter_param);
+        }
+        rule_release = 1;
+        wait_done(2);
+        CHECK(owner_pri_after <= PRI_TS_CREDIT);
+        if (waiter_class == SCHED_TS) {
+                CHECK(waiter_pri_held == PRI_TS_BOOST);
+                CHECK(waiter_pri_after <= PRI_TS_CREDIT);
+        }
+}
+
+/* Priority-scheduled waiters are served before earlier time-share ones. */
+static volatile uint32_t order_seq;
+static volatile uint32_t order_of[2];
+
+static void
+order_thread(void *arg)
+{
+        uintptr_t a = (uintptr_t)arg;
+        int slot = (int)(a >> 16);
+
+        (void)kthread_setclass(curthread, (int)((a >> 8) & 0xff),
+            (int)(a & 0xff));
+        mutex_lock(&rule_mutex);
+        order_of[slot] = ++order_seq;
+        mutex_unlock(&rule_mutex);
+        vsema(&done);
+}
+
+static void
+test_ps_first(void)
+{
+        struct kthread *ts, *rr;
+
+        mutex_init(&rule_mutex, "order");
+        order_seq = 0;
+        mutex_lock(&rule_mutex);
+        ts = kthread_create(order_thread,
+            (void *)(uintptr_t)((0 << 16) | (SCHED_TS << 8) | TS_DEFWEIGHT),
+            PRI_KERNEL, "order_ts");
+        wait_asleep(ts);
+        rr = kthread_create(order_thread,
+            (void *)(uintptr_t)((1 << 16) | (SCHED_RR << 8) | 40),
+            PRI_KERNEL, "order_rr");
+        wait_asleep(rr);
+        mutex_unlock(&rule_mutex);
+        wait_done(2);
+        CHECK(order_of[1] == 1 && order_of[0] == 2);
+}
+
 int
 selftest_sched(void)
 {
@@ -557,6 +827,7 @@ selftest_sched(void)
 
         failures = 0;
         sema_init(&done, 0, "selftest_done");
+        sema_init(&ready, 0, "selftest_ready");
 
         CHECK(curthread != NULL && sched_running);
         test_lifecycle();
@@ -571,6 +842,15 @@ selftest_sched(void)
         test_priority_inheritance();
         test_spread();
         test_bind();
+        test_ts_weights();
+        test_class_switch();
+        test_fair_share(0);
+        test_fair_share(1);
+        test_rr_over_ts();
+        test_fifo();
+        test_ts_mutex_rules(SCHED_TS, TS_DEFWEIGHT);
+        test_ts_mutex_rules(SCHED_RR, 50);
+        test_ps_first();
 
         printf("selftest: scheduler and sync tests: %ju ticks, "
             "%u threads left, %u max concurrent readers\n",

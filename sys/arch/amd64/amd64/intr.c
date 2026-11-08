@@ -32,6 +32,7 @@
 #include <sys/intr.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
+#include <sys/schedclass.h>
 #include <sys/smp.h>
 #include <sys/spinlock.h>
 #include <sys/synch.h>
@@ -246,6 +247,7 @@ intr_establish(int irq, int flags, int (*fn)(void *), void *arg,
                 snprintf(tname, sizeof(tname), "intr%u", gsi);
                 src->is_thread = kthread_create(intr_thread, src, PRI_INTR,
                     tname);
+                (void)kthread_setclass(src->is_thread, SCHED_FIFO, PRI_INTR);
         }
 
         ih = kmem_zalloc(sizeof(*ih), KM_SLEEP);

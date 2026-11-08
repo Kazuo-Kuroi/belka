@@ -24,6 +24,7 @@
 #include <sys/kmem.h>
 #include <sys/kthread.h>
 #include <sys/sched.h>
+#include <sys/schedclass.h>
 #include <sys/spinlock.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
@@ -64,6 +65,7 @@ kthread_init_fields(struct kthread *kt, const char *name, int pri)
         kt->kt_basepri = pri;
         kt->kt_slice = SCHED_SLICE;
         kt->kt_bindcpu = KT_NOCPU;
+        kt->kt_class = sched_classes[SCHED_RR];
         kt->kt_id = atomic_inc_64_nv(&next_tid);
         for (i = 0; i + 1 < KT_NAMELEN && name[i] != '\0'; i++)
                 kt->kt_name[i] = name[i];
@@ -99,9 +101,10 @@ kthread_free(struct kthread *kt)
                 }
         }
         spin_unlock(&allthreads_lock, s);
-        atomic_dec_32_nv(&nthreads);
         kstack_free(kt->kt_stack);
         kmem_zone_free(kthread_zone, kt);
+        /* Last, so a count back at its old value means all is freed. */
+        atomic_dec_32_nv(&nthreads);
 }
 
 /*
@@ -115,7 +118,7 @@ kthread_create_bound(void (*fn)(void *), void *arg, int pri,
         struct kthread *kt;
         int s;
 
-        if (pri < PRI_MIN || pri > PRI_MAX)
+        if (pri < PRI_TS_BOOST || pri > PRI_MAX)
                 panic("kthread_create: %s: bad priority %d", name, pri);
         kt = kthread_alloc(name, pri);
         kt->kt_bindcpu = cpu;
@@ -144,9 +147,11 @@ kthread_exit(void)
 
         if (kt == &thread0 || (kt->kt_flags & KTF_IDLE) != 0)
                 panic("kthread_exit: %s may not exit", kt->kt_name);
-        if (kt->kt_mutexes != NULL)
+        if (kt->kt_mutexes != NULL || kt->kt_tsboost != 0)
                 panic("kthread_exit: %s exits holding contended mutexes",
                     kt->kt_name);
+        if (kt->kt_class != NULL && kt->kt_class->cl_leave != NULL)
+                kt->kt_class->cl_leave(kt);
         s = thread_lock(kt);
         kt->kt_state = KT_ZOMB;
         swtch(s);
@@ -183,15 +188,21 @@ reaper(void *arg __unused)
         }
 }
 
-/* Change kt's assigned priority; inheritance may keep it higher. */
+/*
+ * Change a fixed-priority thread's assigned priority; inheritance may
+ * keep it higher. Time-share threads are placed by their class and
+ * ignore this.
+ */
 void
 kthread_setpri(struct kthread *kt, int pri)
 {
-        int s = thread_lock(kt);
-        int inherited = mutex_inherited_pri(kt);
+        int s;
 
+        if (!kthread_is_ps(kt) || pri < PRI_TS_BOOST || pri > PRI_MAX)
+                return;
+        s = thread_lock(kt);
         kt->kt_basepri = pri;
-        sched_setpri(kt, pri > inherited ? pri : inherited);
+        sched_recompute(kt);
         thread_unlock(kt, s);
 }
 
@@ -246,6 +257,7 @@ kthread_alloc_idle(struct cpu_info *ci, vaddr_t stack_top)
         kt->kt_pri = PRI_IDLE;
         kt->kt_basepri = PRI_IDLE;
         kt->kt_flags = KTF_IDLE;
+        kt->kt_class = NULL;
         kt->kt_bindcpu = (int)ci->ci_cpuid;
         if (stack_top == 0) {
                 kt->kt_fn = idle_entry;
@@ -273,6 +285,7 @@ sched_init(void)
         kthread_zone = kmem_zone_init(sizeof(struct kthread), "kthread");
         sema_init(&reaper_sema, 0, "reaper");
         callout_init();
+        ts_init();
 
         kthread_init_fields(&thread0, "thread0", PRI_KERNEL);
         thread0.kt_state = KT_ONPROC;

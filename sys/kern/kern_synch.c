@@ -27,6 +27,7 @@
 #include <stdint.h>
 
 #include <sys/kthread.h>
+#include <sys/schedclass.h>
 #include <sys/spinlock.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
@@ -42,6 +43,17 @@ sleepq_init(struct sleepq *sq)
         sq->sq_count = 0;
 }
 
+/*
+ * The key a priority-ordered queue sorts by. As in IRIX, only
+ * priority-scheduled threads are ordered; time-share threads queue in
+ * FIFO order behind them.
+ */
+static int
+sleepq_key(const struct kthread *kt)
+{
+        return kthread_is_ps(kt) ? kt->kt_pri : PRI_IDLE;
+}
+
 /* Queue kt on sq, in FIFO or priority order. The object's lock is held. */
 void
 sleepq_insert(struct sleepq *sq, struct kthread *kt, int order)
@@ -49,8 +61,10 @@ sleepq_insert(struct sleepq *sq, struct kthread *kt, int order)
         struct kthread *after = sq->sq_tail;
 
         if (order == SQ_PRIO) {
-                /* After the last thread of equal or higher priority. */
-                while (after != NULL && after->kt_pri < kt->kt_pri)
+                int key = sleepq_key(kt);
+
+                /* After the last thread of equal or higher key. */
+                while (after != NULL && sleepq_key(after) < key)
                         after = after->kt_prev;
         }
         kt->kt_prev = after;

@@ -22,7 +22,10 @@
  *
  * Priority inheritance is one level deep: a mutex owner is raised to its
  * highest waiter's priority, but the boost does not pass on to the owner
- * of a mutex that owner is itself waiting for.
+ * of a mutex that owner is itself waiting for. As in IRIX, only
+ * priority-scheduled (RR and FIFO) waiters are ordered by priority and
+ * cause inheritance; a time-share thread handed a mutex is instead
+ * raised to PRI_TS_BOOST until it releases it.
  *
  * Lock order: a sync object's spin lock is taken before kt_lock
  * (sync object -> kthread -> run queue). Sleepers never hold both.
@@ -53,6 +56,7 @@ struct mutex {
         struct sleepq   m_waiters;      /* by priority */
         struct mutex    *m_ownnext;     /* owner's contended mutexes */
         int             m_onlist;       /* on the owner's list */
+        int             m_boosted;      /* owner holds a time-share boost */
         const char      *m_name;
 };
 

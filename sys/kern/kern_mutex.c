@@ -13,7 +13,8 @@
  * the owner's fast unlock then fails and it takes the slow path, which
  * hands the mutex straight to the highest-priority waiter.
  *
- * Inheritance: a waiter raises the owner to its own priority if higher.
+ * Inheritance: a priority-scheduled waiter raises the owner to its own
+ * priority if higher; time-share waiters do not.
  * Each thread keeps a list of the contended mutexes it owns; when it
  * releases one, its priority drops back to the highest of its base
  * priority and the first waiters of the mutexes it still holds. The new
@@ -28,6 +29,7 @@
 #include <stdint.h>
 
 #include <sys/kthread.h>
+#include <sys/schedclass.h>
 #include <sys/spinlock.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
@@ -48,6 +50,7 @@ mutex_init(struct mutex *m, const char *name)
         sleepq_init(&m->m_waiters);
         m->m_ownnext = NULL;
         m->m_onlist = 0;
+        m->m_boosted = 0;
         m->m_name = name;
 }
 
@@ -65,7 +68,8 @@ mutex_inherited_pri(const struct kthread *kt)
             m = m->m_ownnext) {
                 const struct kthread *w = m->m_waiters.sq_head;
 
-                if (w != NULL && w->kt_pri > best)
+                /* Priority-scheduled waiters sort first; only they count. */
+                if (w != NULL && kthread_is_ps(w) && w->kt_pri > best)
                         best = w->kt_pri;
         }
         return best;
@@ -144,7 +148,7 @@ mutex_lock_slow(struct mutex *m)
                 owner->kt_mutexes = m;
                 m->m_onlist = 1;
         }
-        if (self->kt_pri > owner->kt_pri)
+        if (kthread_is_ps(self) && self->kt_pri > owner->kt_pri)
                 sched_setpri(owner, self->kt_pri);
         thread_unlock(owner, os);
         spin_unlock(&m->m_lock, s);
@@ -179,12 +183,19 @@ mutex_unlock(struct mutex *m)
         mutex_unlock_slow(m);
 }
 
+/*
+ * Release m with waiters, or with a time-share boost to give up. Hand
+ * it to the first waiter, give up what we inherited or were boosted by
+ * through m, and let the new owner inherit from the waiters left. A
+ * time-share new owner is boosted, and MUTEX_WAITERS is kept set so
+ * that its own release comes back here to drop the boost.
+ */
 static void
 mutex_unlock_slow(struct mutex *m)
 {
         struct kthread *self = curthread;
         struct kthread *next;
-        int more, s, ks, inherited;
+        int more, s, ks, boost;
 
         if (OWNER(m->m_owner) != self)
                 panic("mutex_unlock: %s not held by %s", m->m_name,
@@ -192,36 +203,39 @@ mutex_unlock_slow(struct mutex *m)
 
         s = spin_lock(&m->m_lock);
         next = sleepq_remove_first(&m->m_waiters);
-        if (next == NULL)
-                panic("mutex_unlock: %s marked contended with no waiters",
-                    m->m_name);
         more = m->m_waiters.sq_count != 0;
-        next->kt_blockedon = NULL;
+        boost = next != NULL && !kthread_is_ps(next);
+        if (next != NULL)
+                next->kt_blockedon = NULL;
         atomic_store_64((volatile uint64_t *)&m->m_owner,
-            (uintptr_t)next | (more ? MUTEX_WAITERS : 0));
+            next == NULL ? 0 : (uintptr_t)next |
+            ((more || boost) ? MUTEX_WAITERS : 0));
 
-        /* Give up what we inherited through m. */
         ks = thread_lock(self);
-        mutex_list_remove(self, m);
-        inherited = mutex_inherited_pri(self);
-        sched_setpri(self, self->kt_basepri > inherited ?
-            self->kt_basepri : inherited);
+        if (m->m_onlist)
+                mutex_list_remove(self, m);
+        if (m->m_boosted) {
+                self->kt_tsboost--;
+                m->m_boosted = 0;
+        }
+        sched_recompute(self);
         thread_unlock(self, ks);
 
-        /* The new owner inherits from the waiters still queued. */
-        ks = thread_lock(next);
-        if (more) {
-                int pri = m->m_waiters.sq_head->kt_pri;
-
-                m->m_ownnext = next->kt_mutexes;
-                next->kt_mutexes = m;
-                m->m_onlist = 1;
-                if (pri > next->kt_pri)
-                        sched_setpri(next, pri);
+        if (next != NULL) {
+                ks = thread_lock(next);
+                if (more) {
+                        m->m_ownnext = next->kt_mutexes;
+                        next->kt_mutexes = m;
+                        m->m_onlist = 1;
+                }
+                if (boost) {
+                        next->kt_tsboost++;
+                        m->m_boosted = 1;
+                }
+                sched_recompute(next);
+                thread_unlock(next, ks);
+                wakeup_thread(next);
         }
-        thread_unlock(next, ks);
-
-        wakeup_thread(next);
         spin_unlock(&m->m_lock, s);
 }
 

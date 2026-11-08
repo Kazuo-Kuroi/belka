@@ -59,7 +59,9 @@
 struct cpu_info;
 struct mutex;
 struct runq;
+struct sched_class;
 struct sleepq;
+struct tsjob;
 
 struct kthread {
         uint64_t        kt_rsp;         /* saved stack pointer */
@@ -70,6 +72,14 @@ struct kthread {
         int             kt_basepri;     /* assigned */
         int             kt_slice;       /* ticks left in the time slice */
         int             kt_bindcpu;     /* KT_NOCPU, or the only cpu */
+
+        /* Scheduling class; see <sys/schedclass.h>. */
+        const struct sched_class *kt_class;
+        struct tsjob    *kt_job;        /* time-share job */
+        struct kthread  *kt_jobnext;    /* other threads of the job */
+        int             kt_tsboost;     /* handed-off mutexes held (TS) */
+        uint64_t        kt_ticks;       /* ticks spent running */
+        uint64_t        kt_lastrun;     /* lbolt when last switched out */
 
         /* Run queue or sleep queue linkage; never on both. */
         struct kthread  *kt_next;
