@@ -40,6 +40,9 @@ void main(void) __dead;
 /* subr_selftest.c */
 int selftest_run(void);
 
+/* Machine-dependent self-tests; returns the number of failed checks. */
+int md_selftest(void);
+
 /*
  * Machine-dependent shutdown. fcn is one of the AD_* values in
  * <sys/uadmin.h>; status is 0 for a clean stop and nonzero after a

@@ -4,23 +4,31 @@
 # Created: 2026-11-07
 # SPDX-License-Identifier: MIT
 #
-# Boot the kernel under QEMU and report whether it passed. The kernel
-# signals its result through the isa-debug-exit device: QEMU exits with
-# status 33 on success and 35 after a panic. Serial output is saved to
+# Boot the kernel under QEMU and check the outcome. The kernel signals
+# its result through the isa-debug-exit device: QEMU exits with status
+# 33 after a clean halt and 35 after a panic. Serial output is saved to
 # the log file and echoed.
 #
-# usage: qemu-test.sh logfile qemu-command...
+# usage: qemu-test.sh pass|panic logfile qemu-command...
 #
 
 set -u
 
-if [ $# -lt 2 ]; then
-        echo "usage: $0 logfile qemu-command..." >&2
+if [ $# -lt 3 ]; then
+        echo "usage: $0 pass|panic logfile qemu-command..." >&2
         exit 1
 fi
 
-log=$1
-shift
+case $1 in
+pass)   want=33 ;;
+panic)  want=35 ;;
+*)
+        echo "$0: expected outcome must be pass or panic" >&2
+        exit 1
+        ;;
+esac
+log=$2
+shift 2
 timeout_secs=${QEMU_TIMEOUT:-60}
 
 timeout "$timeout_secs" "$@" -serial "file:$log" </dev/null
@@ -28,18 +36,15 @@ status=$?
 cat "$log"
 
 case $status in
-33)
-        echo "test: PASS"
-        exit 0
-        ;;
-35)
-        echo "test: FAIL (kernel panic)" >&2
-        ;;
-124)
-        echo "test: FAIL (timed out after ${timeout_secs}s)" >&2
-        ;;
-*)
-        echo "test: FAIL (QEMU exit status $status)" >&2
-        ;;
+33)     got="clean halt" ;;
+35)     got="kernel panic" ;;
+124)    got="timed out after ${timeout_secs}s" ;;
+*)      got="QEMU exit status $status" ;;
 esac
+
+if [ "$status" -eq "$want" ]; then
+        echo "test: PASS ($got)"
+        exit 0
+fi
+echo "test: FAIL ($got)" >&2
 exit 1

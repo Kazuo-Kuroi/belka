@@ -133,5 +133,5 @@ selftest_run(void)
         selftest_atomic();
         selftest_prf();
         selftest_string();
-        return selftest_failures;
+        return selftest_failures + md_selftest();
 }

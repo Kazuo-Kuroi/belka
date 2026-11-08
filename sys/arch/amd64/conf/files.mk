@@ -11,8 +11,6 @@ MD_CFLAGS       := -mcmodel=kernel -mno-red-zone \
 MD_ASFLAGS      :=
 
 LDSCRIPT        := sys/arch/amd64/conf/kernel.ld
-LIMINE_CONF     := sys/arch/amd64/conf/limine.conf
-LIMINE_TEST_CONF := sys/arch/amd64/conf/limine-test.conf
 
 MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_cons.c \
@@ -24,5 +22,8 @@ MI_SRCS         := sys/kern/init_main.c \
 MD_SRCS         := sys/arch/amd64/amd64/locore.S \
                    sys/arch/amd64/amd64/atomic.S \
                    sys/arch/amd64/amd64/cpufunc.S \
+                   sys/arch/amd64/amd64/vector.S \
+                   sys/arch/amd64/amd64/cpu_tables.c \
+                   sys/arch/amd64/amd64/trap.c \
                    sys/arch/amd64/amd64/limine_boot.c \
                    sys/arch/amd64/amd64/machdep.c

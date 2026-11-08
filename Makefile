@@ -13,7 +13,7 @@
 #   WERROR      yes to treat warnings as errors
 #   SMP         number of CPUs given to QEMU (default 4)
 #
-# Targets: all, iso, run, test, limine, clean, distclean.
+# Targets: all, iso, run, test, test-fault, limine, clean, distclean.
 #
 
 ARCH            ?= amd64
@@ -38,6 +38,7 @@ OVMF_CODE       ?= /usr/share/OVMF/OVMF_CODE_4M.fd
 KERNEL          := $(BUILD)/belka
 ISO             := $(BUILD)/belka.iso
 TEST_ISO        := $(BUILD)/belka-test.iso
+FAULT_ISO       := $(BUILD)/belka-fault.iso
 
 INCLUDES        := -nostdinc -isystem $(CC_INCLUDE) \
                    -Isys -Isys/arch/$(ARCH)/include -Isys/external
@@ -66,7 +67,7 @@ LDFLAGS         := -nostdlib -static -z max-page-size=0x1000 \
 SRCS            := $(MI_SRCS) $(MD_SRCS)
 OBJS            := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS)))
 
-.PHONY: all iso run test limine clean distclean
+.PHONY: all iso run test test-fault limine clean distclean
 
 all: $(KERNEL)
 
@@ -91,12 +92,17 @@ $(LIMINE_DIR)/.stamp: tools/fetch-limine.sh
 
 iso: $(ISO)
 
-# mkiso.sh <kernel> <limine dir> <limine.conf> <output>
-$(ISO): $(KERNEL) $(LIMINE_DIR)/.stamp $(LIMINE_CONF) tools/mkiso.sh
-	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) $(LIMINE_CONF) $@
+# mkiso.sh kernel limine-dir timeout cmdline output
+ISO_DEPS        := $(KERNEL) $(LIMINE_DIR)/.stamp tools/mkiso.sh
 
-$(TEST_ISO): $(KERNEL) $(LIMINE_DIR)/.stamp $(LIMINE_TEST_CONF) tools/mkiso.sh
-	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) $(LIMINE_TEST_CONF) $@
+$(ISO): $(ISO_DEPS)
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 3 "" $@
+
+$(TEST_ISO): $(ISO_DEPS)
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit" $@
+
+$(FAULT_ISO): $(ISO_DEPS)
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testfault" $@
 
 QEMU            ?= qemu-system-x86_64
 QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
@@ -107,11 +113,17 @@ QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
 run: $(ISO)
 	$(QEMU) $(QEMU_FLAGS) -cdrom $(ISO) -serial mon:stdio
 
-# A test boot passes when the kernel reports success through the QEMU
-# debug-exit device, which makes QEMU exit with status 33.
+# The kernel reports its result through the QEMU debug-exit device:
+# QEMU exits with 33 after a clean halt and 35 after a panic. "test"
+# expects a clean run; "test-fault" makes the kernel touch an unmapped
+# address and expects the resulting panic.
 test: $(TEST_ISO)
-	sh tools/qemu-test.sh $(BUILD)/test-serial.log \
+	sh tools/qemu-test.sh pass $(BUILD)/test-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(TEST_ISO)
+
+test-fault: $(FAULT_ISO)
+	sh tools/qemu-test.sh panic $(BUILD)/test-fault-serial.log \
+	    $(QEMU) $(QEMU_FLAGS) -cdrom $(FAULT_ISO)
 
 clean:
 	rm -rf $(BUILD)

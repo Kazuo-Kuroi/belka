@@ -13,8 +13,16 @@
 
 #include <sys/compiler.h>
 
+struct trapframe;
+
 /* machdep.c: called from locore.S on the bootstrap processor. */
 void amd64_init(void) __dead;
+
+/* trap.c */
+void trap(struct trapframe *);
+extern volatile int trap_expect;
+extern volatile int trap_expect_skip;
+extern volatile int trap_expect_seen;
 
 /* Symbols defined by the linker script and locore.S. */
 extern char kernel_start[];

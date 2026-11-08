@@ -15,8 +15,11 @@
 #include <sys/uadmin.h>
 
 #include <machine/bootinfo.h>
+#include <machine/cpu.h>
 #include <machine/cpufunc.h>
 #include <machine/md_var.h>
+#include <machine/segments.h>
+#include <machine/trap.h>
 
 #include "dev/ic/ns16550var.h"
 
@@ -32,7 +35,14 @@
 #define DEBUG_EXIT_PASS 0x10    /* QEMU exits with 33 */
 #define DEBUG_EXIT_FAIL 0x11    /* QEMU exits with 35 */
 
+/* An address no boot loader maps, for the deliberate-fault test. */
+#define UNMAPPED_VA     UINT64_C(0x00007fffdead0000)
+
 struct bootinfo bootinfo;
+struct cpu_info cpu_info_primary;
+
+/* Interrupt stacks for the bootstrap processor. */
+static uint64_t bsp_ist_stacks[NIST][IST_STACK_SIZE / sizeof(uint64_t)];
 
 static struct ns16550_softc console_softc;
 
@@ -49,6 +59,7 @@ static const char *const bootmem_names[] = {
 };
 
 static void print_memory_map(const struct bootinfo *);
+static uint64_t stack_top(const void *, size_t);
 
 static void
 print_memory_map(const struct bootinfo *bi)
@@ -71,6 +82,13 @@ print_memory_map(const struct bootinfo *bi)
         printf("usable memory: %ju KB\n", (uintmax_t)(usable / 1024));
 }
 
+/* Return the 16-byte aligned top of a stack of size bytes at base. */
+static uint64_t
+stack_top(const void *base, size_t size)
+{
+        return ((uint64_t)(uintptr_t)base + size) & ~(uint64_t)15;
+}
+
 /*
  * First C code on the bootstrap processor. Interrupts are disabled and
  * the boot loader's page tables and GDT are still in use.
@@ -79,9 +97,23 @@ void
 amd64_init(void)
 {
         struct bootinfo *bi = &bootinfo;
+        uint64_t ist_top[NIST];
         int collected;
 
         (void)ns16550_cninit(&console_softc, CONSOLE_IOBASE, CONSOLE_SPEED);
+
+        /*
+         * Take over the descriptor tables before anything else can
+         * fault, so that faults are reported instead of resetting the
+         * machine.
+         */
+        for (int i = 0; i < NIST; i++)
+                ist_top[i] = stack_top(bsp_ist_stacks[i],
+                    sizeof(bsp_ist_stacks[i]));
+        idt_init();
+        cpu_tables_init(&cpu_info_primary,
+            stack_top(boot_stack, (size_t)(boot_stack_top - boot_stack)),
+            ist_top);
 
         collected = limine_boot_collect(bi);
         if (collected != 0)
@@ -102,6 +134,51 @@ amd64_init(void)
         print_memory_map(bi);
 
         main();
+}
+
+/*
+ * amd64 self-tests: per-processor data and exception delivery. With the
+ * "testfault" boot option, finish by touching an unmapped address, which
+ * must end in a page-fault panic; the test harness checks for that.
+ */
+int
+md_selftest(void)
+{
+        int failures = 0;
+
+        if (curcpu() != &cpu_info_primary) {
+                printf("selftest: curcpu() is %p, expected %p\n",
+                    (void *)curcpu(), (void *)&cpu_info_primary);
+                failures++;
+        }
+
+        trap_expect_seen = 0;
+
+        /* int3 is a trap: the saved rip is already past it. */
+        trap_expect_skip = 0;
+        trap_expect = BPTFLT;
+        breakpoint();
+
+        /* ud2 is a fault: the saved rip points at the 2-byte instruction. */
+        trap_expect_skip = 2;
+        trap_expect = INVOPFLT;
+        cpu_ud2();
+
+        if (trap_expect_seen != 2 || trap_expect != -1) {
+                printf("selftest: %d of 2 expected traps seen\n",
+                    trap_expect_seen);
+                failures++;
+        }
+
+        if (boot_option("testfault")) {
+                printf("selftest: touching %#jx; a page fault panic "
+                    "should follow\n", (uintmax_t)UNMAPPED_VA);
+                *(volatile uint64_t *)(uintptr_t)UNMAPPED_VA = 1;
+                printf("selftest: no fault was raised\n");
+                failures++;
+        }
+
+        return failures;
 }
 
 int

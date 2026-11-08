@@ -4,33 +4,46 @@
 # Created: 2026-11-07
 # SPDX-License-Identifier: MIT
 #
-# Build a UEFI-bootable ISO image holding Limine and the kernel.
+# Build a UEFI-bootable ISO image holding Limine and the kernel, with a
+# Limine configuration generated for the given menu timeout and kernel
+# command line.
 #
-# usage: mkiso.sh kernel limine-dir limine.conf output.iso
+# usage: mkiso.sh kernel limine-dir timeout cmdline output.iso
 #
 
 set -eu
 
-if [ $# -ne 4 ]; then
-        echo "usage: $0 kernel limine-dir limine.conf output.iso" >&2
+if [ $# -ne 5 ]; then
+        echo "usage: $0 kernel limine-dir timeout cmdline output.iso" >&2
         exit 1
 fi
 
 kernel=$1
 limine=$2
-conf=$3
-out=$4
+timeout=$3
+cmdline=$4
+out=$5
 
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 
 mkdir -p "$root/boot/limine" "$root/EFI/BOOT"
 cp "$kernel" "$root/boot/belka"
-cp "$conf" "$root/boot/limine/limine.conf"
 cp "$limine/limine-uefi-cd.bin" "$root/boot/limine/"
 cp "$limine/BOOTX64.EFI" "$root/EFI/BOOT/"
 
-xorriso -as mkisofs -quiet -R -r -J \
+{
+        echo "timeout: $timeout"
+        echo
+        echo "/Belka"
+        echo "    protocol: limine"
+        echo "    path: boot():/boot/belka"
+        if [ -n "$cmdline" ]; then
+                echo "    cmdline: $cmdline"
+        fi
+} > "$root/boot/limine/limine.conf"
+
+xorriso -report_about SORRY -as mkisofs -R -r -J \
     --efi-boot boot/limine/limine-uefi-cd.bin \
     -efi-boot-part --efi-boot-image --protective-msdos-label \
     "$root" -o "$out"

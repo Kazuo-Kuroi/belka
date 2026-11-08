@@ -18,6 +18,7 @@ make                    # build build/amd64-gcc/belka
 make TOOLCHAIN=clang    # build with Clang and ld.lld
 make run                # boot in QEMU with the serial console on stdio
 make test               # boot, run the self-tests, and report PASS/FAIL
+make test-fault         # boot, force a page fault, expect a clean panic
 ```
 
 `make INLINE_ASM=no` builds the out-of-line fallbacks for every inline
@@ -35,7 +36,7 @@ downloads a pinned, checksummed Limine release into `build/`.
 | `sys/dev/ic` | drivers for chips, independent of the bus |
 | `sys/arch/amd64/amd64` | amd64 machine-dependent code |
 | `sys/arch/amd64/include/machine` | amd64 headers (`<machine/...>`) |
-| `sys/arch/amd64/conf` | source lists, linker script, Limine configuration |
+| `sys/arch/amd64/conf` | source lists and linker script |
 | `sys/external` | imported third-party code, under its own licence |
 | `mk` | toolchain definitions |
 | `tools` | build and test scripts |

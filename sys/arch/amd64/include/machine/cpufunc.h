@@ -81,6 +81,27 @@ uint64_t read_rflags(void);
 
 #endif /* HAVE_INLINE_ASM */
 
+/*
+ * Routines that are only used during processor setup, on fault paths,
+ * or in tests. They are always out of line.
+ */
+void lgdt_load(uint64_t, uint16_t, uint16_t, uint16_t);
+void lidt_load(uint64_t, uint16_t);
+void ltr(uint16_t);
+uint64_t rdmsr(uint32_t);
+void wrmsr(uint32_t, uint64_t);
+uint64_t rcr0(void);
+uint64_t rcr2(void);
+uint64_t rcr3(void);
+uint64_t rcr4(void);
+void breakpoint(void);
+void cpu_ud2(void);
+
 #define PSL_I           0x00000200      /* RFLAGS interrupt enable */
+
+/* Model-specific registers. */
+#define MSR_FSBASE      0xc0000100
+#define MSR_GSBASE      0xc0000101
+#define MSR_KERNELGSBASE 0xc0000102
 
 #endif /* _MACHINE_CPUFUNC_H_ */
