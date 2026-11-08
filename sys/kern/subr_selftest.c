@@ -15,6 +15,9 @@
 #include <sys/systm.h>
 
 #include <machine/atomic.h>
+#include <machine/param.h>
+
+#include <vm/page.h>
 
 static int selftest_failures;
 
@@ -27,7 +30,14 @@ static int selftest_failures;
                 }                                                       \
         } while (0)
 
+#define PAGE_STRESS_SLOTS       256
+#define PAGE_STRESS_ROUNDS      20000
+
 static void selftest_atomic(void);
+static void selftest_page(void);
+static int page_stats_equal(const struct page_stats *,
+    const struct page_stats *);
+static uint32_t selftest_random(void);
 static void selftest_prf(void);
 static void selftest_string(void);
 
@@ -125,6 +135,157 @@ selftest_string(void)
         CHECK(strncmp("abcx", "abcy", 3) == 0);
 }
 
+static uint32_t selftest_seed = 12345;
+
+/* A linear congruential generator; good enough to vary test patterns. */
+static uint32_t
+selftest_random(void)
+{
+        selftest_seed = selftest_seed * 1103515245u + 12345u;
+        return selftest_seed >> 8;
+}
+
+static int
+page_stats_equal(const struct page_stats *a, const struct page_stats *b)
+{
+        if (a->ps_managed != b->ps_managed || a->ps_free != b->ps_free)
+                return 0;
+        for (int o = 0; o < PAGE_NORDERS; o++) {
+                if (a->ps_blocks[o] != b->ps_blocks[o])
+                        return 0;
+        }
+        return 1;
+}
+
+/*
+ * Page allocator tests. Each phase returns every page it took, and the
+ * free lists must then be exactly as before, block for block, which
+ * shows that freed buddies are merged again.
+ */
+static void
+selftest_page(void)
+{
+        static struct page *slot[PAGE_STRESS_SLOTS];
+        static unsigned int slot_order[PAGE_STRESS_SLOTS];
+        struct page_stats before, after;
+        struct page *pp;
+        struct page *chain;
+        uint64_t *word;
+        size_t count;
+
+        page_get_stats(&before);
+        CHECK(before.ps_free > 0 && before.ps_free <= before.ps_managed);
+
+        /* One page: identity, alignment, and the direct map. */
+        pp = page_alloc(0, 0);
+        CHECK(pp != NULL);
+        if (pp != NULL) {
+                CHECK((pp->p_flags & PG_ALLOC) != 0);
+                CHECK((page_to_pa(pp) & PAGEOFFSET) == 0);
+                CHECK(page_to_pa(pp) != 0);
+                CHECK(pa_to_page(page_to_pa(pp)) == pp);
+                CHECK(pa_to_page(page_to_pa(pp) + 123) == pp);
+                word = page_to_kva(pp);
+                word[0] = UINT64_C(0x0123456789abcdef);
+                word[PAGESIZE / sizeof(*word) - 1] = ~word[0];
+                CHECK(word[0] == UINT64_C(0x0123456789abcdef));
+                page_free(pp, 0);
+        }
+
+        /* Every order is aligned to its own size. */
+        for (unsigned int o = 0; o < PAGE_NORDERS; o++) {
+                pp = page_alloc(o, 0);
+                if (pp == NULL)
+                        continue;       /* memory may be fragmented */
+                CHECK((pp->p_pfn & (((pfn_t)1 << o) - 1)) == 0);
+                page_free(pp, o);
+        }
+        CHECK(page_alloc(PAGE_NORDERS, 0) == NULL);
+
+        /* PA_ZERO clears a block that was dirty. */
+        pp = page_alloc(2, 0);
+        CHECK(pp != NULL);
+        if (pp != NULL) {
+                memset(page_to_kva(pp), 0xa5, 4 * PAGESIZE);
+                page_free(pp, 2);
+                pp = page_alloc(2, PA_ZERO);
+                CHECK(pp != NULL);
+        }
+        if (pp != NULL) {
+                const unsigned char *b = page_to_kva(pp);
+                size_t nonzero = 0;
+
+                for (size_t i = 0; i < 4 * PAGESIZE; i++)
+                        nonzero += (b[i] != 0);
+                CHECK(nonzero == 0);
+                page_free(pp, 2);
+        }
+
+        /*
+         * Random allocations and frees. Each block is stamped with its
+         * own address in its first and last words, and the stamps are
+         * checked on free, which catches blocks handed out twice.
+         */
+        memset(slot, 0, sizeof(slot));
+        for (int round = 0; round < PAGE_STRESS_ROUNDS; round++) {
+                unsigned int i = selftest_random() % PAGE_STRESS_SLOTS;
+
+                if (slot[i] == NULL) {
+                        unsigned int o = selftest_random() % 5;
+
+                        if ((slot[i] = page_alloc(o, 0)) == NULL)
+                                continue;
+                        slot_order[i] = o;
+                        word = page_to_kva(slot[i]);
+                        word[0] = page_to_pa(slot[i]);
+                        word[(PAGESIZE << o) / sizeof(*word) - 1] =
+                            page_to_pa(slot[i]);
+                } else {
+                        unsigned int o = slot_order[i];
+
+                        word = page_to_kva(slot[i]);
+                        CHECK(word[0] == page_to_pa(slot[i]));
+                        CHECK(word[(PAGESIZE << o) / sizeof(*word) - 1] ==
+                            page_to_pa(slot[i]));
+                        page_free(slot[i], o);
+                        slot[i] = NULL;
+                }
+        }
+        for (unsigned int i = 0; i < PAGE_STRESS_SLOTS; i++) {
+                if (slot[i] != NULL) {
+                        page_free(slot[i], slot_order[i]);
+                        slot[i] = NULL;
+                }
+        }
+        page_get_stats(&after);
+        CHECK(page_stats_equal(&before, &after));
+
+        /*
+         * Take every free page one at a time, chaining them through
+         * their own first words, which writes to every free page; then
+         * return them all.
+         */
+        chain = NULL;
+        count = 0;
+        while ((pp = page_alloc(0, 0)) != NULL) {
+                word = page_to_kva(pp);
+                word[0] = (uint64_t)(uintptr_t)chain;
+                chain = pp;
+                count++;
+        }
+        CHECK(count == before.ps_free);
+        page_get_stats(&after);
+        CHECK(after.ps_free == 0);
+        while (chain != NULL) {
+                pp = chain;
+                word = page_to_kva(pp);
+                chain = (struct page *)(uintptr_t)word[0];
+                page_free(pp, 0);
+        }
+        page_get_stats(&after);
+        CHECK(page_stats_equal(&before, &after));
+}
+
 /* Run all self-tests and return the number of failed checks. */
 int
 selftest_run(void)
@@ -133,5 +294,6 @@ selftest_run(void)
         selftest_atomic();
         selftest_prf();
         selftest_string();
+        selftest_page();
         return selftest_failures + md_selftest();
 }

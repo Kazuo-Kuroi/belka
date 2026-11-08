@@ -68,6 +68,23 @@ Recorded 2026-11-07.
 - **VFS:** IRIX-style vnode and VFS layer, a unified page cache, and a
   small buffer cache for metadata.
 
+## Physical memory (2026-11-07)
+
+- **Buddy allocator** per memory node, orders 0 to 10 (4 KB to 4 MB),
+  with every block aligned to its own size in physical memory, so the
+  same allocator supplies 2 MB large pages. Interface:
+  `page_alloc(order, flags)`, `page_alloc_node()`, `page_free()`.
+- One `struct page` per managed frame, in a single array taken from the
+  end of the largest usable segment. Free blocks never cross a segment
+  boundary.
+- Physical page 0 is never managed, so a zero physical address is never
+  valid.
+- Memory the boot loader marks reclaimable is withheld until the kernel
+  runs on its own page tables.
+- **Still to come:** a cache list that keeps freed file and anonymous
+  pages' identity (the IRIX behaviour), per-node locks, and nodes from
+  ACPI SRAT.
+
 ## File systems
 
 1. **tmpfs**, for testing.

@@ -20,6 +20,9 @@
 #include <machine/md_var.h>
 #include <machine/segments.h>
 #include <machine/trap.h>
+#include <machine/vmparam.h>
+
+#include <vm/page.h>
 
 #include "dev/ic/ns16550var.h"
 
@@ -40,6 +43,7 @@
 
 struct bootinfo bootinfo;
 struct cpu_info cpu_info_primary;
+vaddr_t dmap_base;
 
 /* Interrupt stacks for the bootstrap processor. */
 static uint64_t bsp_ist_stacks[NIST][IST_STACK_SIZE / sizeof(uint64_t)];
@@ -132,6 +136,20 @@ amd64_init(void)
         printf("processors: %ju (bootstrap LAPIC id %u)\n",
             (uintmax_t)bi->bi_ncpu, bi->bi_bsp_lapic_id);
         print_memory_map(bi);
+
+        /*
+         * Give usable memory to the page allocator. Memory the boot
+         * loader marks reclaimable still holds the page tables in use,
+         * so it is withheld until the kernel has its own.
+         */
+        dmap_base = bi->bi_hhdm_offset;
+        for (uint32_t i = 0; i < bi->bi_nmem; i++) {
+                const struct bootmem *bm = &bi->bi_mem[i];
+
+                if (bm->bm_type == BOOTMEM_USABLE)
+                        page_seg_add(bm->bm_base,
+                            bm->bm_base + bm->bm_length, 0);
+        }
 
         main();
 }

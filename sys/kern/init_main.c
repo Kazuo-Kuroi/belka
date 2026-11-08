@@ -8,8 +8,14 @@
  * Machine-independent kernel startup.
  */
 
+#include <stdint.h>
+
 #include <sys/systm.h>
 #include <sys/uadmin.h>
+
+#include <machine/param.h>
+
+#include <vm/page.h>
 
 static const char version[] = "Belka 0.0-dev";
 static const char copyright[] =
@@ -25,9 +31,16 @@ static const char copyright[] =
 void
 main(void)
 {
+        struct page_stats st;
         int failures;
 
         printf("\n%s\n%s\n\n", version, copyright);
+
+        page_init();
+        page_get_stats(&st);
+        printf("pages: %zu managed, %zu free (%ju KB)\n",
+            st.ps_managed, st.ps_free,
+            (uintmax_t)(ptob(st.ps_free) / 1024));
 
         failures = selftest_run();
         if (failures != 0)

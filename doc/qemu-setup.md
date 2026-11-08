@@ -43,5 +43,9 @@ qemu-system-x86_64 \
     -serial stdio -display none -no-reboot -no-shutdown
 ```
 
+Give the guest at least 128 MB. Below that, OVMF and Limine together
+run out of memory before the kernel is loaded. `make MEM=...` sets the
+size; the default is 512 MB.
+
 `-serial stdio` is how the kernel is observed and how automated tests read
 its output. `-no-reboot` keeps a triple fault visible instead of looping.

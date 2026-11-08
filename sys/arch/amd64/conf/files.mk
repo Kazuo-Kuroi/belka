@@ -17,6 +17,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/subr_prf.c \
                    sys/kern/subr_selftest.c \
                    sys/libkern/string.c \
+                   sys/vm/vm_page.c \
                    sys/dev/ic/ns16550.c
 
 MD_SRCS         := sys/arch/amd64/amd64/locore.S \
