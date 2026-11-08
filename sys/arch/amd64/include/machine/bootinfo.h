@@ -1,0 +1,65 @@
+/*
+ * Copyright (c) 2026 Setsuna Software L.C.
+ * Created: 2026-11-07
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * Information handed over by the boot loader, in a form independent of
+ * the boot protocol. Only limine_boot.c knows about Limine; the rest of
+ * the kernel reads this structure.
+ */
+
+#ifndef _MACHINE_BOOTINFO_H_
+#define _MACHINE_BOOTINFO_H_
+
+#include <stdint.h>
+
+#define BOOTMEM_MAX     128     /* memory map entries kept */
+
+enum bootmem_type {
+        BOOTMEM_USABLE,
+        BOOTMEM_RESERVED,
+        BOOTMEM_ACPI_RECLAIM,
+        BOOTMEM_ACPI_NVS,
+        BOOTMEM_BAD,
+        BOOTMEM_LOADER_RECLAIM, /* free once boot loader data is consumed */
+        BOOTMEM_KERNEL,         /* kernel image and boot modules */
+        BOOTMEM_FRAMEBUFFER,
+        BOOTMEM_OTHER
+};
+
+struct bootmem {
+        uint64_t        bm_base;
+        uint64_t        bm_length;
+        enum bootmem_type bm_type;
+};
+
+struct bootinfo {
+        const char      *bi_loader_name;
+        const char      *bi_loader_version;
+        const char      *bi_cmdline;
+        uint64_t        bi_hhdm_offset; /* VA of physical 0 in the direct map */
+        uint64_t        bi_kernel_pa;   /* physical load address */
+        uint64_t        bi_kernel_va;   /* virtual load address */
+        uint64_t        bi_rsdp;        /* ACPI RSDP, direct-map VA, or 0 */
+        uint64_t        bi_ncpu;
+        uint32_t        bi_bsp_lapic_id;
+        uint32_t        bi_nmem;        /* entries used in bi_mem */
+        uint32_t        bi_mem_dropped; /* entries that did not fit */
+        struct bootmem  bi_mem[BOOTMEM_MAX];
+};
+
+extern struct bootinfo bootinfo;
+
+/*
+ * Fill in bootinfo from the boot loader's responses. Returns 0 on
+ * success, or -1 if the loader does not support the protocol revision
+ * the kernel was built for.
+ */
+int limine_boot_collect(struct bootinfo *);
+
+/* Return nonzero if word appears as a whole word in the command line. */
+int boot_option(const char *);
+
+#endif /* _MACHINE_BOOTINFO_H_ */
