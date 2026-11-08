@@ -14,7 +14,7 @@
 #   SMP         number of CPUs given to QEMU (default 4)
 #
 # Targets: all, iso, run, test, test-fault, test-apfault, test-stack,
-# test-uaf, test-all, limine, clean, distclean.
+# test-uaf, test-reboot, test-all, limine, clean, distclean.
 #
 
 ARCH            ?= amd64
@@ -43,6 +43,7 @@ FAULT_ISO       := $(BUILD)/belka-fault.iso
 APFAULT_ISO     := $(BUILD)/belka-apfault.iso
 STACK_ISO       := $(BUILD)/belka-stack.iso
 UAF_ISO         := $(BUILD)/belka-uaf.iso
+REBOOT_ISO      := $(BUILD)/belka-reboot.iso
 
 INCLUDES        := -nostdinc -isystem $(CC_INCLUDE) \
                    -Isys -Isys/arch/$(ARCH)/include -Isys/external
@@ -72,7 +73,7 @@ SRCS            := $(MI_SRCS) $(MD_SRCS)
 OBJS            := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS)))
 
 .PHONY: all iso run test test-fault test-apfault test-stack test-uaf \
-	test-all limine clean distclean
+	test-reboot test-all limine clean distclean
 
 all: $(KERNEL)
 
@@ -118,6 +119,9 @@ $(STACK_ISO): $(ISO_DEPS)
 $(UAF_ISO): $(ISO_DEPS)
 	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testuaf" $@
 
+$(REBOOT_ISO): $(ISO_DEPS)
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testreboot" $@
+
 QEMU            ?= qemu-system-x86_64
 QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
                    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
@@ -157,7 +161,14 @@ test-uaf: $(UAF_ISO)
 	    $(BUILD)/test-uaf-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(UAF_ISO)
 
-test-all: test test-fault test-apfault test-stack test-uaf
+# A reboot through the ACPI reset register makes QEMU, run with
+# -no-reboot, exit with status 0.
+test-reboot: $(REBOOT_ISO)
+	QEMU_EXPECT="rebooting" sh tools/qemu-test.sh reset \
+	    $(BUILD)/test-reboot-serial.log \
+	    $(QEMU) $(QEMU_FLAGS) -cdrom $(REBOOT_ISO)
+
+test-all: test test-fault test-apfault test-stack test-uaf test-reboot
 
 clean:
 	rm -rf $(BUILD)

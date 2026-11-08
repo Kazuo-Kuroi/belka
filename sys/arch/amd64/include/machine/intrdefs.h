@@ -20,6 +20,9 @@
 
 #define ICU_OFFSET              0x20    /* 8259 vectors start here */
 
+#define DEVICE_VECTOR_FIRST     0x30
+#define DEVICE_VECTOR_LAST      0xef
+
 #define LAPIC_TIMER_VECTOR      0xf0
 #define IPI_ACTION_VECTOR       0xf1
 #define IPI_RESCHED_VECTOR      0xf2

@@ -29,6 +29,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/libkern/string.c \
                    sys/vm/vm_kva.c \
                    sys/vm/vm_page.c \
+                   sys/dev/acpi/acpi.c \
                    sys/dev/ic/ns16550.c
 
 MD_SRCS         := sys/arch/amd64/amd64/locore.S \
@@ -39,6 +40,8 @@ MD_SRCS         := sys/arch/amd64/amd64/locore.S \
                    sys/arch/amd64/amd64/trap.c \
                    sys/arch/amd64/amd64/hat.c \
                    sys/arch/amd64/amd64/intr.c \
+                   sys/arch/amd64/amd64/ioapic.c \
+                   sys/arch/amd64/amd64/acpi_machdep.c \
                    sys/arch/amd64/amd64/lapic.c \
                    sys/arch/amd64/amd64/limine_boot.c \
                    sys/arch/amd64/amd64/machdep.c \

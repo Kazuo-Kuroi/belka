@@ -35,6 +35,7 @@
 #define PRI_MAX         127
 #define NPRI            (PRI_MAX + 1)
 #define PRI_KERNEL      60      /* default for kernel threads */
+#define PRI_INTR        100     /* interrupt threads */
 #define PRI_IDLE        (-1)
 
 #define SCHED_SLICE     10      /* ticks; IRIX's default time slice */
@@ -50,6 +51,7 @@
 #define KTF_IDLE        0x0001  /* a processor's idle thread */
 #define KTF_YIELD       0x0002  /* switching away voluntarily */
 #define KTF_PREEMPTED   0x0004  /* switching away by preemption */
+#define KTF_ITHREAD     0x0008  /* an interrupt thread */
 
 #define KT_NAMELEN      16
 #define KT_NOCPU        (-1)

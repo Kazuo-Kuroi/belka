@@ -34,6 +34,15 @@ struct kva_stats {
 
 void kva_get_stats(struct kva_stats *);
 
+/*
+ * Map physical [pa, pa + len) into KVA with HAT attributes attr, for
+ * firmware tables and device registers that the direct map does not
+ * cover. Returns the virtual address of pa itself; kva_unmap_phys()
+ * takes the same address and length back.
+ */
+void *kva_map_phys(paddr_t, size_t, unsigned int);
+void kva_unmap_phys(void *, size_t);
+
 /* Returns the top of the stack, or 0 under KM_NOSLEEP if out of memory. */
 vaddr_t kstack_alloc(int);
 void kstack_free(vaddr_t);

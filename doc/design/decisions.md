@@ -218,6 +218,29 @@ Recorded 2026-11-07.
   gang, batch, frame scheduler), interrupt threads, transitive priority
   inheritance, per-processor callouts, and timed or interruptible sleeps.
 
+## ACPI, the I/O APIC, and interrupt threads (2026-11-08)
+
+- **ACPI static tables** only (`sys/dev/acpi`): the RSDP is validated,
+  the XSDT (or RSDT) walked, and every table with a good checksum
+  mapped read-only for good. Fields are read with byte-wise
+  little-endian helpers, never structure overlays. There is no AML
+  interpreter yet, so PCI interrupt routing (`_PRT`) is not available.
+- **MADT** gives the local APICs (cross-checked against the processors
+  that start), the I/O APICs, and ISA interrupt overrides; **FADT** gives
+  the reset register, which `mdboot(AD_BOOT)` uses before falling back
+  to the keyboard controller.
+- **I/O APIC:** all pins start masked; each routed GSI gets its own
+  vector from 0x30-0xef, delivered to the bootstrap processor in
+  physical mode. Spreading interrupts over processors comes later.
+- **Interrupt attachment** uses the NetBSD names (`intr_establish`,
+  `intr_disestablish`) for the planned driver model. Lines may be
+  shared; handlers return whether they claimed the interrupt.
+- **Interrupt threads (IRIX):** by default the hardware interrupt masks
+  a level-triggered line and wakes the source's thread at `PRI_INTR`
+  (100), which runs the handlers and unmasks the line, so handlers can
+  take mutexes. `INTR_FAST` runs a handler in the hardware interrupt.
+- **Test device:** the CMOS RTC's periodic interrupt (ISA IRQ 8).
+
 ## File systems
 
 1. **tmpfs**, for testing.

@@ -22,6 +22,7 @@ make test-fault         # boot, force a page fault, expect a clean panic
 make test-apfault       # the same, on a secondary processor
 make test-stack         # overflow a kernel stack, expect a double fault
 make test-uaf           # write to freed kmem, expect it to be caught
+make test-reboot        # reboot through the ACPI reset register
 make test-all           # every test above
 ```
 

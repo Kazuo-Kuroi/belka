@@ -216,3 +216,32 @@ kstack_free(vaddr_t top)
         }
         kva_free(base, KSTACK_PAGES + 1);
 }
+
+void *
+kva_map_phys(paddr_t pa, size_t len, unsigned int attr)
+{
+        paddr_t base = ptrunc(pa);
+        size_t npages = btopr(pa + len) - btop(base);
+        vaddr_t va;
+
+        if (len == 0)
+                panic("kva_map_phys: zero length");
+        va = kva_alloc(npages, KM_SLEEP);
+        for (size_t i = 0; i < npages; i++) {
+                if (hat_kenter(va + ptob(i), base + ptob(i), attr) != 0)
+                        panic("kva_map_phys: cannot map %#jx",
+                            (uintmax_t)(base + ptob(i)));
+        }
+        return (void *)(uintptr_t)(va + (pa - base));
+}
+
+void
+kva_unmap_phys(void *p, size_t len)
+{
+        vaddr_t va = (vaddr_t)(uintptr_t)p;
+        vaddr_t base = va & ~(vaddr_t)PAGEOFFSET;
+        size_t npages = btopr(va + len) - btop(base);
+
+        hat_kremove(base, npages);
+        kva_free(base, npages);
+}

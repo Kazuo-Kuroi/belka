@@ -10,21 +10,25 @@
 # the log file and echoed. If QEMU_EXPECT is set, the log must also
 # contain that text.
 #
-# usage: qemu-test.sh pass|panic logfile qemu-command...
+# With "reset", the kernel is expected to reset the machine, which QEMU
+# run with -no-reboot turns into exit status 0.
+#
+# usage: qemu-test.sh pass|panic|reset logfile qemu-command...
 #
 
 set -u
 
 if [ $# -lt 3 ]; then
-        echo "usage: $0 pass|panic logfile qemu-command..." >&2
+        echo "usage: $0 pass|panic|reset logfile qemu-command..." >&2
         exit 1
 fi
 
 case $1 in
 pass)   want=33 ;;
 panic)  want=35 ;;
+reset)  want=0 ;;
 *)
-        echo "$0: expected outcome must be pass or panic" >&2
+        echo "$0: expected outcome must be pass, panic, or reset" >&2
         exit 1
         ;;
 esac
@@ -37,6 +41,7 @@ status=$?
 cat "$log"
 
 case $status in
+0)      got="machine reset" ;;
 33)     got="clean halt" ;;
 35)     got="kernel panic" ;;
 124)    got="timed out after ${timeout_secs}s" ;;

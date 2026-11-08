@@ -16,6 +16,8 @@
 #include <sys/systm.h>
 #include <sys/uadmin.h>
 
+#include <machine/acpi_machdep.h>
+#include <machine/ioapic.h>
 #include <machine/atomic.h>
 #include <machine/bootinfo.h>
 #include <machine/cpu.h>
@@ -25,7 +27,11 @@
 #include <machine/trap.h>
 #include <machine/vmparam.h>
 
+#include <sys/intr.h>
 #include <sys/kmem.h>
+#include <sys/kthread.h>
+#include <sys/param.h>
+#include <sys/synch.h>
 
 #include <vm/hat.h>
 #include <vm/kva.h>
@@ -81,6 +87,12 @@ static void md_kva_read_all(void *);
 static void md_kva_fault_all(void *);
 static int md_selftest_hat(void);
 static int md_selftest_intr(void);
+static int md_selftest_acpi(void);
+static int md_selftest_rtc(void);
+static uint8_t rtc_read(uint8_t);
+static void rtc_write(uint8_t, uint8_t);
+static int rtc_intr(void *);
+static int md_rtc_run(int);
 static int md_recurse(int);
 static void md_note_ipi(void *);
 static void cpu_halt_self_forever(void) __dead;
@@ -404,6 +416,165 @@ md_selftest_intr(void)
         return failures;
 }
 
+/* The MADT must agree with the processors that actually started. */
+static int
+md_selftest_acpi(void)
+{
+        int failures = 0;
+
+        if (!madt.mt_valid) {
+                printf("selftest: no MADT\n");
+                return 1;
+        }
+        if (madt.mt_nlapic != bootinfo.bi_ncpu) {
+                printf("selftest: MADT lists %u processors, boot loader %ju\n",
+                    madt.mt_nlapic, (uintmax_t)bootinfo.bi_ncpu);
+                failures++;
+        }
+        for (unsigned int i = 0; i < ncpus; i++) {
+                uint32_t id = cpu_info_store[i].ci_lapic_id;
+                int found = 0;
+
+                for (unsigned int j = 0; j < madt.mt_nlapic && j < MAXCPUS;
+                    j++)
+                        found |= madt.mt_lapic_id[j] == id;
+                if (!found) {
+                        printf("selftest: cpu%u LAPIC id %u not in MADT\n",
+                            i, id);
+                        failures++;
+                }
+        }
+        if (madt.mt_nioapic == 0 || ioapic_npins() < ISA_NIRQ) {
+                printf("selftest: %u I/O APICs with %u pins\n",
+                    madt.mt_nioapic, ioapic_npins());
+                failures++;
+        }
+        return failures;
+}
+
+/*
+ * The CMOS real-time clock's periodic interrupt, ISA IRQ 8, is the test
+ * device: it needs no input and is on every PC-compatible machine.
+ * Register A selects the rate, bit 6 of register B enables the periodic
+ * interrupt, and reading register C acknowledges it.
+ */
+#define RTC_INDEX       0x70
+#define RTC_DATA        0x71
+#define RTC_REG_A       0x0a
+#define RTC_REG_B       0x0b
+#define RTC_REG_C       0x0c
+#define RTC_B_PIE       0x40
+#define RTC_RATE_64HZ   0x0a
+#define RTC_IRQ         8
+
+static struct spinlock rtc_lock = SPINLOCK_INITIALIZER("rtc");
+static struct mutex rtc_test_mutex;
+static volatile uint32_t rtc_count;
+static volatile uint32_t rtc_wrong_context;
+static volatile int rtc_expect_thread;
+
+static uint8_t
+rtc_read(uint8_t reg)
+{
+        outb(RTC_INDEX, reg);
+        return inb(RTC_DATA);
+}
+
+static void
+rtc_write(uint8_t reg, uint8_t value)
+{
+        outb(RTC_INDEX, reg);
+        outb(RTC_DATA, value);
+}
+
+/*
+ * Acknowledge and count one RTC interrupt, checking that the handler
+ * runs where it was asked to: in an interrupt thread, able to take a
+ * mutex, or in the hardware interrupt itself.
+ */
+static int
+rtc_intr(void *arg __unused)
+{
+        int s = spin_lock(&rtc_lock);
+        uint8_t c = rtc_read(RTC_REG_C);
+        int in_hw = curcpu()->ci_intr_depth != 0;
+
+        spin_unlock(&rtc_lock, s);
+        if ((c & 0x40) == 0)
+                return 0;               /* not a periodic interrupt */
+        if (rtc_expect_thread) {
+                if (in_hw || (curthread->kt_flags & KTF_ITHREAD) == 0)
+                        rtc_wrong_context++;
+                else {
+                        mutex_lock(&rtc_test_mutex);
+                        mutex_unlock(&rtc_test_mutex);
+                }
+        } else if (!in_hw) {
+                rtc_wrong_context++;
+        }
+        rtc_count++;
+        return 1;
+}
+
+/* Run the RTC at 64 Hz for half a second in the given mode. */
+static int
+md_rtc_run(int fast)
+{
+        void *cookie;
+        uint32_t got;
+        int s, failures = 0;
+
+        rtc_count = 0;
+        rtc_wrong_context = 0;
+        rtc_expect_thread = !fast;
+        cookie = intr_establish(RTC_IRQ, INTR_ISA | (fast ? INTR_FAST : 0),
+            rtc_intr, NULL, "rtc");
+        if (cookie == NULL) {
+                printf("selftest: cannot attach the RTC interrupt\n");
+                return 1;
+        }
+
+        s = spin_lock(&rtc_lock);
+        rtc_write(RTC_REG_A, (uint8_t)((rtc_read(RTC_REG_A) & 0xf0) |
+            RTC_RATE_64HZ));
+        rtc_write(RTC_REG_B, (uint8_t)(rtc_read(RTC_REG_B) | RTC_B_PIE));
+        (void)rtc_read(RTC_REG_C);
+        spin_unlock(&rtc_lock, s);
+
+        delay(HZ / 2);
+
+        s = spin_lock(&rtc_lock);
+        rtc_write(RTC_REG_B, (uint8_t)(rtc_read(RTC_REG_B) & ~RTC_B_PIE));
+        (void)rtc_read(RTC_REG_C);
+        spin_unlock(&rtc_lock, s);
+        got = rtc_count;
+        intr_disestablish(cookie);
+
+        printf("selftest: RTC %s: %u interrupts in 500 ms\n",
+            fast ? "fast handler" : "interrupt thread", got);
+        if (got < 20 || got > 45) {
+                printf("selftest: expected about 32 RTC interrupts\n");
+                failures++;
+        }
+        if (rtc_wrong_context != 0) {
+                printf("selftest: RTC handler ran in the wrong context "
+                    "%u times\n", rtc_wrong_context);
+                failures++;
+        }
+        return failures;
+}
+
+static int
+md_selftest_rtc(void)
+{
+        int failures;
+
+        mutex_init(&rtc_test_mutex, "rtc_test");
+        failures = md_rtc_run(0);
+        failures += md_rtc_run(1);
+        return failures;
+}
+
 /*
  * amd64 self-tests: per-processor data, exception delivery, and the
  * kernel page tables. With the "testfault" boot option, finish by
@@ -441,6 +612,13 @@ md_selftest(void)
 
         failures += md_selftest_hat();
         failures += md_selftest_intr();
+        failures += md_selftest_acpi();
+        failures += md_selftest_rtc();
+
+        if (boot_option("testreboot")) {
+                printf("selftest: rebooting through ACPI\n");
+                mdboot(AD_BOOT, 0);
+        }
 
         if (boot_option("teststack") && ncpus > 1) {
                 printf("selftest: overflowing cpu1's stack; a double "
@@ -532,8 +710,15 @@ mdboot(int fcn, int status)
         if (atomic_swap_32(&reported, 1) != 0)
                 cpu_halt_self_forever();
 
-        if (fcn != AD_HALT)
-                printf("mdboot: reboot not implemented, halting\n");
+        if (fcn == AD_BOOT || fcn == AD_IBOOT) {
+                printf("rebooting\n");
+                cnflush();
+                acpi_reset();
+                /* The keyboard controller's reset line, then give up. */
+                outb(0x64, 0xfe);
+                drv_usecwait(100000);
+                printf("mdboot: reset failed, halting\n");
+        }
 
         printf("halted\n");
         cnflush();
