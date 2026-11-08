@@ -105,14 +105,22 @@ test_scattered_buffer(void)
         struct page *pp[3];
         vaddr_t va = kva_alloc(3, KM_SLEEP);
         unsigned char *buf = (unsigned char *)(uintptr_t)va + 100;
-        struct page *spacer = page_alloc(0, 0);
 
-        for (int i = 0; i < 3; i++) {
-                /* Allocate in reverse, with a page between, to scatter. */
-                pp[2 - i] = page_alloc(0, PA_ZERO);
-                (void)hat_kenter(va + (vaddr_t)(2 - i) * PAGESIZE,
-                    page_to_pa(pp[2 - i]), HAT_WRITE);
+        for (int i = 0; i < 3; i++)
+                pp[i] = page_alloc(0, PA_ZERO);
+        /*
+         * Whatever order the allocator gave them in, map them so that the
+         * second page does not follow the first in physical memory.
+         */
+        if (page_to_pa(pp[1]) == page_to_pa(pp[0]) + PAGESIZE) {
+                struct page *t = pp[1];
+
+                pp[1] = pp[2];
+                pp[2] = t;
         }
+        for (int i = 0; i < 3; i++)
+                (void)hat_kenter(va + (vaddr_t)i * PAGESIZE,
+                    page_to_pa(pp[i]), HAT_WRITE);
         CHECK(page_to_pa(pp[1]) != page_to_pa(pp[0]) + PAGESIZE);
         CHECK(blkdev_read(vd0, 1234, buf, 8) == 0);
         CHECK(pattern_ok(buf, 1234, 8));
@@ -120,7 +128,6 @@ test_scattered_buffer(void)
         kva_free(va, 3);
         for (int i = 0; i < 3; i++)
                 page_free(pp[i], 0);
-        page_free(spacer, 0);
 }
 
 static void

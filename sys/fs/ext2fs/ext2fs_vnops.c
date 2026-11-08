@@ -28,6 +28,11 @@
 #include <sys/vfs.h>
 #include <sys/vnode.h>
 
+#include <machine/param.h>
+
+#include <vm/page.h>
+#include <vm/pvn.h>
+
 #include "fs/ext2fs/ext2fs.h"
 
 #define EXT2_MAXSMALLFILE       ((uint64_t)0x7fffffff)
@@ -607,7 +612,6 @@ ext2fs_read(struct vnode *vp, struct uio *uio, int ioflag __unused,
     struct cred *cr __unused)
 {
         struct ext2inode *ip = VTOI(vp);
-        struct ext2mount *em = ip->i_mnt;
         int error = 0;
 
         if (vp->v_type == VDIR)
@@ -618,28 +622,20 @@ ext2fs_read(struct vnode *vp, struct uio *uio, int ioflag __unused,
                 return EINVAL;
         mraccess(&ip->i_rwlock);
         while (uio->uio_resid > 0 && (uint64_t)uio->uio_offset < ip->i_size) {
-                uint64_t lbn = (uint64_t)uio->uio_offset / em->em_bsize;
-                size_t off = (size_t)((uint64_t)uio->uio_offset % em->em_bsize);
-                size_t n = em->em_bsize - off;
-                uint32_t pbn;
-                struct buf *bp;
+                uint64_t idx = (uint64_t)uio->uio_offset / PAGESIZE;
+                size_t off = (size_t)((uint64_t)uio->uio_offset % PAGESIZE);
+                size_t n = PAGESIZE - off;
+                struct page *pp;
 
                 if ((uint64_t)n > ip->i_size - (uint64_t)uio->uio_offset)
                         n = (size_t)(ip->i_size - (uint64_t)uio->uio_offset);
                 if ((ssize_t)n > uio->uio_resid)
                         n = (size_t)uio->uio_resid;
-                if ((error = ext2fs_bmap(ip, lbn, &pbn, 0, NULL)) != 0)
+                if ((error = ext2fs_getpage(ip, idx, 0, &pp)) != 0)
                         break;
-                if (pbn == 0) {
-                        static const char zeros[4096];
-
-                        error = uiomove((void *)(uintptr_t)zeros, n, UIO_READ,
-                            uio);
-                } else if ((error = ext2fs_bread(em, pbn, &bp)) == 0) {
-                        error = uiomove((char *)bp->b_data + off, n, UIO_READ,
-                            uio);
-                        brelse(bp);
-                }
+                error = uiomove((char *)page_to_kva(pp) + off, n, UIO_READ,
+                    uio);
+                page_rele(pp);
                 if (error != 0)
                         break;
         }
@@ -648,8 +644,11 @@ ext2fs_read(struct vnode *vp, struct uio *uio, int ioflag __unused,
 }
 
 /*
- * Write, allocating blocks as needed. Running out of space part way is
- * a short write; it is an error only if nothing was written.
+ * Write through the page cache, a block at a time, allocating blocks as
+ * needed. The page is filled before a block is allocated under it, so a
+ * new block reads as the hole it was. Running out of space part way is
+ * a short write; it is an error only if nothing was written. With
+ * IO_SYNC the pages are written back before returning.
  */
 static int
 ext2fs_write(struct vnode *vp, struct uio *uio, int ioflag,
@@ -671,39 +670,36 @@ ext2fs_write(struct vnode *vp, struct uio *uio, int ioflag,
         if ((ioflag & IO_APPEND) != 0)
                 uio->uio_offset = (off_t)ip->i_size;
         while (uio->uio_resid > 0) {
-                uint64_t lbn = (uint64_t)uio->uio_offset / em->em_bsize;
-                size_t off = (size_t)((uint64_t)uio->uio_offset % em->em_bsize);
-                size_t n = em->em_bsize - off;
-                struct buf *bp;
+                uint64_t off = (uint64_t)uio->uio_offset;
+                uint64_t lbn = off / em->em_bsize;
+                size_t boff = (size_t)(off % em->em_bsize);
+                size_t n = em->em_bsize - boff;
+                struct page *pp;
                 uint32_t pbn;
-                int isnew;
+                int isnew, whole;
 
                 if ((ssize_t)n > uio->uio_resid)
                         n = (size_t)uio->uio_resid;
-                if ((uint64_t)uio->uio_offset + n > EXT2_MAXSMALLFILE &&
-                    !em->em_largefile) {
+                if (off + n > EXT2_MAXSMALLFILE && !em->em_largefile) {
                         error = EFBIG;
                         break;
                 }
-                if ((error = ext2fs_bmap(ip, lbn, &pbn, 1, &isnew)) != 0)
+                whole = em->em_bsize == PAGESIZE && n == PAGESIZE;
+                if ((error = ext2fs_getpage(ip, off / PAGESIZE, whole,
+                    &pp)) != 0)
                         break;
-                if (isnew) {
-                        bp = ext2fs_getblk(em, pbn);
-                        bclrbuf(bp);
-                } else if (off == 0 && n == em->em_bsize) {
-                        bp = ext2fs_getblk(em, pbn);
-                } else if ((error = ext2fs_bread(em, pbn, &bp)) != 0) {
+                if ((error = ext2fs_bmap(ip, lbn, &pbn, 1, &isnew)) != 0) {
+                        page_rele(pp);
                         break;
                 }
-                if ((error = uiomove((char *)bp->b_data + off, n, UIO_WRITE,
-                    uio)) != 0) {
-                        brelse(bp);
+                if (isnew)
+                        binvalblk(em->em_dev, (daddr_t)pbn * em->em_bsects);
+                error = uiomove((char *)page_to_kva(pp) + off % PAGESIZE, n,
+                    UIO_WRITE, uio);
+                page_setdirty(pp);
+                page_rele(pp);
+                if (error != 0)
                         break;
-                }
-                if ((ioflag & IO_SYNC) != 0)
-                        (void)bwrite(bp);
-                else
-                        bdwrite(bp);
                 if ((uint64_t)uio->uio_offset > ip->i_size)
                         ext2fs_setsize(ip, (uint64_t)uio->uio_offset);
         }
@@ -715,6 +711,8 @@ ext2fs_write(struct vnode *vp, struct uio *uio, int ioflag,
         if (ext2fs_iupdate(ip) != 0 && error == 0)
                 error = EIO;
         mutex_unlock(&em->em_lock);
+        if ((ioflag & IO_SYNC) != 0 && error == 0)
+                error = ext2fs_flushpages(ip);
         mrunlock(&ip->i_rwlock);
         return error;
 }
@@ -722,18 +720,38 @@ ext2fs_write(struct vnode *vp, struct uio *uio, int ioflag,
 static int
 ext2fs_fsync(struct vnode *vp, struct cred *cr)
 {
-        return VFS_SYNC(vp->v_vfsp, cr);
+        int error = VOP_PUTPAGE(vp, 0, cr);
+        int e = VFS_SYNC(vp->v_vfsp, cr);
+
+        return error != 0 ? error : e;
 }
 
-static void
+static int
 ext2fs_inactive(struct vnode *vp, struct cred *cr __unused)
 {
         struct ext2inode *ip = VTOI(vp);
         struct ext2mount *em = ip->i_mnt;
+        int r;
 
         mutex_lock(&em->em_lock);
-        ext2fs_inactive_locked(ip);
+        r = ext2fs_inactive_locked(ip);
         mutex_unlock(&em->em_lock);
+        return r;
+}
+
+/* Write back every dirty page of vp. */
+static int
+ext2fs_putpage(struct vnode *vp, int flags __unused, struct cred *cr __unused)
+{
+        struct ext2inode *ip = VTOI(vp);
+        int error;
+
+        if (vp->v_type != VREG)
+                return 0;
+        mraccess(&ip->i_rwlock);
+        error = ext2fs_flushpages(ip);
+        mrunlock(&ip->i_rwlock);
+        return error;
 }
 
 const struct vnodeops ext2fs_vnodeops = {
@@ -755,5 +773,7 @@ const struct vnodeops ext2fs_vnodeops = {
         ext2fs_symlink,
         ext2fs_readlink,
         ext2fs_fsync,
-        ext2fs_inactive
+        ext2fs_inactive,
+        ext2fs_putpage,
+        ext2fs_reclaim
 };

@@ -17,7 +17,7 @@ object locks below.
 | `tm_lock`, one per tmpfs mount (`fs/tmpfs`) | the name space, node attributes and link counts, the node list | Taken by `VOP_INACTIVE`; never held while taking `vfs_mutex`. |
 | `tn_rwlock` (mrlock), one per tmpfs node | a file's pages and size | After `tm_lock`. Reads and writes take only this. |
 | `i_rwlock` (mrlock), one per ext2 inode (`fs/ext2fs`) | a file's data blocks and size | Taken before `em_lock`. Reads take it shared, writes and truncation exclusive. |
-| `em_lock`, one per ext2 mount (`fs/ext2fs`) | the name space, block and inode bitmaps, the superblock and group descriptors, the in-core inode table | After `i_rwlock`. Taken by `VOP_INACTIVE`; held across buffer cache calls and disk I/O. |
+| `em_lock`, one per ext2 mount (`fs/ext2fs`) | the name space, block and inode bitmaps, the superblock and group descriptors, the in-core inode table | After `i_rwlock`. Taken by `VOP_INACTIVE` and `VOP_RECLAIM`; held across buffer cache calls, disk I/O, and `vn_alloc()`, whose reclaims only try another mount's `em_lock` (`VRC_NOWAIT`) and reclaim under this one when it is the caller's. |
 | `blkdev_lock` (`kern/subr_blkdev.c`) | the block device registry | Held only while registering or looking up. |
 | `intr_mutex` (`arch/amd64/amd64/intr.c`) | the interrupt source table and handler lists, for changes | Held across `smp_call_all()` and `delay()` in `intr_disestablish()`; never taken from an interrupt. |
 
@@ -30,8 +30,13 @@ Listed roughly from outermost to innermost.
 | sync object locks: `m_lock`, `sv_lock`, `s_lock`, `mr_lock` (`kern/kern_mutex.c`, `kern_synch.c`, `kern_mrlock.c`) | the object's state and sleep queue | a caller's spin lock (`sv_wait`) | A sleeper drops the object's lock before taking its own `kt_lock`. A waker dequeues under it, then drops it before `wakeup_thread()`, so it never touches the object once the sleeper can run; only the mutex handoff takes the new owner's `kt_lock` under `m_lock`. |
 | `bc_lock` (`kern/vfs_bio.c`) | the buffer hash, free list, flags of every buffer, and counters | nothing | Never held across I/O; a buffer is marked busy and the lock dropped first. Waiters sleep on `bc_wait` with `sv_wait()`. |
 | `kt_lock`, one per thread (`kern/kern_kthread.c`) | the thread's state, priority, run queue membership, wait channel | sync object locks | Held across a context switch by the thread leaving, and released by the next thread in `sched_finish()`. Never hold two, except the switch handover. |
-| `dnlc_lock` (`kern/vfs_dnlc.c`) | the name cache | nothing | Never held across `VN_RELE`, which can enter a file system; evicted references are dropped after unlocking. |
-| `v_lock`, one per vnode (`kern/vfs_vnode.c`) | `v_count` and `v_flag` | nothing | |
+| `dnlc_lock` (`kern/vfs_dnlc.c`) | the name cache | nothing | Entries are soft references; a hit takes a real one with `vn_get()` under it, so it nests the vnode locks below. |
+| `pc_lock`, one per vnode (`vm/vm_pvn.c`) | the vnode's page hash, dirty list, and its pages' identity, holds, and `p_vflags` | `hat_klock` (through the allocator's recycling) | Nothing is allocated while it is held. Waiters for a busy page sleep on a hashed `sv` with it as the interlock. |
+| `vn_dirty_lock` (`kern/vfs_vnode.c`) | the list of vnodes with dirty pages | `dnlc_lock`, `pc_lock` | The flusher takes vnode references under it. |
+| `vf_lock`, one per vnode free list (`kern/vfs_vnode.c`) | that free list | `dnlc_lock`, `vn_dirty_lock` | Never hold two. Dropped before `VOP_RECLAIM` and before tossing pages. |
+| `v_lock`, one per vnode (`kern/vfs_vnode.c`) | `v_count`, `v_flag`, `v_number` | `vf_lock` | |
+| `vn_all_lock` (`kern/vfs_vnode.c`) | the list of all shared vnodes | nothing | Held only to walk or extend the list. |
+| `pvn_ref_lock` (`vm/vm_pvn.c`) | waiting for recyclers to drop `pc_ref` | `pc_lock` is not held | |
 | `wt_lock` (`kern/sched_ts.c`) | the time-share active job list and every job's thread list | `kt_lock` | Redistribution holds it and only try-locks threads, leaving a busy thread for the next tick. |
 | `rq_lock`, one per processor (`sys/sched.h`) | that processor's run queue | `kt_lock` | Code holding `rq_lock` takes a `kt_lock` only with `spin_trylock()`. Never hold two run queue locks. |
 | `vq_lock`, one per virtqueue (`dev/virtio/virtio.c`) | the rings, free list, and cookies | nothing | The completion callback runs under it and may only wake threads (`sema`, `sv` locks nest inside). Submitters wait for space with `sv_wait()` on it. |
@@ -43,7 +48,7 @@ Listed roughly from outermost to innermost.
 | `kz_lock`, one per zone (`kern/kern_kmem.c`) | a zone's slab lists, slabs, and counters | nothing | Never held while calling the page allocator. |
 | `kmem_zones_lock` (`kern/kern_kmem.c`) | the list of all zones | nothing | Taken only when a zone is created. |
 | `hat_klock` (`arch/amd64/amd64/hat.c`) | the kernel page tables below the PML4, for KVA changes | nothing | Allocates page-table pages, so it is taken before the node locks. Never held across a TLB shootdown. |
-| `page_nodes[n].pn_lock` (`vm/vm_page.c`) | node *n*'s free lists, counters, and the free-list fields of its pages | `hat_klock` | Never hold two node locks at once; allocation from a remote node drops the local lock first. |
+| `page_nodes[n].pn_lock` (`vm/vm_page.c`) | node *n*'s free and cache lists, counters, and `p_flags` of its pages | `hat_klock`, `pc_lock` | Never hold two node locks at once; allocation from a remote node drops the local lock first. Recycling a cache page marks it and holds its vnode's cache under this lock, drops it (keeping interrupts off), and only then takes `pc_lock`. |
 | `ci_act_lock` (`arch/amd64/amd64/intr.c`) | one processor's action queue | nothing | Held only to queue or dequeue; actions run with it released. Never held while waiting for another processor. |
 | `prf_lock` (`kern/subr_prf.c`) | interleaving of `printf` output | any lock | Innermost: `printf` may be called with any lock held. Ignored after a panic. |
 

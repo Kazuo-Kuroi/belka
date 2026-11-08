@@ -378,6 +378,71 @@ Recorded 2026-11-07.
   files behind. After `make test`, the host checks both images with
   `e2fsck -fn` and reads those files back with `debugfs`.
 
+## Vnode cache and page cache (2026-11-08)
+
+- **Global vnode cache** (IRIX): shared vnodes come from `vn_alloc()`
+  and are never freed, so a pointer to one always points at a vnode, and
+  `v_number` says whether it is still the same one. An unreferenced
+  vnode keeps its identity and pages on one of four free lists: at the
+  tail if still cached, at the head if empty. `vn_rele()` picks the
+  shorter of two lists by rotor.
+- **Reuse policy:** `vn_alloc()` builds a new vnode while there are
+  fewer than `vn_minvn` (512), or fewer free vnodes than vnodes in use.
+  This is the policy IRIX actually applies, since its coin-flip branch
+  never runs. Otherwise it tries up to four free ones, least recently
+  freed first. It skips vnodes with dirty pages, and any whose file
+  system refuses `VOP_RECLAIM` without waiting, so it may be called with
+  a file system lock held.
+- **Deviation:** no shaking yet. Vnodes are not handed back to the
+  zone, so IRIX's epoch check is unnecessary. Shaking comes with the
+  pager.
+- **Inactivation:** `VOP_INACTIVE` returns `VN_INACTIVE_CACHE` or
+  `VN_INACTIVE_NOCACHE`. A reference taken while it runs keeps the
+  vnode off the free lists. A release during it (`VREINACT`) makes it
+  run again.
+- **Private vnodes** stay for file systems whose node is the only copy
+  of the data (tmpfs). They are embedded and freed with the node, and
+  their pages never go on the cache lists.
+- **Name cache:** the System V references are replaced by IRIX-style
+  soft references (pointer plus `v_number`). A hit takes a real
+  reference with `vn_get()` under the cache lock, and a stale entry is
+  dropped.
+- **Page cache** (`<vm/pvn.h>`), per vnode as in IRIX: each vnode hashes
+  its own pages by page number, in a table that doubles as the file
+  grows (eagerly, rather than IRIX's lazy rehash).
+  - A page is held while in use. A clean page nobody holds keeps its
+    identity on its node's cache list, oldest first, where a lookup
+    takes it back with no I/O.
+  - The allocator recycles cache pages only when the buddy lists cannot
+    satisfy a request, so free memory and the page cache are one pool.
+  - Recycling follows the IRIX order inversion: mark the page and hold
+    the vnode's cache under the node lock, then unhash it under the
+    vnode lock.
+  - Busy pages (being filled or written) make lookups wait.
+- **Write-back:** dirty pages sit on their vnode's dirty list, and dirty
+  vnodes on a global list. `bdflush` writes back vnodes dirty for 3
+  seconds through `VOP_PUTPAGE`; sync, `fsync` and unmount write back
+  everything. Unmount then reclaims the file system's cached vnodes
+  before calling `VFS_UNMOUNT`.
+- **ext2 file data** moved from the buffer cache to the page cache. It is
+  read and written straight to the device, coalescing adjacent blocks.
+  The buffer cache keeps metadata, directories and symbolic links.
+  - The write path fills a page before allocating a block under it, so
+    a new block reads as the hole it was.
+  - Truncation zeroes the tail of the last page and tosses the pages
+    past it before freeing blocks.
+  - A block reallocated as file data has any stale buffer discarded
+    (`binvalblk`).
+  - In-core inodes now live as long as their vnode's identity.
+    `ext2fs_reclaim` drops them, under `em_lock`. When the caller of
+    `vn_alloc` already owns that lock (ext2's own `vget`), the reclaim
+    proceeds under it, so one busy file system can reuse its own vnodes.
+- **tmpfs** keeps file data in its private vnodes' page caches, ready
+  for mapping later.
+- **Not yet:** `VOP_GETPAGE` and mapped files (with the fault path),
+  clustering and read-ahead, vnode shaking, and a pager to clean pages
+  under memory pressure.
+
 ## File systems
 
 1. **tmpfs**, for testing.

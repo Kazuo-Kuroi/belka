@@ -7,10 +7,10 @@
 /*
  * ext2fs mount operations and the in-core inode table.
  *
- * An in-core inode exists while its vnode is referenced; the name cache
- * keeps the busy ones referenced. When the last reference goes, the
- * inode is written back and dropped, or, with no links left, its blocks
- * and its inode are freed.
+ * An in-core inode exists while its vnode keeps its identity. When the
+ * last reference goes, an inode with links stays cached, and the global
+ * vnode cache reclaims it later (ext2fs_reclaim); an inode with no links
+ * left has its blocks and itself freed at once.
  *
  * The superblock is read and written through its own 1 KB buffer at
  * sector 2, never through the file system block that contains it, so
@@ -131,11 +131,11 @@ ext2fs_vget(struct ext2mount *em, uint32_t ino, struct ext2inode **ipp)
         ip->i_size = ip->i_din.e2di_size;
         if (ext2fs_vtype(ip->i_din.e2di_mode) == VREG)
                 ip->i_size |= (uint64_t)ip->i_din.e2di_size_hi << 32;
-        vn_init(ITOV(ip), em->em_vfs, ext2fs_vtype(ip->i_din.e2di_mode),
+        /* May reclaim other inodes, but never one of ours: we hold em_lock. */
+        ip->i_vnode = vn_alloc(em->em_vfs, ext2fs_vtype(ip->i_din.e2di_mode),
             &ext2fs_vnodeops, ip);
         if (ino == EXT2_ROOTINO)
                 ITOV(ip)->v_flag |= VROOT;
-        VN_HOLD(ITOV(ip));
         *ipp = ip;
         return 0;
 }
@@ -164,9 +164,8 @@ ext2fs_newinode(struct ext2mount *em, struct ext2inode *pip, uint16_t mode,
             ip->i_din.e2di_mtime = now;
         ip->i_din.e2di_nlink = isdir ? 2 : 1;
         ip->i_din.e2di_gen = now ^ ino;
-        vn_init(ITOV(ip), em->em_vfs, ext2fs_vtype(mode), &ext2fs_vnodeops,
-            ip);
-        VN_HOLD(ITOV(ip));
+        ip->i_vnode = vn_alloc(em->em_vfs, ext2fs_vtype(mode),
+            &ext2fs_vnodeops, ip);
         if ((error = ext2fs_iupdate(ip)) != 0) {
                 ip->i_din.e2di_nlink = 0;
                 ext2fs_rele_locked(ip);
@@ -196,20 +195,21 @@ ext2fs_iupdate(struct ext2inode *ip)
 }
 
 /*
- * The last reference went; em_lock is held. Free a removed inode's
- * blocks and the inode itself; otherwise just drop it from core.
+ * The last reference went; em_lock is held. An inode with links stays
+ * cached. A removed one has its blocks and itself freed, and leaves
+ * core. Returns VN_INACTIVE_CACHE or VN_INACTIVE_NOCACHE.
  */
-void
+int
 ext2fs_inactive_locked(struct ext2inode *ip)
 {
         struct ext2mount *em = ip->i_mnt;
+        struct vnode *vp = ITOV(ip);
 
-        if (ITOV(ip)->v_count != 0) {
-                vn_inactive_done(ITOV(ip));
-                return;
-        }
-        if (ip->i_din.e2di_nlink == 0 && !em->em_ronly &&
-            ip->i_din.e2di_mode != 0) {
+        if (vp->v_count != 0)
+                return VN_INACTIVE_CACHE;       /* found again meanwhile */
+        if (ip->i_din.e2di_nlink != 0)
+                return VN_INACTIVE_CACHE;
+        if (!em->em_ronly && ip->i_din.e2di_mode != 0) {
                 int isdir = ext2fs_vtype(ip->i_din.e2di_mode) == VDIR;
                 int fastlink = ext2fs_vtype(ip->i_din.e2di_mode) == VLNK &&
                     ip->i_din.e2di_nblock == 0;
@@ -232,22 +232,59 @@ ext2fs_inactive_locked(struct ext2inode *ip)
                 }
         }
         ifree_incore(em, ip);
+        vp->v_data = NULL;
+        return VN_INACTIVE_NOCACHE;
+}
+
+static int
+inactive_locked_vp(struct vnode *vp)
+{
+        return ext2fs_inactive_locked(VTOI(vp));
 }
 
 /* VN_RELE for callers that hold em_lock. */
 void
 ext2fs_rele_locked(struct ext2inode *ip)
 {
-        struct vnode *vp = ITOV(ip);
-        int s = spin_lock(&vp->v_lock);
+        vn_rele_inactive(ITOV(ip), inactive_locked_vp);
+}
 
-        if (--vp->v_count != 0) {
-                spin_unlock(&vp->v_lock, s);
-                return;
+/*
+ * The vnode cache wants vp for another file: drop the inode from core.
+ * Refused if vp was found again meanwhile, or, with VRC_NOWAIT, if
+ * another thread holds em_lock.
+ *
+ * Our own vget and newinode allocate vnodes with em_lock held, and must
+ * be able to reuse this mount's cached vnodes, or a busy file system
+ * would only ever grow. So when the caller already owns em_lock, the
+ * reclaim goes ahead under it: an unreferenced inode is not in use by
+ * any operation, and nothing else can reach it without em_lock.
+ */
+int
+ext2fs_reclaim(struct vnode *vp, int flags)
+{
+        struct ext2inode *ip = VTOI(vp);
+        struct ext2mount *em = ip->i_mnt;
+        int mine = mutex_owned(&em->em_lock);
+
+        if (!mine) {
+                if ((flags & VRC_NOWAIT) != 0) {
+                        if (!mutex_trylock(&em->em_lock))
+                                return EBUSY;
+                } else {
+                        mutex_lock(&em->em_lock);
+                }
         }
-        vp->v_flag |= VINACT;
-        spin_unlock(&vp->v_lock, s);
-        ext2fs_inactive_locked(ip);
+        if (vp->v_count != 0) {
+                if (!mine)
+                        mutex_unlock(&em->em_lock);
+                return EBUSY;
+        }
+        ifree_incore(em, ip);
+        vp->v_data = NULL;
+        if (!mine)
+                mutex_unlock(&em->em_lock);
+        return 0;
 }
 
 void
@@ -421,23 +458,29 @@ ext2fs_unmount(struct vfs *vfsp, struct cred *cr __unused)
         struct ext2inode *root = NULL;
         int error = 0;
 
+        /*
+         * The generic layer has written back our pages and reclaimed our
+         * cached vnodes; anything left in core but the root is in use.
+         */
         mutex_lock(&em->em_lock);
         for (int h = 0; h < 64; h++) {
                 for (struct ext2inode *ip = em->em_ihash[h]; ip != NULL;
                     ip = ip->i_hnext) {
-                        uint32_t allowed = ip->i_number == EXT2_ROOTINO ? 1 : 0;
-
-                        if (ITOV(ip)->v_count > allowed ||
-                            (ITOV(ip)->v_flag & VINACT) != 0) {
+                        if (ip->i_number != EXT2_ROOTINO ||
+                            ITOV(ip)->v_count != 1) {
                                 mutex_unlock(&em->em_lock);
                                 return EBUSY;
                         }
-                        if (ip->i_number == EXT2_ROOTINO)
-                                root = ip;
+                        root = ip;
                 }
         }
-        if (root != NULL)
+        if (root != NULL) {
+                struct vnode *vp = ITOV(root);
+
                 ifree_incore(em, root);
+                vp->v_data = NULL;
+                vn_gone(vp);
+        }
         if (em->em_ninodes != 0)
                 panic("ext2fs_unmount: %u inodes left in core",
                     em->em_ninodes);
@@ -497,6 +540,7 @@ ext2fs_sync(struct vfs *vfsp, struct cred *cr __unused)
         struct ext2mount *em = vfsp->vfs_data;
         int error = 0;
 
+        vn_flush_vfs(vfsp);
         mutex_lock(&em->em_lock);
         if (em->em_dirty)
                 error = ext2fs_sbupdate(em);

@@ -9,9 +9,8 @@
  *
  * A fixed pool of entries on hash chains keyed by directory and name,
  * with one LRU list; a new entry takes the least recently used one.
- * dnlc_lock is a spin lock and is never held across VN_RELE, which can
- * call into a file system: evicted entries' references are dropped
- * after the lock is released.
+ * Entries are soft references; a hit takes a real one with vn_get()
+ * under dnlc_lock, and an entry whose target has gone is dropped.
  */
 
 #include <stddef.h>
@@ -24,7 +23,6 @@
 #include <sys/vnode.h>
 
 #define DNLC_HASHSIZE   256
-#define DNLC_BATCH      32
 
 struct ncache {
         struct ncache   *nc_hnext;      /* hash chain */
@@ -33,6 +31,9 @@ struct ncache {
         struct ncache   *nc_lprev;
         struct vnode    *nc_dvp;        /* NULL if unused */
         struct vnode    *nc_vp;
+        uint64_t        nc_dnum;        /* their v_numbers */
+        uint64_t        nc_vnum;
+        struct vfs      *nc_vfsp;       /* the directory's file system */
         uint8_t         nc_namlen;
         char            nc_name[NC_NAMLEN];
 };
@@ -102,17 +103,13 @@ nc_hash_unlink(struct ncache *nc)
         nc->nc_hnext = nc->nc_hprev = NULL;
 }
 
-/*
- * Retire an entry: off its hash chain, to the LRU tail for reuse. Its
- * vnodes are returned for the caller to release once unlocked.
- */
+/* Retire an entry: off its hash chain, to the LRU tail for reuse. */
 static void
-nc_retire(struct ncache *nc, struct vnode **dvpp, struct vnode **vpp)
+nc_retire(struct ncache *nc)
 {
         nc_hash_unlink(nc);
-        *dvpp = nc->nc_dvp;
-        *vpp = nc->nc_vp;
         nc->nc_dvp = nc->nc_vp = NULL;
+        nc->nc_vfsp = NULL;
         nc_lru_unlink(nc);
         nc_lru_push(nc, 0);
         dnlc_st.ds_entries--;
@@ -124,7 +121,8 @@ nc_find(const struct vnode *dvp, const char *name, size_t len)
 {
         for (struct ncache *nc = nc_hash[nc_hashfn(dvp, name, len)];
             nc != NULL; nc = nc->nc_hnext) {
-                if (nc->nc_dvp == dvp && nc->nc_namlen == len &&
+                if (nc->nc_dvp == dvp && nc->nc_dnum == dvp->v_number &&
+                    nc->nc_namlen == len &&
                     memcmp(nc->nc_name, name, len) == 0)
                         return nc;
         }
@@ -151,11 +149,17 @@ dnlc_lookup(struct vnode *dvp, const char *name)
                 return NULL;
         s = spin_lock(&dnlc_lock);
         if ((nc = nc_find(dvp, name, len)) != NULL) {
-                vp = nc->nc_vp;
-                VN_HOLD(vp);
-                nc_lru_unlink(nc);
-                nc_lru_push(nc, 1);
-                dnlc_st.ds_hits++;
+                if (vn_get(nc->nc_vp, nc->nc_vnum)) {
+                        vp = nc->nc_vp;
+                        nc_lru_unlink(nc);
+                        nc_lru_push(nc, 1);
+                        dnlc_st.ds_hits++;
+                } else {
+                        /* The vnode has gone or is going: forget it. */
+                        nc_retire(nc);
+                        dnlc_st.ds_stale++;
+                        dnlc_st.ds_misses++;
+                }
         } else {
                 dnlc_st.ds_misses++;
         }
@@ -167,7 +171,6 @@ void
 dnlc_enter(struct vnode *dvp, const char *name, struct vnode *vp)
 {
         size_t len = strlen(name);
-        struct vnode *odvp = NULL, *ovp = NULL;
         struct ncache *nc;
         unsigned int h;
         int s;
@@ -175,18 +178,22 @@ dnlc_enter(struct vnode *dvp, const char *name, struct vnode *vp)
         if (len > NC_NAMLEN || len == 0)
                 return;
         s = spin_lock(&dnlc_lock);
-        if (nc_find(dvp, name, len) != NULL) {
+        if ((nc = nc_find(dvp, name, len)) != NULL) {
+                /* Refresh it: the old target may have been replaced. */
+                nc->nc_vp = vp;
+                nc->nc_vnum = vp->v_number;
                 spin_unlock(&dnlc_lock, s);
                 return;
         }
         nc = nc_lru_tail;
         if (nc->nc_dvp != NULL)
-                nc_retire(nc, &odvp, &ovp);
+                nc_retire(nc);
         nc_lru_unlink(nc);
-        VN_HOLD(dvp);
-        VN_HOLD(vp);
         nc->nc_dvp = dvp;
         nc->nc_vp = vp;
+        nc->nc_dnum = dvp->v_number;
+        nc->nc_vnum = vp->v_number;
+        nc->nc_vfsp = dvp->v_vfsp;
         nc->nc_namlen = (uint8_t)len;
         memcpy(nc->nc_name, name, len);
         h = nc_hashfn(dvp, name, len);
@@ -199,17 +206,12 @@ dnlc_enter(struct vnode *dvp, const char *name, struct vnode *vp)
         dnlc_st.ds_enters++;
         dnlc_st.ds_entries++;
         spin_unlock(&dnlc_lock, s);
-        if (odvp != NULL) {
-                VN_RELE(ovp);
-                VN_RELE(odvp);
-        }
 }
 
 void
 dnlc_remove(struct vnode *dvp, const char *name)
 {
         size_t len = strlen(name);
-        struct vnode *odvp = NULL, *ovp = NULL;
         struct ncache *nc;
         int s;
 
@@ -217,45 +219,26 @@ dnlc_remove(struct vnode *dvp, const char *name)
                 return;
         s = spin_lock(&dnlc_lock);
         if ((nc = nc_find(dvp, name, len)) != NULL)
-                nc_retire(nc, &odvp, &ovp);
+                nc_retire(nc);
         spin_unlock(&dnlc_lock, s);
-        if (odvp != NULL) {
-                VN_RELE(ovp);
-                VN_RELE(odvp);
-        }
 }
 
-/*
- * Drop entries matching vp (as directory or target) or vfsp (either
- * vnode in it), a batch at a time, releasing outside the lock.
- */
+/* Drop every entry naming vp (as directory or target) or in vfsp. */
 static void
 dnlc_purge(struct vnode *vp, struct vfs *vfsp)
 {
-        for (;;) {
-                struct vnode *rel[2 * DNLC_BATCH];
-                int n = 0, s;
+        int s = spin_lock(&dnlc_lock);
 
-                s = spin_lock(&dnlc_lock);
-                for (int i = 0; i < DNLC_SIZE && n < 2 * DNLC_BATCH; i++) {
-                        struct ncache *nc = &nc_pool[i];
+        for (int i = 0; i < DNLC_SIZE; i++) {
+                struct ncache *nc = &nc_pool[i];
 
-                        if (nc->nc_dvp == NULL)
-                                continue;
-                        if ((vp != NULL && (nc->nc_dvp == vp ||
-                            nc->nc_vp == vp)) ||
-                            (vfsp != NULL && (nc->nc_dvp->v_vfsp == vfsp ||
-                            nc->nc_vp->v_vfsp == vfsp))) {
-                                nc_retire(nc, &rel[n], &rel[n + 1]);
-                                n += 2;
-                        }
-                }
-                spin_unlock(&dnlc_lock, s);
-                for (int i = n - 1; i >= 0; i--)
-                        VN_RELE(rel[i]);
-                if (n < 2 * DNLC_BATCH)
-                        return;
+                if (nc->nc_dvp == NULL)
+                        continue;
+                if ((vp != NULL && (nc->nc_dvp == vp || nc->nc_vp == vp)) ||
+                    (vfsp != NULL && nc->nc_vfsp == vfsp))
+                        nc_retire(nc);
         }
+        spin_unlock(&dnlc_lock, s);
 }
 
 void

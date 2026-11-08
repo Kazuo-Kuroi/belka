@@ -12,13 +12,30 @@
  *   operation and takes no vnode lock around it. Each file system
  *   serialises its own operations.
  * - When the last reference goes (VN_RELE), VOP_INACTIVE runs, with no
- *   locks held and VINACT set. A file system that can be asked for the
- *   vnode again (by its own lookup) must re-check v_count under its own
- *   lock there; if it keeps the vnode it clears VINACT
- *   (vn_inactive_done). Unmount treats a vnode with VINACT as busy.
- * - The vnode belongs to the file system, which allocates and frees it
- *   with the node it stands for. IRIX's global vnode cache, with soft
- *   references from the name cache, comes with on-disk file systems.
+ *   locks held and VINACT set.
+ *
+ * Vnodes come in two kinds:
+ *
+ * - Shared vnodes (VSHARE) belong to the global vnode cache (IRIX), and
+ *   come from vn_alloc(). VOP_INACTIVE returns VN_INACTIVE_CACHE to keep
+ *   the vnode's identity, and the vnode then waits on a free list,
+ *   pages and all, for its file system to find it again; or it returns
+ *   VN_INACTIVE_NOCACHE after tearing its node down. vn_alloc() reuses
+ *   free vnodes, least recently freed first, through VOP_RECLAIM, once
+ *   there are at least as many free vnodes as vnodes in use. Their
+ *   memory is never freed, so a pointer to one always points at a
+ *   vnode; v_number tells whether it is still the same one.
+ * - Private vnodes are embedded in the file system's own node and set up
+ *   with vn_init() (tmpfs). The file system frees them with the node,
+ *   calling vn_destroy() first; after VOP_INACTIVE the generic layer
+ *   does not touch them. Their pages never go on the cache lists.
+ *
+ * A file system that finds a cached vnode through its own index takes a
+ * reference with VN_HOLD while holding the lock that its VOP_INACTIVE
+ * and VOP_RECLAIM take, so it can never meet one that is half torn down.
+ * The name cache keeps soft references (pointer and v_number) and takes
+ * real ones with vn_get(), which fails on a vnode being inactivated or
+ * reclaimed.
  *
  * Operations return 0 or an errno value.
  */
@@ -33,6 +50,8 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 
+#include <vm/pvn.h>
+
 struct cred;
 struct uio;
 struct vfs;
@@ -40,9 +59,13 @@ struct vnode;
 
 enum vtype { VNON, VREG, VDIR, VBLK, VCHR, VLNK, VFIFO, VSOCK };
 
-/* v_flag */
+/* v_flag, under v_lock */
 #define VROOT           0x0001  /* root of its file system */
-#define VINACT          0x0002  /* VOP_INACTIVE in progress; under v_lock */
+#define VINACT          0x0002  /* VOP_INACTIVE in progress */
+#define VRECLM          0x0004  /* being reclaimed */
+#define VFREE           0x0008  /* on a free list */
+#define VREINACT        0x0010  /* released again during VOP_INACTIVE */
+#define VSHARE          0x0020  /* in the global vnode cache */
 
 struct vnode {
         struct spinlock v_lock;
@@ -54,7 +77,27 @@ struct vnode {
         const struct vnodeops *v_op;
         void            *v_data;        /* the file system's node */
         dev_t           v_rdev;
+        uint64_t        v_number;       /* identity, new on each reuse */
+
+        /* The global vnode cache. */
+        struct vnode    *v_fnext;       /* free list, under its lock */
+        struct vnode    *v_fprev;
+        int             v_listid;       /* which free list */
+        struct vnode    *v_allnext;     /* every shared vnode */
+        struct vnode    *v_dnext;       /* dirty vnodes, under their lock */
+        struct vnode    *v_dprev;
+        int             v_ondirty;
+        uint32_t        v_flushgen;     /* last flush pass that saw it */
+
+        struct vpcache  v_pc;           /* its pages */
 };
+
+/* VOP_INACTIVE results, for shared vnodes. */
+#define VN_INACTIVE_CACHE       0       /* keep the identity cached */
+#define VN_INACTIVE_NOCACHE     1       /* the node is gone */
+
+/* VOP_RECLAIM flags. */
+#define VRC_NOWAIT      0x0001  /* EBUSY rather than wait for a lock */
 
 /* Attributes; va_mask says which are meant. */
 struct vattr {
@@ -120,7 +163,9 @@ struct vnodeops {
                     const char *, struct cred *);
         int     (*vop_readlink)(struct vnode *, struct uio *, struct cred *);
         int     (*vop_fsync)(struct vnode *, struct cred *);
-        void    (*vop_inactive)(struct vnode *, struct cred *);
+        int     (*vop_inactive)(struct vnode *, struct cred *);
+        int     (*vop_putpage)(struct vnode *, int, struct cred *);
+        int     (*vop_reclaim)(struct vnode *, int);
 };
 
 #define VOP_OPEN(vpp, f, cr)            (*(vpp))->v_op->vop_open(vpp, f, cr)
@@ -145,12 +190,40 @@ struct vnodeops {
 #define VOP_READLINK(vp, uio, cr)       (vp)->v_op->vop_readlink(vp, uio, cr)
 #define VOP_FSYNC(vp, cr)               (vp)->v_op->vop_fsync(vp, cr)
 #define VOP_INACTIVE(vp, cr)            (vp)->v_op->vop_inactive(vp, cr)
+#define VOP_PUTPAGE(vp, fl, cr)         (vp)->v_op->vop_putpage(vp, fl, cr)
+#define VOP_RECLAIM(vp, fl)             (vp)->v_op->vop_reclaim(vp, fl)
 
+/* Statistics of the global vnode cache. */
+struct vn_stats {
+        uint32_t        vs_nvnodes;     /* shared vnodes in existence */
+        uint32_t        vs_nfree;       /* on the free lists */
+        uint64_t        vs_allocs;      /* vn_alloc calls */
+        uint64_t        vs_built;       /* of them, new vnodes */
+        uint64_t        vs_reclaims;    /* identities reclaimed */
+        uint64_t        vs_reclaim_busy; /* reclaims a file system refused */
+};
+
+/* Shared vnodes are built rather than reused below this many. */
+extern uint32_t vn_minvn;
+
+void vn_sysinit(void);
+struct vnode *vn_alloc(struct vfs *, enum vtype, const struct vnodeops *,
+    void *);
 void vn_init(struct vnode *, struct vfs *, enum vtype,
     const struct vnodeops *, void *);
+void vn_destroy(struct vnode *);
 void vn_hold(struct vnode *);
 void vn_rele(struct vnode *);
+void vn_rele_inactive(struct vnode *, int (*)(struct vnode *));
+int vn_get(struct vnode *, uint64_t);
 void vn_inactive_done(struct vnode *);
+void vn_gone(struct vnode *);
+void vn_flush_vfs(struct vfs *);
+void vn_flush_aged(uint64_t);
+void vn_purge_vfs(struct vfs *);
+void vn_dirty_add(struct vnode *);
+void vn_dirty_remove(struct vnode *);
+void vn_get_stats(struct vn_stats *);
 
 #define VN_HOLD(vp)     vn_hold(vp)
 #define VN_RELE(vp)     vn_rele(vp)

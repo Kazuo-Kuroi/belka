@@ -21,6 +21,12 @@
 #include <sys/buf.h>
 #include <sys/errno.h>
 #include <sys/systm.h>
+#include <sys/vnode.h>
+
+#include <machine/param.h>
+
+#include <vm/page.h>
+#include <vm/pvn.h>
 
 #include "fs/ext2fs/ext2fs.h"
 
@@ -200,6 +206,11 @@ trunc_indir(struct ext2inode *ip, uint32_t bno, int level, uint64_t base,
 /*
  * Shorten (or lengthen, with a hole) ip to length bytes, freeing blocks
  * wholly past the end and zeroing the rest of a partial last block.
+ *
+ * A regular file's data is in the page cache: the tail of the last page
+ * is zeroed there, and the pages past it are tossed before any block is
+ * freed, so no page can be written to a block once it is freed. Others
+ * keep their data in the buffer cache.
  */
 int
 ext2fs_truncate(struct ext2inode *ip, uint64_t length)
@@ -210,7 +221,21 @@ ext2fs_truncate(struct ext2inode *ip, uint64_t length)
         uint64_t base = EXT2_NDADDR, span = per;
         int error;
 
-        if (length < ip->i_size && length % em->em_bsize != 0) {
+        if (ITOV(ip)->v_type == VREG) {
+                if (length < ip->i_size && length % PAGESIZE != 0) {
+                        size_t off = (size_t)(length % PAGESIZE);
+                        struct page *pp;
+
+                        if ((error = ext2fs_getpage(ip, length / PAGESIZE, 0,
+                            &pp)) != 0)
+                                return error;
+                        memset((char *)page_to_kva(pp) + off, 0,
+                            PAGESIZE - off);
+                        page_setdirty(pp);
+                        page_rele(pp);
+                }
+                (void)pvn_trunc(ITOV(ip), (length + PAGESIZE - 1) / PAGESIZE);
+        } else if (length < ip->i_size && length % em->em_bsize != 0) {
                 uint32_t pbn;
 
                 if ((error = ext2fs_bmap(ip, length / em->em_bsize, &pbn, 0,

@@ -34,10 +34,20 @@
  *   and block map: readers share it, writers and truncation take it
  *   alone. Order: i_rwlock, then em_lock.
  * - Directories are changed and searched only under em_lock.
+ *
+ * Vnodes come from the global vnode cache. An in-core inode lives as
+ * long as its vnode keeps its identity: when the last reference goes, a
+ * file with links stays cached, its vnode on a free list; a removed file
+ * is freed at once. vn_alloc() reclaims cached inodes through
+ * ext2fs_reclaim(), which takes em_lock, so the inode table and the
+ * cache never disagree. Regular file data is in the page cache (see
+ * ext2fs_pages.c).
  */
 
 #ifndef _FS_EXT2FS_EXT2FS_H_
 #define _FS_EXT2FS_EXT2FS_H_
+
+struct page;
 
 #include <stddef.h>
 #include <stdint.h>
@@ -207,9 +217,9 @@ struct ext2mount {
         uint32_t        em_ninodes;             /* in core */
 };
 
-/* One in-core inode, with its vnode. */
+/* One in-core inode. */
 struct ext2inode {
-        struct vnode    i_vnode;
+        struct vnode    *i_vnode;
         struct ext2inode *i_hnext;
         struct ext2mount *i_mnt;
         uint32_t        i_number;
@@ -220,7 +230,7 @@ struct ext2inode {
 };
 
 #define VTOI(vp)        ((struct ext2inode *)(vp)->v_data)
-#define ITOV(ip)        (&(ip)->i_vnode)
+#define ITOV(ip)        ((ip)->i_vnode)
 
 extern const struct vnodeops ext2fs_vnodeops;
 
@@ -229,7 +239,8 @@ int ext2fs_vget(struct ext2mount *, uint32_t, struct ext2inode **);
 int ext2fs_newinode(struct ext2mount *, struct ext2inode *, uint16_t,
     struct ext2inode **);
 void ext2fs_rele_locked(struct ext2inode *);
-void ext2fs_inactive_locked(struct ext2inode *);
+int ext2fs_inactive_locked(struct ext2inode *);
+int ext2fs_reclaim(struct vnode *, int);
 int ext2fs_iupdate(struct ext2inode *);
 void ext2fs_sbdirty(struct ext2mount *);
 int ext2fs_sbupdate(struct ext2mount *);
@@ -253,6 +264,10 @@ int ext2fs_dirempty(struct ext2inode *);
 int ext2fs_dirinit(struct ext2inode *, uint32_t);
 int ext2fs_setdotdot(struct ext2inode *, uint32_t);
 int ext2fs_readdir_uio(struct ext2inode *, struct uio *, int *);
+
+/* ext2fs_pages.c */
+int ext2fs_getpage(struct ext2inode *, uint64_t, int, struct page **);
+int ext2fs_flushpages(struct ext2inode *);
 
 /* ext2fs_subr.c */
 int ext2fs_bread(struct ext2mount *, uint32_t, struct buf **);

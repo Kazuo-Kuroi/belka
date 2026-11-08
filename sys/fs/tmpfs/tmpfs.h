@@ -7,17 +7,18 @@
 /*
  * tmpfs: a file system in memory.
  *
- * Every file is a tmpnode with its vnode embedded. Regular files keep
- * their data in pages from the page allocator, one per PAGESIZE of the
- * file, with holes left unallocated; directories keep a list of
- * entries; symbolic links keep their text.
+ * Every file is a tmpnode with a private vnode embedded. Regular files
+ * keep their data in the page cache of that vnode, which never lets the
+ * pages go (PC_KEEP), with holes left unallocated; directories keep a
+ * list of entries; symbolic links keep their text.
  *
  * Locking:
  * - tm_lock (a mutex, one per mount) serialises every name-space change
  *   and every change to node attributes and link counts, and guards the
  *   list of nodes.
- * - tn_rwlock (an mrlock, one per node) guards a regular file's pages
- *   and size: readers share it, writers and truncation take it alone.
+ * - tn_rwlock (an mrlock, one per node) guards a regular file's size and
+ *   which pages it has: readers share it, writers and truncation take
+ *   it alone.
  * - Order: tm_lock, then tn_rwlock. Reads and writes take only
  *   tn_rwlock.
  *
@@ -71,11 +72,6 @@ struct tmpnode {
         struct timespec tn_atime;
         struct timespec tn_mtime;
         struct timespec tn_ctime;
-
-        /* VREG */
-        struct page     **tn_pages;
-        size_t          tn_npslots;
-        size_t          tn_npages;      /* pages allocated */
 
         /* VDIR */
         struct tdirent  *tn_dirents;

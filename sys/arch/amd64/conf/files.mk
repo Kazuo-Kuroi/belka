@@ -35,6 +35,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/fs/ext2fs/ext2fs_alloc.c \
                    sys/fs/ext2fs/ext2fs_balloc.c \
                    sys/fs/ext2fs/ext2fs_lookup.c \
+                   sys/fs/ext2fs/ext2fs_pages.c \
                    sys/fs/ext2fs/ext2fs_subr.c \
                    sys/fs/ext2fs/ext2fs_vfsops.c \
                    sys/fs/ext2fs/ext2fs_vnops.c \
@@ -49,6 +50,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/libkern/string.c \
                    sys/vm/vm_kva.c \
                    sys/vm/vm_page.c \
+                   sys/vm/vm_pvn.c \
                    sys/dev/acpi/acpi.c \
                    sys/dev/pci/pci.c \
                    sys/dev/virtio/virtio.c \

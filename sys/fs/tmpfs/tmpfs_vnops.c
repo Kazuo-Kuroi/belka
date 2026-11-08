@@ -32,6 +32,7 @@
 #include <machine/param.h>
 
 #include <vm/page.h>
+#include <vm/pvn.h>
 
 #include "fs/tmpfs/tmpfs.h"
 
@@ -45,7 +46,6 @@ static int tdir_add(struct tmpnode *, const char *, struct tmpnode *);
 static void tdir_unlink(struct tmpnode *, struct tdirent **);
 static void tn_touch(struct tmpnode *, int);
 static int tn_truncate(struct tmpnode *, off_t);
-static int tn_grow_slots(struct tmpnode *, size_t);
 static int is_dot(const char *);
 
 #define TOUCH_M         0x1
@@ -123,29 +123,6 @@ tdir_unlink(struct tmpnode *dir, struct tdirent **link)
         kmem_free(de, offsetof(struct tdirent, td_name) + de->td_namelen + 1);
 }
 
-/* Make room for page slots up to n. tn_rwlock is held for update. */
-static int
-tn_grow_slots(struct tmpnode *tn, size_t n)
-{
-        size_t cap = tn->tn_npslots == 0 ? 16 : tn->tn_npslots;
-        struct page **slots;
-
-        if (n <= tn->tn_npslots)
-                return 0;
-        if (n > TMPFS_MAXFILEPAGES)
-                return EFBIG;
-        while (cap < n)
-                cap *= 2;
-        slots = kmem_zalloc(cap * sizeof(*slots), KM_SLEEP);
-        if (tn->tn_pages != NULL) {
-                memcpy(slots, tn->tn_pages, tn->tn_npslots * sizeof(*slots));
-                kmem_free(tn->tn_pages, tn->tn_npslots * sizeof(*slots));
-        }
-        tn->tn_pages = slots;
-        tn->tn_npslots = cap;
-        return 0;
-}
-
 /*
  * Set the size, freeing pages wholly past the end and zeroing the tail
  * of a partial last page. tn_rwlock is held for update.
@@ -154,22 +131,18 @@ static int
 tn_truncate(struct tmpnode *tn, off_t size)
 {
         struct tmount *tm = tn->tn_mount;
-        size_t keep = (size_t)((size + (off_t)PAGEOFFSET) / (off_t)PAGESIZE);
+        uint64_t keep = (uint64_t)(size + (off_t)PAGEOFFSET) / PAGESIZE;
+        uint64_t n = pvn_trunc(TNTOV(tn), keep);
+        struct page *pp;
 
-        for (size_t i = keep; i < tn->tn_npslots; i++) {
-                if (tn->tn_pages[i] != NULL) {
-                        page_free(tn->tn_pages[i], 0);
-                        tn->tn_pages[i] = NULL;
-                        tn->tn_npages--;
-                        atomic_add_64(&tm->tm_pages, -1);
-                }
-        }
+        if (n != 0)
+                atomic_add_64(&tm->tm_pages, -(int64_t)n);
         if ((size & (off_t)PAGEOFFSET) != 0 && keep > 0 &&
-            keep - 1 < tn->tn_npslots && tn->tn_pages[keep - 1] != NULL) {
+            (pp = page_lookup(TNTOV(tn), keep - 1)) != NULL) {
                 size_t off = (size_t)(size & (off_t)PAGEOFFSET);
 
-                memset((char *)page_to_kva(tn->tn_pages[keep - 1]) + off, 0,
-                    PAGESIZE - off);
+                memset((char *)page_to_kva(pp) + off, 0, PAGESIZE - off);
+                page_rele(pp);
         }
         tn->tn_size = size;
         tn_touch(tn, TOUCH_M | TOUCH_C);
@@ -231,7 +204,7 @@ tmpfs_getattr(struct vnode *vp, struct vattr *va, struct cred *cr __unused)
         va->va_ctime = tn->tn_ctime;
         va->va_rdev = 0;
         va->va_blksize = PAGESIZE;
-        va->va_nblocks = (uint64_t)tn->tn_npages * (PAGESIZE / 512);
+        va->va_nblocks = (uint64_t)pvn_npages(vp) * (PAGESIZE / 512);
         mutex_unlock(&tm->tm_lock);
         return 0;
 }
@@ -667,18 +640,19 @@ tmpfs_read(struct vnode *vp, struct uio *uio, int ioflag __unused,
                 size_t pg = (size_t)(uio->uio_offset / (off_t)PAGESIZE);
                 size_t off = (size_t)(uio->uio_offset & (off_t)PAGEOFFSET);
                 size_t n = PAGESIZE - off;
-                const char *src;
+                const char *src = zero_page;    /* for a hole */
+                struct page *pp;
 
                 if ((off_t)n > tn->tn_size - uio->uio_offset)
                         n = (size_t)(tn->tn_size - uio->uio_offset);
                 if ((ssize_t)n > uio->uio_resid)
                         n = (size_t)uio->uio_resid;
-                if (pg < tn->tn_npslots && tn->tn_pages[pg] != NULL)
-                        src = (const char *)page_to_kva(tn->tn_pages[pg]) + off;
-                else
-                        src = zero_page;        /* a hole */
-                if ((error = uiomove((void *)(uintptr_t)src, n, UIO_READ,
-                    uio)) != 0)
+                if ((pp = page_lookup(vp, pg)) != NULL)
+                        src = (const char *)page_to_kva(pp) + off;
+                error = uiomove((void *)(uintptr_t)src, n, UIO_READ, uio);
+                if (pp != NULL)
+                        page_rele(pp);
+                if (error != 0)
                         break;
         }
         mrunlock(&tn->tn_rwlock);
@@ -710,23 +684,33 @@ tmpfs_write(struct vnode *vp, struct uio *uio, int ioflag,
                 size_t off = (size_t)(uio->uio_offset & (off_t)PAGEOFFSET);
                 size_t n = PAGESIZE - off;
                 struct page *pp;
+                int isnew;
 
                 if ((ssize_t)n > uio->uio_resid)
                         n = (size_t)uio->uio_resid;
-                if ((error = tn_grow_slots(tn, pg + 1)) != 0)
+                if (pg >= TMPFS_MAXFILEPAGES) {
+                        error = EFBIG;
                         break;
-                if ((pp = tn->tn_pages[pg]) == NULL) {
-                        if (atomic_inc_64_nv(&tm->tm_pages) > tm->tm_maxpages ||
-                            (pp = page_alloc(0, PA_ZERO)) == NULL) {
+                }
+                if ((pp = page_lookup_create(vp, pg, &isnew)) == NULL) {
+                        error = ENOSPC;
+                        break;
+                }
+                if (isnew) {
+                        if (atomic_inc_64_nv(&tm->tm_pages) >
+                            tm->tm_maxpages) {
                                 atomic_add_64(&tm->tm_pages, -1);
+                                page_abort(pp);
                                 error = ENOSPC;
                                 break;
                         }
-                        tn->tn_pages[pg] = pp;
-                        tn->tn_npages++;
+                        memset(page_to_kva(pp), 0, PAGESIZE);
+                        page_unbusy(pp);
                 }
-                if ((error = uiomove((char *)page_to_kva(pp) + off, n,
-                    UIO_WRITE, uio)) != 0)
+                error = uiomove((char *)page_to_kva(pp) + off, n, UIO_WRITE,
+                    uio);
+                page_rele(pp);
+                if (error != 0)
                         break;
                 if (uio->uio_offset > tn->tn_size)
                         tn->tn_size = uio->uio_offset;
@@ -747,7 +731,7 @@ tmpfs_fsync(struct vnode *vp __unused, struct cred *cr __unused)
 }
 
 /* The last reference went: free the node if it has no names left. */
-static void
+static int
 tmpfs_inactive(struct vnode *vp, struct cred *cr __unused)
 {
         struct tmpnode *tn = VTOTN(vp);
@@ -759,6 +743,22 @@ tmpfs_inactive(struct vnode *vp, struct cred *cr __unused)
         else
                 vn_inactive_done(vp);
         mutex_unlock(&tm->tm_lock);
+        return VN_INACTIVE_NOCACHE;     /* ignored: the vnode is private */
+}
+
+/* Pages in memory are all there is: nothing to write back. */
+static int
+tmpfs_putpage(struct vnode *vp __unused, int flags __unused,
+    struct cred *cr __unused)
+{
+        return 0;
+}
+
+/* Private vnodes are never reclaimed. */
+static int
+tmpfs_reclaim(struct vnode *vp __unused, int flags __unused)
+{
+        return EBUSY;
 }
 
 const struct vnodeops tmpfs_vnodeops = {
@@ -780,5 +780,7 @@ const struct vnodeops tmpfs_vnodeops = {
         tmpfs_symlink,
         tmpfs_readlink,
         tmpfs_fsync,
-        tmpfs_inactive
+        tmpfs_inactive,
+        tmpfs_putpage,
+        tmpfs_reclaim
 };

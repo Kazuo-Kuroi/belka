@@ -30,6 +30,7 @@
 #include <sys/spinlock.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
+#include <sys/vnode.h>
 
 #define BC_HASHSIZE     256
 #define BC_MAXBUF       1024
@@ -396,7 +397,40 @@ binval(struct blkdev *dev)
         spin_unlock(&bc_lock, s);
 }
 
-/* Write delayed buffers once they are BDFLUSH_AGE ticks old. */
+/*
+ * Forget any cached copy of block blkno of dev, discarding a delayed
+ * write: the block has a new owner that does not go through the buffer
+ * cache (file data, in the page cache).
+ */
+void
+binvalblk(struct blkdev *dev, daddr_t blkno)
+{
+        struct buf *bp;
+        int s;
+
+again:
+        s = spin_lock(&bc_lock);
+        if ((bp = bc_find(dev, blkno)) == NULL) {
+                spin_unlock(&bc_lock, s);
+                return;
+        }
+        if ((bp->b_flags & B_BUSY) != 0) {
+                sv_wait(&bc_wait, &bc_lock, s);
+                goto again;
+        }
+        if ((bp->b_flags & B_DELWRI) != 0)
+                bc_st.bs_ndirty--;
+        bc_hash_remove(bp);
+        bp->b_dev = NULL;
+        bp->b_flags = B_INVAL | B_ONFREE;
+        bc_st.bs_invalidated++;
+        spin_unlock(&bc_lock, s);
+}
+
+/*
+ * Write delayed buffers once they are BDFLUSH_AGE ticks old, and file
+ * pages once their vnode has been dirty that long.
+ */
 static void
 bdflush(void *arg __unused)
 {
@@ -408,6 +442,7 @@ bdflush(void *arg __unused)
                         (void)bwrite(bp);
                         bc_st.bs_delwri_flushed++;
                 }
+                vn_flush_aged(BDFLUSH_AGE);
         }
 }
 

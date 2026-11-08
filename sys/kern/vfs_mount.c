@@ -16,6 +16,7 @@
 #include <sys/dnlc.h>
 #include <sys/errno.h>
 #include <sys/kmem.h>
+#include <sys/kthread.h>
 #include <sys/pathname.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
@@ -157,10 +158,23 @@ vfs_unmount(const char *path)
                         return EBUSY;
                 }
         }
+        /*
+         * Write back the file system's pages and reclaim its cached
+         * vnodes, so that only vnodes in use remain for the file system
+         * to find. A vnode that bdflush holds for a moment while writing
+         * it back makes the unmount fail once, so try for a while.
+         */
         dnlc_purge_vfsp(vfsp);
-        if ((error = VFS_UNMOUNT(vfsp, kcred)) != 0) {
-                mutex_unlock(&vfs_mutex);
-                return error;
+        for (int tries = 0;; tries++) {
+                vn_flush_vfs(vfsp);
+                vn_purge_vfs(vfsp);
+                if ((error = VFS_UNMOUNT(vfsp, kcred)) == 0)
+                        break;
+                if (error != EBUSY || tries == 20) {
+                        mutex_unlock(&vfs_mutex);
+                        return error;
+                }
+                delay(1);
         }
         for (link = &rootvfs->vfs_next; *link != NULL;
             link = &(*link)->vfs_next) {

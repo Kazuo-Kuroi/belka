@@ -17,6 +17,7 @@
 #include <sys/systm.h>
 #include <sys/uadmin.h>
 #include <sys/vfs.h>
+#include <sys/vnode.h>
 
 #include <machine/intr.h>
 #include <machine/param.h>
@@ -24,6 +25,7 @@
 #include <vm/hat.h>
 #include <vm/kva.h>
 #include <vm/page.h>
+#include <vm/pvn.h>
 
 static const char version[] = "Belka 0.0-dev";
 static const char copyright[] =
@@ -62,6 +64,8 @@ main(void)
         configure();
 
         /* tmpfs is the root until a disk file system can be mounted. */
+        pvn_sysinit();
+        vn_sysinit();
         binit();
         vfs_init();
         if (vfs_mountroot("tmpfs", NULL) != 0)

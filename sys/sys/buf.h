@@ -63,6 +63,7 @@ struct bc_stats {
         uint64_t        bs_reads;
         uint64_t        bs_writes;
         uint64_t        bs_delwri_flushed; /* written by bdflush */
+        uint64_t        bs_invalidated; /* blocks dropped by binvalblk */
         uint32_t        bs_nbuf;
         uint32_t        bs_ndirty;
 };
@@ -80,6 +81,7 @@ void bclrbuf(struct buf *);
 int bflush(struct blkdev *);
 /* Forget every buffer of dev, which must have none busy or dirty. */
 void binval(struct blkdev *);
+void binvalblk(struct blkdev *, daddr_t);
 void bc_get_stats(struct bc_stats *);
 
 #endif /* _SYS_BUF_H_ */

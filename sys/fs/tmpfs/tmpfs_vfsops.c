@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 #include <sys/cred.h>
+#include <sys/dnlc.h>
 #include <sys/errno.h>
 #include <sys/kmem.h>
 #include <sys/synch.h>
@@ -23,6 +24,7 @@
 #include <machine/param.h>
 
 #include <vm/page.h>
+#include <vm/pvn.h>
 
 #include "fs/tmpfs/tmpfs.h"
 
@@ -67,14 +69,13 @@ tmpnode_alloc(struct tmount *tm, enum vtype type, mode_t mode)
 void
 tmpnode_free(struct tmount *tm, struct tmpnode *tn)
 {
-        for (size_t i = 0; i < tn->tn_npslots; i++) {
-                if (tn->tn_pages[i] != NULL)
-                        page_free(tn->tn_pages[i], 0);
-        }
-        if (tn->tn_npages != 0)
-                atomic_add_64(&tm->tm_pages, -(int64_t)tn->tn_npages);
-        if (tn->tn_pages != NULL)
-                kmem_free(tn->tn_pages, tn->tn_npslots * sizeof(struct page *));
+        uint64_t n = pvn_trunc(TNTOV(tn), 0);
+
+        if (n != 0)
+                atomic_add_64(&tm->tm_pages, -(int64_t)n);
+        /* The name cache must not keep a pointer to freed memory. */
+        dnlc_purge_vp(TNTOV(tn));
+        vn_destroy(TNTOV(tn));
         while (tn->tn_dirents != NULL) {
                 struct tdirent *de = tn->tn_dirents;
 

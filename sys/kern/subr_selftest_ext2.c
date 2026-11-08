@@ -12,6 +12,12 @@
  * on the host with debugfs, and both images must pass e2fsck. An entry
  * is also left in /many, which mke2fs built with a hash index, so fsck
  * checks that changing an indexed directory dropped the index.
+ *
+ * test_caches() checks the page cache and the vnode cache through ext2:
+ * rereads come from memory, the allocator recycles cached pages when
+ * memory runs out, cached vnodes are reclaimed and reused once there
+ * are enough of them, the name cache copes with that, and bdflush
+ * writes dirty pages back once they are old enough.
  */
 
 #include <stddef.h>
@@ -20,11 +26,13 @@
 #include <sys/blkdev.h>
 #include <sys/buf.h>
 #include <sys/cred.h>
+#include <sys/dnlc.h>
 #include <sys/dirent.h>
 #include <sys/errno.h>
 #include <sys/file.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
+#include <sys/param.h>
 #include <sys/pathname.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
@@ -33,6 +41,10 @@
 #include <sys/vnode.h>
 
 #include <machine/atomic.h>
+#include <machine/param.h>
+
+#include <vm/page.h>
+#include <vm/pvn.h>
 
 #include "fs/ext2fs/ext2fs.h"
 
@@ -377,6 +389,164 @@ test_full(const char *mnt)
 #define E2_THREADS      8
 #define E2_FILES        20
 
+#define VC_FILES        600     /* files for the vnode cache tests */
+
+/* Read /big.bin whole and check every byte. */
+static int
+big_ok(const char *mnt, unsigned char *buf)
+{
+        char p[MAXPATHLEN];
+        int ok;
+
+        if (get(P(p, mnt, "/big.bin"), buf, 300000, 0) != 300000)
+                return 0;
+        ok = 1;
+        for (size_t i = 0; i < 300000; i++)
+                ok &= buf[i] == big_byte(i);
+        return ok;
+}
+
+static void
+test_caches(const char *mnt)
+{
+        const uint64_t bigpages = (300000 + PAGESIZE - 1) / PAGESIZE;
+        unsigned char *buf = kmem_alloc(300000, KM_SLEEP);
+        char p[MAXPATHLEN], rel[32], name[8];
+        struct pvn_stats a, b;
+        struct page_stats ps;
+        struct vn_stats va, vb;
+        struct dnlc_stats da, db;
+        struct page *chain = NULL, *pp;
+        struct vnode *vp;
+        uint64_t purged;
+        uint32_t oldmin;
+        size_t resid, n = 0;
+        int all;
+
+        /* Nothing dirty, so the flushers stay quiet below. */
+        CHECK(lookupname(mnt, FOLLOW, &vp) == 0);
+        CHECK(VFS_SYNC(vp->v_vfsp, kcred) == 0);
+        VN_RELE(vp);
+
+        /* A second read comes from memory: no page is created. */
+        CHECK(big_ok(mnt, buf));
+        pvn_get_stats(&a);
+        CHECK(big_ok(mnt, buf));
+        pvn_get_stats(&b);
+        CHECK(b.pv_creates == a.pv_creates);
+        CHECK(b.pv_hits - a.pv_hits >= bigpages);
+        page_get_stats(&ps);
+        CHECK(ps.ps_cached >= bigpages);
+
+        /*
+         * Take every page there is: the cached ones are recycled, and the
+         * data then comes back from the disk.
+         */
+        while ((pp = page_alloc(0, 0)) != NULL) {
+                *(struct page **)page_to_kva(pp) = chain;
+                chain = pp;
+                n++;
+        }
+        page_get_stats(&ps);
+        CHECK(ps.ps_free == 0 && ps.ps_cached == 0);
+        while (chain != NULL) {
+                pp = chain;
+                chain = *(struct page **)page_to_kva(pp);
+                page_free(pp, 0);
+        }
+        pvn_get_stats(&b);
+        CHECK(b.pv_recycled - a.pv_recycled >= bigpages);
+        pvn_get_stats(&a);
+        CHECK(big_ok(mnt, buf));
+        pvn_get_stats(&b);
+        CHECK(b.pv_creates - a.pv_creates >= bigpages);
+        printf("selftest: %s: recycled the page cache under %zu pages\n",
+            mnt, n);
+
+        /*
+         * Many files through a cache held at its current size: cached
+         * vnodes are reclaimed and reused as files are created. Dirty
+         * ones are passed over until written back, so a few new vnodes
+         * may be built.
+         */
+        oldmin = vn_minvn;
+        vn_get_stats(&va);
+        if (vn_minvn > va.vs_nvnodes)
+                vn_minvn = va.vs_nvnodes;
+        CHECK(vn_mkdir(P(p, mnt, "/vc"), 0755) == 0);
+        all = 1;
+        for (int i = 0; i < VC_FILES; i++) {
+                snprintf(name, sizeof(name), "v%03d", i);
+                snprintf(rel, sizeof(rel), "/vc/%s", name);
+                all &= put(P(p, mnt, rel), name, 4, 0) == 0;
+        }
+        CHECK(all);
+        vn_get_stats(&vb);
+        CHECK(vb.vs_reclaims > va.vs_reclaims);
+        CHECK(vb.vs_built - va.vs_built < VC_FILES / 2);
+        printf("selftest: %s: %u files made with %ju vnodes reclaimed, %ju "
+            "built\n", mnt, VC_FILES,
+            (uintmax_t)(vb.vs_reclaims - va.vs_reclaims),
+            (uintmax_t)(vb.vs_built - va.vs_built));
+
+        /*
+         * Reclaim every cached vnode of the file system, as unmount does,
+         * while holding /vc. The name cache entries for its files then
+         * go stale, the files read back through new identities in the
+         * vnodes just freed, and no vnode is built.
+         */
+        all = 1;
+        for (int i = 0; i < VC_FILES; i++) {
+                snprintf(name, sizeof(name), "v%03d", i);
+                snprintf(rel, sizeof(rel), "/vc/%s", name);
+                all &= same(P(p, mnt, rel), name);
+        }
+        CHECK(all);
+        CHECK(lookupname(P(p, mnt, "/vc"), FOLLOW, &vp) == 0);
+        CHECK(VFS_SYNC(vp->v_vfsp, kcred) == 0);
+        vn_get_stats(&va);
+        vn_purge_vfs(vp->v_vfsp);
+        vn_get_stats(&vb);
+        purged = vb.vs_reclaims - va.vs_reclaims;
+        CHECK(purged >= VC_FILES);
+        dnlc_get_stats(&da);
+        all = 1;
+        for (int i = 0; i < VC_FILES; i++) {
+                snprintf(name, sizeof(name), "v%03d", i);
+                snprintf(rel, sizeof(rel), "/vc/%s", name);
+                all &= same(P(p, mnt, rel), name);
+        }
+        CHECK(all);
+        VN_RELE(vp);
+        dnlc_get_stats(&db);
+        vn_get_stats(&va);
+        vn_minvn = oldmin;
+        CHECK(va.vs_built == vb.vs_built);
+        CHECK(db.ds_stale - da.ds_stale >= VC_FILES / 2);
+        printf("selftest: %s: %ju reclaimed at once, %ju stale names\n",
+            mnt, (uintmax_t)purged, (uintmax_t)(db.ds_stale - da.ds_stale));
+        all = 1;
+        for (int i = 0; i < VC_FILES; i++) {
+                snprintf(rel, sizeof(rel), "/vc/v%03d", i);
+                all &= vn_remove(P(p, mnt, rel)) == 0;
+        }
+        CHECK(all);
+        CHECK(vn_rmdir(P(p, mnt, "/vc")) == 0);
+
+        /* bdflush writes dirty pages back once they are old enough. */
+        CHECK(vn_open(P(p, mnt, "/aged.bin"), FWRITE | FCREAT, 0644, &vp) ==
+            0);
+        if (vp != NULL) {
+                CHECK(vn_rdwr(UIO_WRITE, vp, buf, 10000, 0, 0, &resid) == 0);
+                CHECK(pvn_ndirty(vp) == (10000 + PAGESIZE - 1) / PAGESIZE);
+                delay(BDFLUSH_AGE + 2 * HZ);
+                CHECK(pvn_ndirty(vp) == 0);
+                (void)vn_close(vp, FWRITE);
+        }
+        CHECK(vn_remove(P(p, mnt, "/aged.bin")) == 0);
+        kmem_free(buf, 300000);
+}
+
 static struct sema e2_done;
 static volatile uint32_t e2_errors;
 static const char *e2_mnt;
@@ -436,12 +606,29 @@ test_filesystem(const char *dev, const char *mnt, int fill)
         if (fill)
                 test_full(mnt);
         test_concurrency(mnt);
+        test_caches(mnt);
 
         /* Left for the host to read back. */
         CHECK(put(P(p, mnt, "/persist.txt"), "written by belka", 16, 0) == 0);
         CHECK(vn_mkdir(P(p, mnt, "/pdir"), 0755) == 0);
         CHECK(vn_mkdir(P(p, mnt, "/pdir/sub"), 0755) == 0);
         CHECK(put(P(p, mnt, "/pdir/sub/inner.txt"), "inner", 5, 0) == 0);
+        /* A cut tail must be zero on disk when the file grows again. */
+        {
+                char *t = kmem_alloc(10000, KM_SLEEP);
+                int ok;
+
+                memset(t, 'A', 10000);
+                CHECK(put(P(p, mnt, "/trunc.bin"), t, 10000, 0) == 0);
+                CHECK(vn_truncate(P(p, mnt, "/trunc.bin"), 5000) == 0);
+                CHECK(vn_truncate(P(p, mnt, "/trunc.bin"), 9000) == 0);
+                /* In memory first: no page may keep the cut-off bytes. */
+                ok = get(P(p, mnt, "/trunc.bin"), t, 10000, 0) == 9000;
+                for (int i = 0; i < 9000 && ok; i++)
+                        ok = t[i] == (i < 5000 ? 'A' : 0);
+                CHECK(ok);
+                kmem_free(t, 10000);
+        }
         /* An entry the hash index from mke2fs does not know about. */
         CHECK(put(P(p, mnt, "/many/zz-belka"), "kept", 4, 0) == 0);
 
@@ -451,6 +638,16 @@ test_filesystem(const char *dev, const char *mnt, int fill)
         CHECK(same(P(p, mnt, "/persist.txt"), "written by belka"));
         CHECK(same(P(p, mnt, "/pdir/sub/inner.txt"), "inner"));
         CHECK(same(P(p, mnt, "/hello.txt"), "Hello from mke2fs\n"));
+        {
+                char *t = kmem_alloc(9000, KM_SLEEP);
+                int ok = get(P(p, mnt, "/trunc.bin"), t, 9000, 0) == 9000;
+
+                for (int i = 0; i < 9000 && ok; i++)
+                        ok = t[i] == (i < 5000 ? 'A' : 0);
+                CHECK(ok);
+                kmem_free(t, 9000);
+        }
+        CHECK(vn_remove(P(p, mnt, "/trunc.bin")) == 0);
         CHECK(vfs_unmount(mnt) == 0);
 
         /* Read-only. */
@@ -480,5 +677,18 @@ selftest_ext2(void)
             (uintmax_t)bs.bs_hits, (uintmax_t)bs.bs_misses,
             (uintmax_t)bs.bs_reads, (uintmax_t)bs.bs_writes);
         CHECK(bs.bs_ndirty == 0);
+        {
+                struct pvn_stats pv;
+                struct vn_stats vs;
+
+                pvn_get_stats(&pv);
+                vn_get_stats(&vs);
+                printf("selftest: ext2: page cache %ju hits (%ju from the "
+                    "cache lists), %ju misses, %ju recycled, %ju written; "
+                    "%u vnodes, %u free\n", (uintmax_t)pv.pv_hits,
+                    (uintmax_t)pv.pv_reclaims, (uintmax_t)pv.pv_misses,
+                    (uintmax_t)pv.pv_recycled, (uintmax_t)pv.pv_cleaned,
+                    vs.vs_nvnodes, vs.vs_nfree);
+        }
         return failures;
 }

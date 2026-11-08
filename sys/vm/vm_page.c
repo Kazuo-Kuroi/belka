@@ -12,6 +12,11 @@
  * every segment, and each segment points at its slice. A free block
  * never crosses a segment boundary, so the pages of a block are always
  * adjacent in the array.
+ *
+ * Each node also has a cache list of clean page-cache pages that nobody
+ * holds, oldest at the head. When the buddy lists cannot satisfy a
+ * request, the allocator recycles cache pages from the head, one at a
+ * time, back to the buddy lists and tries again.
  */
 
 #include <stddef.h>
@@ -24,6 +29,7 @@
 #include <machine/vmparam.h>
 
 #include <vm/page.h>
+#include <vm/pvn.h>
 
 struct page_seg {
         pfn_t           ps_start;       /* first frame */
@@ -39,6 +45,10 @@ struct page_node {
         size_t          pn_nblocks[PAGE_NORDERS];
         size_t          pn_free_pages;
         size_t          pn_managed;
+        struct page     *pn_cache_head; /* oldest first */
+        struct page     *pn_cache_tail;
+        size_t          pn_ncache;
+        uint64_t        pn_recycled;
 };
 
 static struct page_seg page_segs[PAGE_MAXSEGS];
@@ -51,6 +61,8 @@ static struct page_seg *page_seg_find(pfn_t);
 static void page_list_insert(struct page_node *, struct page *, unsigned int);
 static void page_list_remove(struct page_node *, struct page *, unsigned int);
 static void page_seg_carve(struct page_seg *);
+static int page_recycle_one(void);
+static struct page *page_alloc_buddy(int, unsigned int);
 
 static struct page_seg *
 page_seg_find(pfn_t pfn)
@@ -261,14 +273,118 @@ page_release_deferred(void)
 }
 
 /*
+ * Put a page-cache page that nobody holds at the tail of its node's
+ * cache list. The owning vnode's page-cache lock is held.
+ */
+void
+page_cache_enter(struct page *pp)
+{
+        struct page_node *pn = &page_nodes[pp->p_node];
+        int s = spin_lock(&pn->pn_lock);
+
+        if (pp->p_flags != PG_ALLOC || pp->p_order != 0)
+                panic("page_cache_enter: page %#jx is not an allocated page",
+                    (uintmax_t)page_to_pa(pp));
+        pp->p_flags = PG_CACHE;
+        pp->p_next = NULL;
+        pp->p_prev = pn->pn_cache_tail;
+        if (pn->pn_cache_tail != NULL)
+                pn->pn_cache_tail->p_next = pp;
+        else
+                pn->pn_cache_head = pp;
+        pn->pn_cache_tail = pp;
+        pn->pn_ncache++;
+        spin_unlock(&pn->pn_lock, s);
+}
+
+/*
+ * Take a page back off its node's cache list, for its owner. Returns 0
+ * if the allocator is recycling it; the owner must then let go of its
+ * lock and wait for the page to leave its cache. The owning vnode's
+ * page-cache lock is held.
+ */
+int
+page_cache_take(struct page *pp)
+{
+        struct page_node *pn = &page_nodes[pp->p_node];
+        int s = spin_lock(&pn->pn_lock);
+
+        if (pp->p_flags != PG_CACHE) {
+                spin_unlock(&pn->pn_lock, s);
+                return 0;
+        }
+        if (pp->p_prev != NULL)
+                pp->p_prev->p_next = pp->p_next;
+        else
+                pn->pn_cache_head = pp->p_next;
+        if (pp->p_next != NULL)
+                pp->p_next->p_prev = pp->p_prev;
+        else
+                pn->pn_cache_tail = pp->p_prev;
+        pp->p_next = pp->p_prev = NULL;
+        pp->p_flags = PG_ALLOC;
+        pn->pn_ncache--;
+        spin_unlock(&pn->pn_lock, s);
+        return 1;
+}
+
+/*
+ * Recycle the oldest cache page of any node back to the buddy lists.
+ * Returns 0 if every cache list is empty. The page is marked
+ * PG_RECYCLE and its vnode's cache held under the node lock; it is
+ * then unhashed under the vnode's lock, after the node lock is gone.
+ */
+static int
+page_recycle_one(void)
+{
+        for (int n = 0; n < MAXNODES; n++) {
+                struct page_node *pn = &page_nodes[n];
+                struct page *pp;
+                int s;
+
+                if (pn->pn_ncache == 0)
+                        continue;
+                s = spin_lock(&pn->pn_lock);
+                if ((pp = pn->pn_cache_head) == NULL) {
+                        spin_unlock(&pn->pn_lock, s);
+                        continue;
+                }
+                pn->pn_cache_head = pp->p_next;
+                if (pn->pn_cache_head != NULL)
+                        pn->pn_cache_head->p_prev = NULL;
+                else
+                        pn->pn_cache_tail = NULL;
+                pp->p_next = pp->p_prev = NULL;
+                pp->p_flags = PG_RECYCLE;
+                pn->pn_ncache--;
+                pn->pn_recycled++;
+                pvn_recycle_hold(pp->p_vnode);
+                /*
+                 * Interrupts stay off until the page is unhashed: a lookup
+                 * that meets it spins until then, and must never spin on
+                 * a recycler preempted on its own processor.
+                 */
+                spin_unlock(&pn->pn_lock, 0);
+                pvn_recycle(pp);
+                (void)spin_lock(&pn->pn_lock);
+                pp->p_flags = PG_ALLOC;
+                pp->p_order = 0;
+                spin_unlock(&pn->pn_lock, s);
+                page_free(pp, 0);
+                return 1;
+        }
+        return 0;
+}
+
+/*
  * Allocate a block of 2^order pages, preferring node. Returns the
- * struct page of the first page, or NULL if no block is available.
- * Never sleeps.
+ * struct page of the first page, or NULL if no block is available even
+ * after recycling the page cache. Never sleeps.
  */
 struct page *
 page_alloc_node(int node, unsigned int order, int flags)
 {
-        struct page *pp = NULL;
+        struct page *pp;
 
         if (!page_ready)
                 panic("page_alloc: called before page_init");
@@ -276,6 +392,25 @@ page_alloc_node(int node, unsigned int order, int flags)
                 return NULL;
         if (node < 0 || node >= MAXNODES)
                 node = 0;
+
+        while ((pp = page_alloc_buddy(node, order)) == NULL) {
+                if (!page_recycle_one())
+                        return NULL;
+        }
+        pp->p_vnode = NULL;
+        pp->p_vflags = 0;
+        pp->p_use = 0;
+        pp->p_hnext = NULL;
+        if ((flags & PA_ZERO) != 0)
+                memset(page_to_kva(pp), 0, (size_t)PAGESIZE << order);
+        return pp;
+}
+
+/* Take a block from the buddy lists, preferring node, or NULL. */
+static struct page *
+page_alloc_buddy(int node, unsigned int order)
+{
+        struct page *pp = NULL;
 
         /* Try the preferred node, then the others in order. */
         for (int i = 0; i < MAXNODES && pp == NULL; i++) {
@@ -306,9 +441,6 @@ page_alloc_node(int node, unsigned int order, int flags)
                 }
                 spin_unlock(&pn->pn_lock, s);
         }
-
-        if (pp != NULL && (flags & PA_ZERO) != 0)
-                memset(page_to_kva(pp), 0, (size_t)PAGESIZE << order);
         return pp;
 }
 
@@ -339,6 +471,9 @@ page_free(struct page *pp, unsigned int order)
                 panic("page_free: page %#jx freed with order %u, "
                     "allocated with %u", (uintmax_t)page_to_pa(pp),
                     order, pp->p_order);
+        if (pp->p_vnode != NULL)
+                panic("page_free: page %#jx still belongs to a vnode",
+                    (uintmax_t)page_to_pa(pp));
 
         ps = page_seg_find(pp->p_pfn);
         pfn = pp->p_pfn;
@@ -396,6 +531,8 @@ page_get_stats(struct page_stats *st)
                 s = spin_lock(&pn->pn_lock);
                 st->ps_managed += pn->pn_managed;
                 st->ps_free += pn->pn_free_pages;
+                st->ps_cached += pn->pn_ncache;
+                st->ps_recycled += pn->pn_recycled;
                 for (int o = 0; o < PAGE_NORDERS; o++)
                         st->ps_blocks[o] += pn->pn_nblocks[o];
                 spin_unlock(&pn->pn_lock, s);

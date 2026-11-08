@@ -46,6 +46,7 @@ downloads a pinned, checksummed Limine release into `build/`.
 | Path | Contents |
 |---|---|
 | `sys/kern` | machine-independent kernel |
+| `sys/vm` | physical pages, kernel virtual space, and the page cache |
 | `sys/libkern` | freestanding C library routines |
 | `sys/sys` | machine-independent headers (`<sys/...>`) |
 | `sys/dev/ic` | drivers for chips, independent of the bus |
