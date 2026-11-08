@@ -16,9 +16,16 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_clock.c \
                    sys/kern/kern_cons.c \
                    sys/kern/kern_kmem.c \
+                   sys/kern/kern_kthread.c \
+                   sys/kern/kern_mrlock.c \
+                   sys/kern/kern_mutex.c \
+                   sys/kern/kern_sched.c \
                    sys/kern/kern_spinlock.c \
+                   sys/kern/kern_synch.c \
+                   sys/kern/kern_timeout.c \
                    sys/kern/subr_prf.c \
                    sys/kern/subr_selftest.c \
+                   sys/kern/subr_selftest_sched.c \
                    sys/libkern/string.c \
                    sys/vm/vm_kva.c \
                    sys/vm/vm_page.c \

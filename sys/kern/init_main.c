@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include <sys/kmem.h>
+#include <sys/kthread.h>
 #include <sys/smp.h>
 #include <sys/systm.h>
 #include <sys/uadmin.h>
@@ -52,6 +53,7 @@ main(void)
         kva_init();
         md_stacks_init();
         intr_init();
+        sched_init();
         cpu_boot_secondary_processors();
         bootloader_reclaim();
         spl0();

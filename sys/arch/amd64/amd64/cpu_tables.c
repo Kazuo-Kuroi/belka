@@ -8,7 +8,10 @@
  * Descriptor tables: the shared IDT, and each processor's GDT and TSS.
  */
 
+#include <stddef.h>
 #include <stdint.h>
+
+#include <sys/compiler.h>
 
 #include <sys/systm.h>
 
@@ -23,6 +26,9 @@
 extern const uint64_t trap_vector_table[NEXCEPTIONS];
 
 
+
+CTASSERT(offsetof(struct cpu_info, ci_self) == CI_SELF_OFFSET);
+CTASSERT(offsetof(struct cpu_info, ci_curthread) == CI_CURTHREAD_OFFSET);
 
 /* The IDT is shared by all processors; each gate takes two words. */
 static uint64_t idt[NIDT * 2];

@@ -237,3 +237,9 @@ ENTRY(cpu_wait_for_interrupt)
         hlt
         ret
 END(cpu_wait_for_interrupt)
+
+/* struct kthread *cpu_curthread(void), for compilers without inline asm. */
+ENTRY(cpu_curthread)
+        movq    %gs:8, %rax
+        ret
+END(cpu_curthread)

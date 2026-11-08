@@ -22,6 +22,7 @@
 #include <stdint.h>
 
 #include <sys/compiler.h>
+#include <sys/sched.h>
 #include <sys/spinlock.h>
 
 #include <machine/param.h>
@@ -38,8 +39,18 @@ struct cpu_action {
         void            *ca_arg;
 };
 
+struct kthread;
+
+/*
+ * ci_self and ci_curthread are read with single %gs-relative loads, so
+ * their offsets are fixed; cpu_tables.c checks them.
+ */
+#define CI_SELF_OFFSET          0
+#define CI_CURTHREAD_OFFSET     8
+
 struct cpu_info {
         struct cpu_info *ci_self;       /* must be first: read via %gs:0 */
+        struct kthread  *ci_curthread;  /* read via %gs:8 */
         uint32_t        ci_cpuid;       /* kernel processor number */
         uint32_t        ci_lapic_id;
         volatile uint32_t ci_flags;
@@ -49,6 +60,13 @@ struct cpu_info {
         uint64_t        ci_ist_top[NIST];
         uint64_t        ci_gdt[NGDT];
         uint32_t        ci_tss[TSS_WORDS];
+
+        /* Scheduler state; see <sys/sched.h>. */
+        struct schedcpu ci_sched;
+
+        /* Spin locks held, and interrupt nesting, for assertions. */
+        volatile int    ci_spinlocks;
+        volatile int    ci_intr_depth;
 
         /* Clock and interrupt counts. */
         volatile uint64_t ci_ticks;
@@ -92,7 +110,37 @@ curcpu(void)
 struct cpu_info *curcpu(void);
 #endif
 
+/*
+ * The current thread, read in one instruction so that preemption cannot
+ * split the read of the processor from the read of its thread.
+ */
+#ifdef HAVE_INLINE_ASM
+static inline struct kthread *
+cpu_curthread(void)
+{
+        struct kthread *kt;
+
+        __asm__ __volatile__("movq %%gs:8, %0" : "=r"(kt));
+        return kt;
+}
+#else
+struct kthread *cpu_curthread(void);
+#endif
+
+/*
+ * The processor number is stable only while the caller cannot migrate:
+ * at splhi, or in a thread bound to one processor.
+ */
 #define cpu_number()    (curcpu()->ci_cpuid)
+
+/* Look up a processor by number; NULL if it is not running. */
+struct cpu_info *cpu_lookup(unsigned int);
+
+/* Ask processor ci to reschedule, by IPI if it is another processor. */
+void cpu_need_resched(struct cpu_info *);
+
+/* Idle: halt until an interrupt, serving halt requests and actions. */
+void cpu_idle_wait(void);
 
 /* cpu_tables.c */
 void idt_init(void);
@@ -111,5 +159,11 @@ int cpu_halt_requested(void);
 
 /* locore.S: run fn(arg) on the stack whose top is given; never returns. */
 void stack_switch_call(uint64_t, void (*)(void *), void *) __dead;
+
+/* locore.S: save callee-saved state to *old, resume the thread at new. */
+void cpu_switch(uint64_t *, uint64_t);
+
+/* Prepare a new thread's stack so that its first switch enters it. */
+void cpu_thread_setup(struct kthread *);
 
 #endif /* _MACHINE_CPU_H_ */

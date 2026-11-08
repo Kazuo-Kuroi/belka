@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include <sys/compiler.h>
+#include <sys/kthread.h>
 #include <sys/systm.h>
 
 #include <machine/cpu.h>
@@ -182,6 +183,8 @@ trap(struct trapframe *tf)
 
         if (vector >= NEXCEPTIONS) {
                 intr_dispatch(tf);
+                if ((tf->tf_rflags & PSL_I) != 0)
+                        sched_preempt_check();
                 return;
         }
 

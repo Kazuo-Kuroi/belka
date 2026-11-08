@@ -182,6 +182,42 @@ Recorded 2026-11-07.
 - **Not yet:** per-processor object caches (magazines), constructors,
   zone reclaim under memory pressure.
 
+## Threads, scheduling, and sleeping locks (2026-11-08)
+
+- **kthreads** (`<sys/kthread.h>`) are what the scheduler runs; user
+  LWPs will be built on them. Each has a guarded 16 KB stack. Exited
+  threads are freed by a reaper thread, because a thread cannot unmap
+  its own stack and a context switch cannot do a TLB shootdown.
+- The boot context becomes **thread0**, bound to processor 0. Each
+  processor has an **idle thread**; on secondary processors it is the
+  start-up context. Idle processors steal work from the others.
+- **Priorities** 0-127, higher more urgent. One run queue per
+  processor with a bitmap of non-empty priorities. Equal priorities
+  share by a 10-tick slice; a preempted thread returns to the head of
+  its priority, a yielding or expired one to the tail (IRIX).
+- **Preemptible kernel:** a pending reschedule is taken on the way out
+  of any interrupt that arrived at spl0. Wakeups on the local processor
+  use a self-IPI so the switch happens as soon as interrupts are on.
+- **Context switch locking:** the leaving thread's `kt_lock` is held
+  until the processor is off its stack, satisfying the IRIX rule that a
+  thread's previous processor must leave its stack before another runs
+  it. A dispatcher that finds a better thread whose lock is momentarily
+  held re-arms the reschedule rather than waiting for the next slice.
+- **Wakeup placement:** the last processor if idle, else any idle
+  processor, else the last one. Bound threads always go home, and a
+  running thread that binds itself elsewhere migrates at once.
+- **Sleeping locks** (`<sys/synch.h>`), with IRIX names: `mutex` with
+  ownership handoff and one-level priority inheritance, `sv`
+  synchronisation variables, counting `sema` (`psema`/`vsema`), and
+  `mrlock` (waiting writers block new readers; a releasing writer admits
+  all waiting readers). Sleeping is two-phase so a sleeper never holds
+  an object lock and its own thread lock together.
+- **Callouts:** System V `timeout()`, `untimeout()`, and `delay()`, on
+  one sorted list run from the bootstrap processor's tick.
+- **Not yet:** scheduling classes (IRIX fair-share time-share, real-time,
+  gang, batch, frame scheduler), interrupt threads, transitive priority
+  inheritance, per-processor callouts, and timed or interruptible sleeps.
+
 ## File systems
 
 1. **tmpfs**, for testing.

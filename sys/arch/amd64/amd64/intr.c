@@ -8,7 +8,9 @@
  * Interrupt dispatch, the clock tick, and cross-processor actions.
  *
  * Interrupts arrive through interrupt gates, so handlers run with
- * interrupts disabled and never nest. Only local APIC sources exist so
+ * interrupts disabled and never nest. On the way out of an interrupt
+ * that arrived at spl0, trap() lets the scheduler preempt the
+ * interrupted thread. Only local APIC sources exist so
  * far: the timer, the action IPI, errors, and spurious interrupts.
  * Device interrupts will be dispatched to interrupt threads, as in
  * IRIX, so that device drivers can block.
@@ -27,6 +29,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/kthread.h>
 #include <sys/smp.h>
 #include <sys/spinlock.h>
 #include <sys/systm.h>
@@ -93,12 +96,18 @@ intr_dispatch(struct trapframe *tf)
         int vector = (int)tf->tf_trapno;
 
         ci->ci_nintr++;
+        ci->ci_intr_depth++;
         switch (vector) {
         case LAPIC_TIMER_VECTOR:
                 ci->ci_ticks++;
                 lapic_eoi();
                 if (ci == &cpu_info_primary)
                         clock();
+                sched_tick();
+                break;
+        case IPI_RESCHED_VECTOR:
+                ci->ci_sched.sc_want_resched = 1;
+                lapic_eoi();
                 break;
         case IPI_ACTION_VECTOR:
                 ci->ci_nipi++;
@@ -123,6 +132,7 @@ intr_dispatch(struct trapframe *tf)
                 lapic_eoi();
                 break;
         }
+        ci->ci_intr_depth--;
 }
 
 /*
@@ -207,6 +217,7 @@ smp_call_run(void *arg)
 void
 smp_call_all(void (*fn)(void *), void *arg)
 {
+        int spl = splhi();      /* stay on this processor throughout */
         struct cpu_info *self = curcpu();
         struct smp_call sc;
         unsigned int n = ncpus;
@@ -228,12 +239,7 @@ smp_call_all(void (*fn)(void *), void *arg)
                         cpu_action(ci, smp_call_run, &sc);
         }
 
-        {
-                int s = splhi();
-
-                fn(arg);
-                splx(s);
-        }
+        fn(arg);
 
         while (atomic_load_32(&sc.sc_pending) != 0) {
                 if (cpu_halt_requested())
@@ -242,6 +248,52 @@ smp_call_all(void (*fn)(void *), void *arg)
                 cpu_spinwait();
         }
         membar_enter();
+        splx(spl);
+}
+
+/* Look up a running processor by number. */
+struct cpu_info *
+cpu_lookup(unsigned int id)
+{
+        struct cpu_info *ci;
+
+        if (id >= ncpus)
+                return NULL;
+        ci = &cpu_info_store[id];
+        return (ci->ci_flags & CPUF_RUNNING) != 0 ? ci : NULL;
+}
+
+/*
+ * Make processor ci reschedule soon. For the calling processor a self
+ * IPI is used, so that the switch happens as soon as interrupts are
+ * enabled again rather than at the next tick.
+ */
+void
+cpu_need_resched(struct cpu_info *ci)
+{
+        if (!lapic_ready())
+                return;
+        if (ci == curcpu())
+                lapic_send_self_ipi(IPI_RESCHED_VECTOR);
+        else
+                lapic_send_ipi(ci->ci_lapic_id, IPI_RESCHED_VECTOR);
+}
+
+/*
+ * Wait for an interrupt from the idle thread, which calls this at
+ * splhi. Returns at splhi after one interrupt has been taken, or at once
+ * if a reschedule is already pending.
+ */
+void
+cpu_idle_wait(void)
+{
+        if (cpu_halt_requested())
+                cpu_halt_self();
+        cpu_action_drain();
+        if (curcpu()->ci_sched.sc_want_resched)
+                return;
+        cpu_wait_for_interrupt();
+        disable_intr();
 }
 
 /* Stop every other processor, whatever its interrupt state. */

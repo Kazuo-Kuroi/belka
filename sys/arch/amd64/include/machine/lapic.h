@@ -49,7 +49,9 @@
 #define LAPIC_ICR_NMI           0x00000400
 #define LAPIC_ICR_PENDING       0x00001000      /* xAPIC delivery status */
 #define LAPIC_ICR_ASSERT        0x00004000
+#define LAPIC_ICR_SELF          0x00040000      /* self */
 #define LAPIC_ICR_ALLEXCL       0x000c0000      /* all but self */
+#define MSR_X2APIC_SELF_IPI     0x0000083f
 
 #define MSR_APIC_BASE           0x0000001b
 #define APIC_BASE_ENABLE        0x00000800
@@ -65,6 +67,7 @@ void lapic_cpu_init(void);
 uint32_t lapic_id(void);
 void lapic_eoi(void);
 void lapic_send_ipi(uint32_t, int);
+void lapic_send_self_ipi(int);
 void lapic_send_nmi_others(void);
 int lapic_ready(void);
 int lapic_is_x2apic(void);

@@ -218,6 +218,17 @@ lapic_send_ipi(uint32_t dest, int vector)
             (uint32_t)vector);
 }
 
+/* Interrupt the calling processor; delivered once interrupts are on. */
+void
+lapic_send_self_ipi(int vector)
+{
+        if (x2apic)
+                wrmsr(MSR_X2APIC_SELF_IPI, (uint64_t)vector);
+        else
+                lapic_send_icr(0, LAPIC_ICR_FIXED | LAPIC_ICR_ASSERT |
+                    LAPIC_ICR_SELF | (uint32_t)vector);
+}
+
 /* Send an NMI to every processor except the caller. */
 void
 lapic_send_nmi_others(void)

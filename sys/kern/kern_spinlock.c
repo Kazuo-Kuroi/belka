@@ -38,15 +38,22 @@ spinlock_init(struct spinlock *lk, const char *name)
         lk->sl_name = name;
 }
 
-/* Try once with interrupts blocked; on success leave them blocked. */
+/*
+ * Try once with interrupts blocked; on success leave them blocked. The
+ * holder check is made at splhi, where the processor number is stable.
+ */
 static int
-spin_try(struct spinlock *lk, int *sp)
+spin_try(struct spinlock *lk, int *sp, int check)
 {
         int s = splhi();
+        struct cpu_info *ci = curcpu();
 
+        if (check && lk->sl_lock != 0 && lk->sl_cpu == ci->ci_cpuid)
+                panic("spin_lock: %s already held by this cpu", lk->sl_name);
         if (atomic_cas_32(&lk->sl_lock, 0, 1) == 0) {
                 membar_enter();
-                lk->sl_cpu = cpu_number();
+                lk->sl_cpu = ci->ci_cpuid;
+                ci->ci_spinlocks++;
                 *sp = s;
                 return 1;
         }
@@ -60,10 +67,7 @@ spin_lock(struct spinlock *lk)
         uint64_t spins = 0;
         int s;
 
-        if (lk->sl_cpu == cpu_number() && lk->sl_lock != 0)
-                panic("spin_lock: %s already held by this cpu", lk->sl_name);
-
-        while (!spin_try(lk, &s)) {
+        while (!spin_try(lk, &s, 1)) {
                 while (atomic_load_32(&lk->sl_lock) != 0) {
                         cpu_spinwait();
                         if (++spins == SPIN_LIMIT)
@@ -81,14 +85,17 @@ spin_lock(struct spinlock *lk)
 int
 spin_trylock(struct spinlock *lk, int *sp)
 {
-        return spin_try(lk, sp);
+        return spin_try(lk, sp, 0);
 }
 
 void
 spin_unlock(struct spinlock *lk, int s)
 {
-        if (lk->sl_lock == 0 || lk->sl_cpu != cpu_number())
+        struct cpu_info *ci = curcpu();
+
+        if (lk->sl_lock == 0 || lk->sl_cpu != ci->ci_cpuid)
                 panic("spin_unlock: %s not held by this cpu", lk->sl_name);
+        ci->ci_spinlocks--;
         lk->sl_cpu = SPIN_NOCPU;
         membar_exit();
         atomic_store_32(&lk->sl_lock, 0);
@@ -99,5 +106,9 @@ spin_unlock(struct spinlock *lk, int s)
 int
 spin_held(const struct spinlock *lk)
 {
-        return lk->sl_lock != 0 && lk->sl_cpu == cpu_number();
+        int s = splhi();
+        int held = lk->sl_lock != 0 && lk->sl_cpu == cpu_number();
+
+        splx(s);
+        return held;
 }

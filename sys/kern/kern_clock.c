@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 
+#include <sys/kthread.h>
 #include <sys/systm.h>
 
 volatile uint64_t lbolt;
@@ -24,4 +25,5 @@ void
 clock(void)
 {
         lbolt++;
+        callout_tick();
 }

@@ -26,6 +26,7 @@
 #include <machine/param.h>
 
 #include <sys/kmem.h>
+#include <sys/kthread.h>
 
 #include <vm/hat.h>
 #include <vm/kva.h>
@@ -41,7 +42,9 @@ volatile unsigned int ncpus = 1;
 static void cpu_hatch_entry(void *);
 static void cpu_hatch_tables(void *);
 static void cpu_hatch(void *);
-static void cpu_idle_loop(void) __dead;
+
+/* thread_start in locore.S. */
+extern char thread_start[];
 
 /*
  * A processor starts on the boot loader's stack, under the boot loader's
@@ -74,25 +77,28 @@ cpu_hatch(void *arg)
 
         cpu_tables_init(ci);
         intr_cpu_init(ci);
+        /* This context, on its guarded stack, becomes the idle thread. */
+        ci->ci_curthread = kthread_alloc_idle(ci, ci->ci_stack_top);
         atomic_or_32(&ci->ci_flags, CPUF_RUNNING);
-        cpu_idle_loop();
+        sched_idle();
 }
 
 /*
- * Sleep until an interrupt arrives, then serve it. This stands in for
- * the scheduler's idle thread. Requests from other processors arrive as
- * action IPIs and are run by the interrupt handler.
+ * Lay out a new thread's stack as cpu_switch() expects: six zeroed
+ * callee-saved registers, with the kthread in %r12, then thread_start as
+ * the return address. The frame starts 8 bytes off a 16-byte boundary
+ * so that thread_start runs with an aligned stack.
  */
-static void
-cpu_idle_loop(void)
+void
+cpu_thread_setup(struct kthread *kt)
 {
-        for (;;) {
-                disable_intr();
-                if (cpu_halt_requested())
-                        cpu_halt_self();
-                cpu_action_drain();
-                cpu_wait_for_interrupt();
-        }
+        uint64_t *sp = (uint64_t *)(uintptr_t)(kt->kt_stack - 72);
+
+        for (int i = 0; i < 9; i++)
+                sp[i] = 0;
+        sp[3] = (uint64_t)(uintptr_t)kt;                /* %r12 */
+        sp[6] = (uint64_t)(uintptr_t)thread_start;      /* return */
+        kt->kt_rsp = (uint64_t)(uintptr_t)sp;
 }
 
 void

@@ -22,6 +22,7 @@
 
 #define LAPIC_TIMER_VECTOR      0xf0
 #define IPI_ACTION_VECTOR       0xf1
+#define IPI_RESCHED_VECTOR      0xf2
 #define LAPIC_ERROR_VECTOR      0xfe
 #define LAPIC_SPURIOUS_VECTOR   0xff
 
