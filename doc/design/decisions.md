@@ -299,6 +299,36 @@ Recorded 2026-11-07.
   per-sector pattern; every QEMU run attaches it as a modern-only
   virtio-blk device.
 
+## VFS and tmpfs (2026-11-08)
+
+- **Interfaces** after System V/UnixWare: `struct vnode` with a
+  `vnodeops` vector and `VOP_*` macros, `struct vfs` with `vfsops`,
+  `vfssw` by name, `uio`/`iovec`, `vattr` with `va_mask`, `cred`, and
+  `dirent`. File mode bits and open flags take the System V values.
+- **Concurrency contract** after IRIX: the generic layer holds a vnode
+  reference across every operation and takes no vnode lock; each file
+  system serialises itself. `VOP_INACTIVE` runs with no locks and
+  `VINACT` set.
+- **Pathname lookup** follows the UnixWare rules (limits 1024/255/20,
+  `EINVAL` for the parent of `/` and for a last component that is the
+  parent, trailing slashes ignored, `..` at the root stays, `..` at a
+  mounted root crosses out, mount points crossed downward, an empty
+  link means `.`). Mounting over a file system root is `EBUSY`.
+- **Name cache** in the generic layer (IRIX), names up to 31 bytes, no
+  negative entries. **Deviation:** entries hold vnode references, the
+  classic System V model, because IRIX's soft references depend on its
+  global vnode cache; name-space changes purge what they change.
+- **Vnodes belong to their file system** for now. The IRIX global vnode
+  cache, with free lists and reclaim, comes with the first on-disk file
+  system, together with the buffer cache and the unified page cache.
+- **tmpfs** is the root file system until ext2: per-mount mutex for the
+  name space, per-node mrlock for data, pages from the page allocator
+  with holes, a per-mount page limit (`ENOSPC`), and nodes freed at
+  their last reference once unlinked.
+- **No time-of-day clock yet:** file times count from boot.
+- **Kernel file API** (`vn_open`, `vn_rdwr`, `vn_mkdir`, ...) by path;
+  system calls will be thin layers over it.
+
 ## File systems
 
 1. **tmpfs**, for testing.

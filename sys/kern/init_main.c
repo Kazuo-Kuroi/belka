@@ -15,6 +15,7 @@
 #include <sys/smp.h>
 #include <sys/systm.h>
 #include <sys/uadmin.h>
+#include <sys/vfs.h>
 
 #include <machine/intr.h>
 #include <machine/param.h>
@@ -58,6 +59,11 @@ main(void)
         bootloader_reclaim();
         spl0();
         configure();
+
+        /* tmpfs is the root until a disk file system can be mounted. */
+        vfs_init();
+        if (vfs_mountroot("tmpfs", NULL) != 0)
+                panic("cannot mount the root file system");
 
         failures = selftest_run();
         if (failures != 0)

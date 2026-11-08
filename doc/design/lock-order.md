@@ -13,6 +13,9 @@ object locks below.
 
 | Lock | Protects | Notes |
 |---|---|---|
+| `vfs_mutex` (`kern/vfs_mount.c`) | the mount list, `v_vfsmountedhere`, mount and unmount | Taken briefly by lookup to cross a mount point. Held across `VFS_MOUNT`/`VFS_UNMOUNT`, so a file system's own locks rank below it. |
+| `tm_lock`, one per tmpfs mount (`fs/tmpfs`) | the name space, node attributes and link counts, the node list | Taken by `VOP_INACTIVE`; never held while taking `vfs_mutex`. |
+| `tn_rwlock` (mrlock), one per tmpfs node | a file's pages and size | After `tm_lock`. Reads and writes take only this. |
 | `blkdev_lock` (`kern/subr_blkdev.c`) | the block device registry | Held only while registering or looking up. |
 | `intr_mutex` (`arch/amd64/amd64/intr.c`) | the interrupt source table and handler lists, for changes | Held across `smp_call_all()` and `delay()` in `intr_disestablish()`; never taken from an interrupt. |
 
@@ -24,6 +27,8 @@ Listed roughly from outermost to innermost.
 |---|---|---|---|
 | sync object locks: `m_lock`, `sv_lock`, `s_lock`, `mr_lock` (`kern/kern_mutex.c`, `kern_synch.c`, `kern_mrlock.c`) | the object's state and sleep queue | a caller's spin lock (`sv_wait`) | A sleeper drops the object's lock before taking its own `kt_lock`; a waker takes `kt_lock` under it. |
 | `kt_lock`, one per thread (`kern/kern_kthread.c`) | the thread's state, priority, run queue membership, wait channel | sync object locks | Held across a context switch by the thread leaving, and released by the next thread in `sched_finish()`. Never hold two, except the switch handover. |
+| `dnlc_lock` (`kern/vfs_dnlc.c`) | the name cache | nothing | Never held across `VN_RELE`, which can enter a file system; evicted references are dropped after unlocking. |
+| `v_lock`, one per vnode (`kern/vfs_vnode.c`) | `v_count` and `v_flag` | nothing | |
 | `wt_lock` (`kern/sched_ts.c`) | the time-share active job list and every job's thread list | `kt_lock` | Redistribution holds it and only try-locks threads, leaving a busy thread for the next tick. |
 | `rq_lock`, one per processor (`sys/sched.h`) | that processor's run queue | `kt_lock` | Code holding `rq_lock` takes a `kt_lock` only with `spin_trylock()`. Never hold two run queue locks. |
 | `vq_lock`, one per virtqueue (`dev/virtio/virtio.c`) | the rings, free list, and cookies | nothing | The completion callback runs under it and may only wake threads (`sema`, `sv` locks nest inside). Submitters wait for space with `sv_wait()` on it. |

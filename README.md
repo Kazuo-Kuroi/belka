@@ -45,6 +45,7 @@ downloads a pinned, checksummed Limine release into `build/`.
 | `sys/dev/ic` | drivers for chips, independent of the bus |
 | `sys/dev/acpi`, `sys/dev/pci` | ACPI tables, PCI bus support |
 | `sys/dev/virtio` | virtio transport, virtqueues, and drivers |
+| `sys/fs` | file systems (tmpfs so far) |
 | `sys/arch/amd64/amd64` | amd64 machine-dependent code |
 | `sys/arch/amd64/include/machine` | amd64 headers (`<machine/...>`) |
 | `sys/arch/amd64/conf` | source lists and linker script |
