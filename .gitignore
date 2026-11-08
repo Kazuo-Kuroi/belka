@@ -53,3 +53,9 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+PARADIGM.md
+
+irix-657m-docs/
+
+uw2-docs/
