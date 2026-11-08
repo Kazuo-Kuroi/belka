@@ -81,7 +81,7 @@ struct kthread {
         uint64_t        kt_ticks;       /* ticks spent running */
         uint64_t        kt_lastrun;     /* lbolt when last switched out */
 
-        /* Run queue or sleep queue linkage; never on both. */
+        /* Run queue linkage. */
         struct kthread  *kt_next;
         struct kthread  *kt_prev;
         struct runq     *kt_rq;         /* run queue holding it, or NULL */
@@ -90,6 +90,13 @@ struct kthread {
         /* Waiting. */
         void *volatile  kt_wchan;       /* sync object, NULL once woken */
         struct sleepq   *kt_sleepq;
+        /*
+         * Sleep queue linkage, apart from the run queue's: a thread that
+         * has queued itself to sleep can still be preempted, and so be
+         * on a run queue too, until it reaches sleep_finish().
+         */
+        struct kthread  *kt_sqnext;
+        struct kthread  *kt_sqprev;
         struct mutex    *kt_blockedon;  /* mutex it waits for */
         struct mutex    *kt_mutexes;    /* owned mutexes with waiters */
 

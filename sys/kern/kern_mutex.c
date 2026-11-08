@@ -35,6 +35,7 @@
 #include <sys/systm.h>
 
 #include <machine/atomic.h>
+#include <machine/intr.h>
 
 #define OWNER(v)        ((struct kthread *)((v) & ~MUTEX_WAITERS))
 
@@ -234,9 +235,16 @@ mutex_unlock_slow(struct mutex *m)
                 }
                 sched_recompute(next);
                 thread_unlock(next, ks);
-                wakeup_thread(next);
         }
-        spin_unlock(&m->m_lock, s);
+        /*
+         * Wake the new owner before interrupts come back on: we may just
+         * have given up an inherited priority, and must not be preempted
+         * by a thread that the new owner would outrank.
+         */
+        spin_unlock(&m->m_lock, 0);
+        if (next != NULL)
+                wakeup_thread(next);
+        splx(s);
 }
 
 int

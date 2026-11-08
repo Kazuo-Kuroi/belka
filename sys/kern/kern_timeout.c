@@ -36,6 +36,7 @@ struct callout {
         void            (*c_fn)(void *);
         void            *c_arg;
         toid_t          c_id;
+        int             c_onstack;      /* delay()'s; never freed */
 };
 
 static struct spinlock callout_lock = SPINLOCK_INITIALIZER("callout");
@@ -45,6 +46,7 @@ static toid_t next_toid = 1;
 static volatile toid_t callout_running;  /* id running now, or 0 */
 
 static void delay_wakeup(void *);
+static toid_t callout_insert(struct callout *, long);
 
 void
 callout_init(void)
@@ -60,17 +62,25 @@ toid_t
 timeout(void (*fn)(void *), void *arg, long ticks)
 {
         struct callout *c = kmem_zone_alloc(callout_zone, KM_NOSLEEP);
+
+        if (c == NULL)
+                panic("timeout: out of memory");
+        c->c_fn = fn;
+        c->c_arg = arg;
+        c->c_onstack = 0;
+        return callout_insert(c, ticks);
+}
+
+/* Queue a filled-in callout to run after ticks ticks. Returns its id. */
+static toid_t
+callout_insert(struct callout *c, long ticks)
+{
         struct callout **link;
         toid_t id;
         int s;
 
-        if (c == NULL)
-                panic("timeout: out of memory");
         if (ticks < 1)
                 ticks = 1;
-        c->c_fn = fn;
-        c->c_arg = arg;
-
         s = spin_lock(&callout_lock);
         id = next_toid++;
         c->c_id = id;
@@ -126,12 +136,15 @@ callout_tick(void)
         s = spin_lock(&callout_lock);
         while (callouts != NULL && callouts->c_when <= now) {
                 struct callout *c = callouts;
+                int onstack = c->c_onstack;
 
                 callouts = c->c_next;
                 callout_running = c->c_id;
                 spin_unlock(&callout_lock, 0);
+                /* An on-stack callout may be gone once its function ran. */
                 c->c_fn(c->c_arg);
-                kmem_zone_free(callout_zone, c);
+                if (!onstack)
+                        kmem_zone_free(callout_zone, c);
                 (void)spin_lock(&callout_lock);
                 callout_running = 0;
         }
@@ -144,15 +157,22 @@ delay_wakeup(void *arg)
         vsema(arg);
 }
 
-/* Sleep for at least ticks clock ticks. */
+/*
+ * Sleep for at least ticks clock ticks. The callout lives on the stack,
+ * so delay() never allocates and cannot fail.
+ */
 void
 delay(long ticks)
 {
+        struct callout c;
         struct sema sm;
 
         if (ticks <= 0)
                 return;
         sema_init(&sm, 0, "delay");
-        (void)timeout(delay_wakeup, &sm, ticks);
+        c.c_fn = delay_wakeup;
+        c.c_arg = &sm;
+        c.c_onstack = 1;
+        (void)callout_insert(&c, ticks);
         psema(&sm);
 }

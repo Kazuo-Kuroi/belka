@@ -14,13 +14,22 @@
  *  1. Holding the object's spin lock, the sleeper queues itself with
  *     sleepq_insert(), which sets kt_wchan, and drops the lock.
  *  2. sleep_finish() takes the sleeper's kt_lock. If a waker has already
- *     dequeued it, kt_wchan is NULL and it returns at once; otherwise it
+ *     let it go, kt_wchan is NULL and it returns at once; otherwise it
  *     marks itself asleep and switches away.
  *
- * A waker holds the object's lock, dequeues the thread (clearing
- * kt_wchan), and calls wakeup_thread(), which makes it runnable only if
- * it actually went to sleep. Because the sleeper keeps its kt_lock until
- * it is off the processor, the waker cannot run it early.
+ * A waker holds the object's lock and dequeues the thread, which leaves
+ * kt_wchan set, so the sleeper cannot get past sleep_finish() yet. It
+ * drops the object's lock, keeping interrupts blocked so that it is not
+ * preempted before the wakeup, and calls wakeup_thread(). That clears
+ * kt_wchan under the sleeper's kt_lock and makes the sleeper runnable if
+ * it actually went to sleep. So:
+ *
+ *  - the sleeper keeps its kt_lock until it is off the processor, so the
+ *    waker cannot run it early;
+ *  - clearing kt_wchan and waking happen in one step, so a slow waker can
+ *    never wake the thread out of some later, unrelated sleep;
+ *  - the waker is done with the object before the sleeper can return, so
+ *    the sleeper may free the object, or let it go out of scope, at once.
  */
 
 #include <stddef.h>
@@ -65,18 +74,18 @@ sleepq_insert(struct sleepq *sq, struct kthread *kt, int order)
 
                 /* After the last thread of equal or higher key. */
                 while (after != NULL && sleepq_key(after) < key)
-                        after = after->kt_prev;
+                        after = after->kt_sqprev;
         }
-        kt->kt_prev = after;
+        kt->kt_sqprev = after;
         if (after != NULL) {
-                kt->kt_next = after->kt_next;
-                after->kt_next = kt;
+                kt->kt_sqnext = after->kt_sqnext;
+                after->kt_sqnext = kt;
         } else {
-                kt->kt_next = sq->sq_head;
+                kt->kt_sqnext = sq->sq_head;
                 sq->sq_head = kt;
         }
-        if (kt->kt_next != NULL)
-                kt->kt_next->kt_prev = kt;
+        if (kt->kt_sqnext != NULL)
+                kt->kt_sqnext->kt_sqprev = kt;
         else
                 sq->sq_tail = kt;
         sq->sq_count++;
@@ -84,7 +93,10 @@ sleepq_insert(struct sleepq *sq, struct kthread *kt, int order)
         kt->kt_wchan = sq;
 }
 
-/* Dequeue the first thread, marking it woken. The object's lock is held. */
+/*
+ * Dequeue the first thread. The object's lock is held. The thread stays
+ * blocked until the caller passes it to wakeup_thread().
+ */
 struct kthread *
 sleepq_remove_first(struct sleepq *sq)
 {
@@ -92,16 +104,34 @@ sleepq_remove_first(struct sleepq *sq)
 
         if (kt == NULL)
                 return NULL;
-        sq->sq_head = kt->kt_next;
+        sq->sq_head = kt->kt_sqnext;
         if (sq->sq_head != NULL)
-                sq->sq_head->kt_prev = NULL;
+                sq->sq_head->kt_sqprev = NULL;
         else
                 sq->sq_tail = NULL;
         sq->sq_count--;
-        kt->kt_next = NULL;
-        kt->kt_prev = NULL;
+        kt->kt_sqnext = NULL;
+        kt->kt_sqprev = NULL;
         kt->kt_sleepq = NULL;
-        kt->kt_wchan = NULL;
+        return kt;
+}
+
+/*
+ * Dequeue every thread, returning them chained through kt_sqnext. The
+ * object's lock is held. Pass the chain to wakeup_threads().
+ */
+struct kthread *
+sleepq_remove_all(struct sleepq *sq)
+{
+        struct kthread *kt = sq->sq_head;
+
+        for (struct kthread *t = kt; t != NULL; t = t->kt_sqnext) {
+                t->kt_sqprev = NULL;
+                t->kt_sleepq = NULL;
+        }
+        sq->sq_head = NULL;
+        sq->sq_tail = NULL;
+        sq->sq_count = 0;
         return kt;
 }
 
@@ -129,17 +159,40 @@ sleep_finish(void)
 }
 
 /*
- * Make a dequeued thread runnable if it went to sleep. The caller holds
- * the lock of the object it was dequeued from.
+ * Let a dequeued thread go: mark it woken, and make it runnable if it
+ * went to sleep. The caller has dropped the object's lock, and must not
+ * touch the object afterwards.
  */
 void
 wakeup_thread(struct kthread *kt)
 {
         int s = thread_lock(kt);
 
+        kt->kt_wchan = NULL;
         if (kt->kt_state == KT_SLEEP)
                 setrun(kt);
         thread_unlock(kt, s);
+}
+
+/*
+ * Let go every thread of a chain from sleepq_remove_all(). Returns how
+ * many there were.
+ */
+int
+wakeup_threads(struct kthread *kt)
+{
+        int n = 0;
+
+        while (kt != NULL) {
+                /* Once let go, the thread may reuse kt_sqnext. */
+                struct kthread *next = kt->kt_sqnext;
+
+                kt->kt_sqnext = NULL;
+                wakeup_thread(kt);
+                kt = next;
+                n++;
+        }
+        return n;
 }
 
 void
@@ -184,9 +237,10 @@ sv_signal(struct sv *sv)
         int s = spin_lock(&sv->sv_lock);
         struct kthread *kt = sleepq_remove_first(&sv->sv_waiters);
 
+        spin_unlock(&sv->sv_lock, 0);
         if (kt != NULL)
                 wakeup_thread(kt);
-        spin_unlock(&sv->sv_lock, s);
+        splx(s);
         return kt != NULL;
 }
 
@@ -195,14 +249,12 @@ int
 sv_broadcast(struct sv *sv)
 {
         int s = spin_lock(&sv->sv_lock);
-        struct kthread *kt;
-        int n = 0;
+        struct kthread *kt = sleepq_remove_all(&sv->sv_waiters);
+        int n;
 
-        while ((kt = sleepq_remove_first(&sv->sv_waiters)) != NULL) {
-                wakeup_thread(kt);
-                n++;
-        }
-        spin_unlock(&sv->sv_lock, s);
+        spin_unlock(&sv->sv_lock, 0);
+        n = wakeup_threads(kt);
+        splx(s);
         return n;
 }
 
@@ -255,9 +307,10 @@ vsema(struct sema *sm)
         int s = spin_lock(&sm->s_lock);
         struct kthread *kt = sleepq_remove_first(&sm->s_waiters);
 
+        if (kt == NULL)
+                sm->s_count++;
+        spin_unlock(&sm->s_lock, 0);
         if (kt != NULL)
                 wakeup_thread(kt);
-        else
-                sm->s_count++;
-        spin_unlock(&sm->s_lock, s);
+        splx(s);
 }

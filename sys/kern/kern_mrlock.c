@@ -21,7 +21,9 @@
 #include <sys/synch.h>
 #include <sys/systm.h>
 
-static void mr_admit_readers(struct mrlock *);
+#include <machine/intr.h>
+
+static struct kthread *mr_admit_readers(struct mrlock *);
 
 void
 mrinit(struct mrlock *mr, const char *name)
@@ -92,16 +94,15 @@ mrtryupdate(struct mrlock *mr)
         return got;
 }
 
-/* Let every waiting reader in. mr_lock is held. */
-static void
+/*
+ * Let every waiting reader in. mr_lock is held. Returns the readers for
+ * wakeup_threads() once it is dropped.
+ */
+static struct kthread *
 mr_admit_readers(struct mrlock *mr)
 {
-        struct kthread *kt;
-
-        while ((kt = sleepq_remove_first(&mr->mr_rwait)) != NULL) {
-                mr->mr_readers++;
-                wakeup_thread(kt);
-        }
+        mr->mr_readers += mr->mr_rwait.sq_count;
+        return sleepq_remove_all(&mr->mr_rwait);
 }
 
 /* Release a read or write hold. */
@@ -110,6 +111,7 @@ mrunlock(struct mrlock *mr)
 {
         int s = spin_lock(&mr->mr_lock);
         int was_writer = mr->mr_writer;
+        struct kthread *readers = NULL, *writer = NULL;
 
         if (was_writer) {
                 mr->mr_writer = 0;
@@ -121,13 +123,17 @@ mrunlock(struct mrlock *mr)
 
         if (mr->mr_readers == 0) {
                 if (was_writer && mr->mr_rwait.sq_count != 0) {
-                        mr_admit_readers(mr);
+                        readers = mr_admit_readers(mr);
                 } else if (mr->mr_wwait.sq_count != 0) {
                         mr->mr_writer = 1;
-                        wakeup_thread(sleepq_remove_first(&mr->mr_wwait));
+                        writer = sleepq_remove_first(&mr->mr_wwait);
                 } else {
-                        mr_admit_readers(mr);
+                        readers = mr_admit_readers(mr);
                 }
         }
-        spin_unlock(&mr->mr_lock, s);
+        spin_unlock(&mr->mr_lock, 0);
+        if (writer != NULL)
+                wakeup_thread(writer);
+        (void)wakeup_threads(readers);
+        splx(s);
 }

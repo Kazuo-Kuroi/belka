@@ -112,7 +112,9 @@ void mrunlock(struct mrlock *);
 void sleepq_init(struct sleepq *);
 void sleepq_insert(struct sleepq *, struct kthread *, int);
 struct kthread *sleepq_remove_first(struct sleepq *);
+struct kthread *sleepq_remove_all(struct sleepq *);
 void sleep_finish(void);
 void wakeup_thread(struct kthread *);
+int wakeup_threads(struct kthread *);
 
 #endif /* _SYS_SYNCH_H_ */
