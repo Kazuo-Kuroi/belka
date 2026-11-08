@@ -16,6 +16,8 @@ object locks below.
 | `vfs_mutex` (`kern/vfs_mount.c`) | the mount list, `v_vfsmountedhere`, mount and unmount | Taken briefly by lookup to cross a mount point. Held across `VFS_MOUNT`/`VFS_UNMOUNT`, so a file system's own locks rank below it. |
 | `tm_lock`, one per tmpfs mount (`fs/tmpfs`) | the name space, node attributes and link counts, the node list | Taken by `VOP_INACTIVE`; never held while taking `vfs_mutex`. |
 | `tn_rwlock` (mrlock), one per tmpfs node | a file's pages and size | After `tm_lock`. Reads and writes take only this. |
+| `i_rwlock` (mrlock), one per ext2 inode (`fs/ext2fs`) | a file's data blocks and size | Taken before `em_lock`. Reads take it shared, writes and truncation exclusive. |
+| `em_lock`, one per ext2 mount (`fs/ext2fs`) | the name space, block and inode bitmaps, the superblock and group descriptors, the in-core inode table | After `i_rwlock`. Taken by `VOP_INACTIVE`; held across buffer cache calls and disk I/O. |
 | `blkdev_lock` (`kern/subr_blkdev.c`) | the block device registry | Held only while registering or looking up. |
 | `intr_mutex` (`arch/amd64/amd64/intr.c`) | the interrupt source table and handler lists, for changes | Held across `smp_call_all()` and `delay()` in `intr_disestablish()`; never taken from an interrupt. |
 
@@ -25,7 +27,8 @@ Listed roughly from outermost to innermost.
 
 | Lock | Protects | Taken after | Notes |
 |---|---|---|---|
-| sync object locks: `m_lock`, `sv_lock`, `s_lock`, `mr_lock` (`kern/kern_mutex.c`, `kern_synch.c`, `kern_mrlock.c`) | the object's state and sleep queue | a caller's spin lock (`sv_wait`) | A sleeper drops the object's lock before taking its own `kt_lock`; a waker takes `kt_lock` under it. |
+| sync object locks: `m_lock`, `sv_lock`, `s_lock`, `mr_lock` (`kern/kern_mutex.c`, `kern_synch.c`, `kern_mrlock.c`) | the object's state and sleep queue | a caller's spin lock (`sv_wait`) | A sleeper drops the object's lock before taking its own `kt_lock`. A waker dequeues under it, then drops it before `wakeup_thread()`, so it never touches the object once the sleeper can run; only the mutex handoff takes the new owner's `kt_lock` under `m_lock`. |
+| `bc_lock` (`kern/vfs_bio.c`) | the buffer hash, free list, flags of every buffer, and counters | nothing | Never held across I/O; a buffer is marked busy and the lock dropped first. Waiters sleep on `bc_wait` with `sv_wait()`. |
 | `kt_lock`, one per thread (`kern/kern_kthread.c`) | the thread's state, priority, run queue membership, wait channel | sync object locks | Held across a context switch by the thread leaving, and released by the next thread in `sched_finish()`. Never hold two, except the switch handover. |
 | `dnlc_lock` (`kern/vfs_dnlc.c`) | the name cache | nothing | Never held across `VN_RELE`, which can enter a file system; evicted references are dropped after unlocking. |
 | `v_lock`, one per vnode (`kern/vfs_vnode.c`) | `v_count` and `v_flag` | nothing | |

@@ -32,6 +32,7 @@
 #include <sys/kthread.h>
 #include <sys/param.h>
 #include <sys/synch.h>
+#include <sys/time.h>
 
 #include <vm/hat.h>
 #include <vm/kva.h>
@@ -91,6 +92,7 @@ static int md_selftest_intr(void);
 static int md_selftest_acpi(void);
 static int md_selftest_rtc(void);
 static uint8_t rtc_read(uint8_t);
+static int64_t rtc_time_of_day(void);
 static void rtc_write(uint8_t, uint8_t);
 static int rtc_intr(void *);
 static int md_rtc_run(int);
@@ -661,9 +663,67 @@ md_selftest(void)
         return failures;
 }
 
+/*
+ * Read the CMOS real-time clock once: seconds since 1970, or 0 if it
+ * reads as nonsense. Waits out an update in progress and reads until
+ * two passes agree. The century is assumed to be 20.
+ */
+static int64_t
+rtc_time_of_day(void)
+{
+        static const int regs[6] = { 0x00, 0x02, 0x04, 0x07, 0x08, 0x09 };
+        int v[6], w[6], binary, h24;
+        int64_t y, m, d, era, yoe, doy, doe, days;
+
+        for (int tries = 0; tries < 10; tries++) {
+                int s = spin_lock(&rtc_lock);
+
+                for (int spin = 0; spin < 100000 &&
+                    (rtc_read(RTC_REG_A) & 0x80) != 0; spin++)
+                        cpu_spinwait();
+                for (int i = 0; i < 6; i++)
+                        v[i] = rtc_read((uint8_t)regs[i]);
+                for (int i = 0; i < 6; i++)
+                        w[i] = rtc_read((uint8_t)regs[i]);
+                binary = (rtc_read(RTC_REG_B) & 0x04) != 0;
+                h24 = (rtc_read(RTC_REG_B) & 0x02) != 0;
+                spin_unlock(&rtc_lock, s);
+                if (memcmp(v, w, sizeof(v)) == 0)
+                        break;
+        }
+        if (!binary) {
+                for (int i = 0; i < 6; i++) {
+                        int pm = i == 2 ? v[i] & 0x80 : 0;
+
+                        v[i] = ((v[i] & 0x7f) >> 4) * 10 + (v[i] & 0x0f);
+                        v[i] |= pm;
+                }
+        }
+        if (!h24 && (v[2] & 0x80) != 0)
+                v[2] = ((v[2] & 0x7f) % 12) + 12;
+        else if (!h24)
+                v[2] = (v[2] & 0x7f) % 12;
+        if (v[0] > 59 || v[1] > 59 || v[2] > 23 || v[3] < 1 || v[3] > 31 ||
+            v[4] < 1 || v[4] > 12)
+                return 0;
+
+        /* Days from the civil date (proleptic Gregorian). */
+        y = 2000 + v[5];
+        m = v[4];
+        d = v[3];
+        y -= m <= 2;
+        era = y / 400;
+        yoe = y - era * 400;
+        doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+        doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        days = era * 146097 + doe - 719468;
+        return days * 86400 + v[2] * 3600 + v[1] * 60 + v[0];
+}
+
 void
 configure(void)
 {
+        boottime_sec = rtc_time_of_day();
         pci_init();
 }
 

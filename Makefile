@@ -43,6 +43,13 @@ HOSTCC          ?= cc
 DISK            := build/test-disk.img
 MKDISK          := build/tools/mkdisk
 
+# Two ext2 images, rebuilt before every QEMU run because the tests write
+# to them: vd1 with 1 KB blocks and vd2 with 4 KB blocks.
+EXT2_1K         := build/test-ext2-1k.img
+EXT2_4K         := build/test-ext2-4k.img
+E2FSCK          ?= /sbin/e2fsck
+DEBUGFS         ?= /sbin/debugfs
+
 KERNEL          := $(BUILD)/belka
 ISO             := $(BUILD)/belka.iso
 TEST_ISO        := $(BUILD)/belka-test.iso
@@ -79,7 +86,7 @@ LDFLAGS         := -nostdlib -static -z max-page-size=0x1000 \
 SRCS            := $(MI_SRCS) $(MD_SRCS)
 OBJS            := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS)))
 
-.PHONY: all iso run test test-fault test-apfault test-stack test-uaf \
+.PHONY: ext2-images all iso run test test-fault test-apfault test-stack test-uaf \
 	test-reboot test-all limine clean distclean
 
 all: $(KERNEL)
@@ -143,9 +150,22 @@ QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
                    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
                    -drive file=$(DISK),if=none,id=vd0,format=raw \
                    -device virtio-blk-pci,drive=vd0,disable-legacy=on \
+                   -drive file=$(EXT2_1K),if=none,id=vd1,format=raw \
+                   -device virtio-blk-pci,drive=vd1,disable-legacy=on \
+                   -drive file=$(EXT2_4K),if=none,id=vd2,format=raw \
+                   -device virtio-blk-pci,drive=vd2,disable-legacy=on \
                    -display none -no-reboot
 
+# Every recipe that boots the kernel rebuilds the images first, since a
+# prerequisite would run only once for all the boots of one make run.
+MKEXT2          = @mkdir -p build && sh tools/mkext2.sh $(EXT2_1K) 1024 && \
+                  sh tools/mkext2.sh $(EXT2_4K) 4096
+
+ext2-images:
+	$(MKEXT2)
+
 run: $(ISO) $(DISK)
+	$(MKEXT2)
 	$(QEMU) $(QEMU_FLAGS) -cdrom $(ISO) -serial mon:stdio
 
 # The kernel reports its result through the QEMU debug-exit device:
@@ -155,25 +175,35 @@ run: $(ISO) $(DISK)
 # on a secondary processor; "test-stack" and "test-uaf" check that stack
 # overflow and use after free are caught.
 test: $(TEST_ISO)
+	$(MKEXT2)
 	sh tools/qemu-test.sh pass $(BUILD)/test-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(TEST_ISO)
+	@# The kernel unmounted both file systems; they must be clean and
+	@# hold what the self-tests left for us.
+	$(E2FSCK) -fn $(EXT2_1K)
+	$(E2FSCK) -fn $(EXT2_4K)
+	sh tools/check-ext2.sh $(DEBUGFS) $(EXT2_1K) $(EXT2_4K)
 
 test-fault: $(FAULT_ISO)
+	$(MKEXT2)
 	sh tools/qemu-test.sh panic $(BUILD)/test-fault-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(FAULT_ISO)
 
 test-apfault: $(APFAULT_ISO)
+	$(MKEXT2)
 	sh tools/qemu-test.sh panic $(BUILD)/test-apfault-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(APFAULT_ISO)
 
 # A kernel stack overflow must hit the guard page and double fault.
 test-stack: $(STACK_ISO)
+	$(MKEXT2)
 	QEMU_EXPECT="double fault" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-stack-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(STACK_ISO)
 
 # A write to freed kmem must be caught when the object is reused.
 test-uaf: $(UAF_ISO)
+	$(MKEXT2)
 	QEMU_EXPECT="modified after free" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-uaf-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(UAF_ISO)
@@ -181,6 +211,7 @@ test-uaf: $(UAF_ISO)
 # A reboot through the ACPI reset register makes QEMU, run with
 # -no-reboot, exit with status 0.
 test-reboot: $(REBOOT_ISO)
+	$(MKEXT2)
 	QEMU_EXPECT="rebooting" sh tools/qemu-test.sh reset \
 	    $(BUILD)/test-reboot-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(REBOOT_ISO)

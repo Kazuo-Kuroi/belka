@@ -329,13 +329,60 @@ Recorded 2026-11-07.
 - **Kernel file API** (`vn_open`, `vn_rdwr`, `vn_mkdir`, ...) by path;
   system calls will be thin layers over it.
 
+## Buffer cache and ext2 (2026-11-08)
+
+- **Buffer cache** (`<sys/buf.h>`, `kern/vfs_bio.c`) with the System V
+  interface: `getblk`, `bread`, `bwrite`, `bdwrite`, `brelse`, plus
+  `bflush` and `binval` per device. Buffers are keyed by device and
+  512-byte sector, hashed, and kept on one LRU free list; they are
+  allocated on demand up to a fixed limit, and a dirty buffer is written
+  before it is reused. A `bdflush` thread writes delayed buffers once
+  they are 3 seconds old. The cache sits below the file systems only;
+  the unified page cache is still to come.
+- **ext2** (`sys/fs/ext2fs`) is a fresh MIT implementation of the public
+  ext2 revision 1 format. It takes NetBSD's `ext2fs` as its model for
+  the file split, function names, and allocation policy (directories
+  spread to groups with free space, file blocks near the previous one),
+  but no code is copied from it. This replaces the earlier plan to port
+  the BSD sources.
+- **ext2 features:** `filetype`, `sparse_super`, `large_file`
+  read-write; `dir_index` directories are read linearly and lose their
+  index flag when changed, which e2fsck accepts and can rebuild;
+  `resize_inode` and `ext_attr` are tolerated, and an inode with an
+  extended attribute block is never freed. An unknown read-only
+  compatible feature, or a file system not cleanly unmounted, mounts
+  read-only; an unknown incompatible feature refuses the mount.
+- **ext2 locking:** a per-mount mutex covers the name space, block and
+  inode allocation, the superblock and group descriptors, and the
+  in-core inode table; a per-inode mrlock covers file data. The mrlock
+  is taken first.
+- **Inodes** live in a per-mount hash table. The IRIX global vnode cache
+  is still deferred; a per-mount table is enough until there is memory
+  pressure to reclaim under.
+- **Time of day** comes from the CMOS real-time clock at boot (assumed
+  UTC, century 20xx); `gethrestime()` adds the ticks since. File times
+  are now real.
+- **Sleep and wakeup, revised:** a dequeued sleeper stays blocked until
+  the waker calls `wakeup_thread()`, which clears the wait channel and
+  wakes it in one step under the sleeper's thread lock. The waker drops
+  the object's lock first, but keeps interrupts blocked until the wakeup.
+  This closes a race in which a slow waker could wake a thread out of a
+  later, unrelated sleep. It also lets a sleeper free the object it
+  slept on as soon as it wakes, such as an I/O request or an on-stack
+  semaphore. Sleep queues have their own links, apart from the run
+  queues, because a thread that has queued itself can still be
+  preempted before it sleeps. `delay()` uses an on-stack callout and
+  never allocates.
+- **Tests:** two ext2 images (1 KB and 4 KB blocks) are built by
+  `mke2fs` before every QEMU boot. The kernel tests them, then leaves
+  files behind. After `make test`, the host checks both images with
+  `e2fsck -fn` and reads those files back with `debugfs`.
+
 ## File systems
 
 1. **tmpfs**, for testing.
-2. **ext2**, the first practical file system, ported from BSD sources
-   (NetBSD's `ext2fs` is preferred because it is BSD-licensed and matches
-   the long-term driver model). Licences of the imported files are checked
-   file by file.
+2. **ext2**, the first practical file system: a fresh MIT implementation
+   modelled on NetBSD's `ext2fs` (see above).
 3. **XFS**, specified from the published XFS design documents: on-disk
    format version 4 with version 2 directories. The Linux implementation
    is not followed.

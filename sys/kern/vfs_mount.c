@@ -23,9 +23,11 @@
 #include <sys/vnode.h>
 
 extern const struct vfsops tmpfs_vfsops;
+extern const struct vfsops ext2fs_vfsops;
 
 const struct vfssw vfssw[] = {
         { "tmpfs", &tmpfs_vfsops },
+        { "ext2fs", &ext2fs_vfsops },
         { NULL, NULL }
 };
 

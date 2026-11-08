@@ -114,11 +114,13 @@ uiomove(void *cp, size_t n, enum uio_rw rw, struct uio *uio)
         return 0;
 }
 
+int64_t boottime_sec;
+
 void
 gethrestime(struct timespec *ts)
 {
         uint64_t t = lbolt;
 
-        ts->tv_sec = (int64_t)(t / HZ);
+        ts->tv_sec = boottime_sec + (int64_t)(t / HZ);
         ts->tv_nsec = (long)((t % HZ) * (1000000000 / HZ));
 }

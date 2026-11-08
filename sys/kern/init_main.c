@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 
+#include <sys/buf.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
 #include <sys/smp.h>
@@ -61,6 +62,7 @@ main(void)
         configure();
 
         /* tmpfs is the root until a disk file system can be mounted. */
+        binit();
         vfs_init();
         if (vfs_mountroot("tmpfs", NULL) != 0)
                 panic("cannot mount the root file system");

@@ -29,6 +29,12 @@ make test-all           # every test above
 Every QEMU run attaches `build/test-disk.img`, an 8 MB disk with a known
 pattern in each sector, as a virtio block device (`vd0`); it is built by
 `tools/mkdisk.c` with the host compiler (`HOSTCC`, default `cc`).
+Two ext2 images are attached as `vd1` (1 KB blocks) and `vd2` (4 KB
+blocks). `tools/mkext2.sh` rebuilds them with `mke2fs` before every
+boot, because the tests write to them. After `make test`, the host
+checks both with `e2fsck -fn`, and `tools/check-ext2.sh` reads back
+with `debugfs` the files the kernel left. This needs e2fsprogs
+(`E2FSCK` and `DEBUGFS` name the programs).
 `SMP=n` and `MEM=size` set the guest's processors and memory.
 `make INLINE_ASM=no` builds the out-of-line fallbacks for every inline
 assembly primitive, which is what a compiler without GNU extensions
@@ -45,7 +51,7 @@ downloads a pinned, checksummed Limine release into `build/`.
 | `sys/dev/ic` | drivers for chips, independent of the bus |
 | `sys/dev/acpi`, `sys/dev/pci` | ACPI tables, PCI bus support |
 | `sys/dev/virtio` | virtio transport, virtqueues, and drivers |
-| `sys/fs` | file systems (tmpfs so far) |
+| `sys/fs` | file systems: tmpfs and ext2 |
 | `sys/arch/amd64/amd64` | amd64 machine-dependent code |
 | `sys/arch/amd64/include/machine` | amd64 headers (`<machine/...>`) |
 | `sys/arch/amd64/conf` | source lists and linker script |

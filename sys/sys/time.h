@@ -19,9 +19,13 @@ struct timespec {
 };
 
 /*
- * The current time. There is no time-of-day clock yet, so this counts
- * from boot; file times are therefore boot-relative for now.
+ * The current time: the time of day read from the hardware clock at
+ * boot, advanced by the clock tick since. It is not yet adjusted, so it
+ * drifts with the tick.
  */
 void gethrestime(struct timespec *);
+
+/* Seconds since 1970 at boot; set by machine-dependent start-up. */
+extern int64_t boottime_sec;
 
 #endif /* _SYS_TIME_H_ */
