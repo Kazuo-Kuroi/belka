@@ -39,5 +39,6 @@ sy_call_t sys_context, sys_pgrpsys, sys_sigwait;
 sy_call_t sys_lwpcreate, sys_lwpexit, sys_lwpwait, sys_lwpself, sys_lwpinfo;
 sy_call_t sys_lwpkill, sys_lwpsuspend, sys_lwpcontinue;
 sy_call_t sys_lwp_sema_wait, sys_lwp_sema_post, sys_lwp_sema_trywait;
+sy_call_t sys_lwp_addr_wait, sys_lwp_addr_wake;
 
 #endif /* _SYS_SYSENT_H_ */

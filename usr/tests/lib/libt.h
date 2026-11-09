@@ -112,6 +112,8 @@ int _lwp_sema_init(_lwp_sema_t *, int);
 int _lwp_sema_wait(_lwp_sema_t *);
 int _lwp_sema_post(_lwp_sema_t *);
 int _lwp_sema_trywait(_lwp_sema_t *);
+int _lwp_addr_wait(volatile int32_t *, int32_t, const int64_t *);
+int _lwp_addr_wake(volatile int32_t *, int, int *);
 int sigtimedwait(const sigset_t *, siginfo_t *, const int64_t *);
 pid_t fork1(void);
 pid_t forkall(void);

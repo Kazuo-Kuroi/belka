@@ -580,14 +580,31 @@ sys_lwpcontinue(const uint64_t *args, uint64_t *rv __unused)
 }
 
 /*
- * LWP semaphores. The count lives in user memory; the kernel changes it
- * only under the mutex of a hash bucket chosen by address space and
- * address, and waiters sleep on the bucket's sync variable, rechecking
- * the count each time it is posted.
+ * LWP semaphores and address waits. Both are keyed by address space
+ * and user address, hashed to a bucket whose mutex orders them and on
+ * whose sync variable their waiters sleep.
+ *
+ * A semaphore's count lives in user memory; the kernel changes it only
+ * under the bucket's mutex, and waiters recheck it each time one is
+ * posted.
+ *
+ * An address waiter (_lwp_addr_wait) is queued on the bucket while the
+ * mutex is held from the check of the word on: a waker, which marks
+ * waiters under the same mutex, either finds it queued or ran before
+ * the check and changed the word first. Waiters sleep on the bucket's
+ * sync variable and go back to sleep until marked.
  */
+struct addrwaiter {
+        struct addrwaiter *aw_next;
+        const void      *aw_as;
+        uint64_t        aw_addr;
+        int             aw_woken;
+};
+
 struct semabucket {
         struct mutex    sb_lock;
         struct sv       sb_sv;
+        struct addrwaiter *sb_waiters;  /* address waiters, sb_lock */
 };
 
 static struct semabucket sema_hash[SEMA_HASH];
@@ -672,4 +689,99 @@ sys_lwp_sema_post(const uint64_t *args, uint64_t *rv __unused)
         if (error == 0)
                 sv_broadcast(&b->sb_sv);
         return error;
+}
+
+/*
+ * _lwp_addr_wait(int32_t *addr, int32_t expected, const timespec *rel):
+ * sleep while *addr holds expected, until _lwp_addr_wake on addr, a
+ * signal, or the relative timeout (none if rel is NULL). Returns EAGAIN
+ * at once if *addr differs, ETIMEDOUT when the time runs out, and EINTR
+ * when a handler is due; a wake may also be spurious.
+ */
+int
+sys_lwp_addr_wait(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct lwp *l = curlwp;
+        uint64_t uaddr = args[0];
+        struct semabucket *b = sema_bucket(uaddr);
+        struct addrwaiter aw, **link;
+        int32_t word;
+        long ticks = -1;
+        int64_t id;
+        int error, r;
+
+        if ((uaddr & 3) != 0)
+                return EINVAL;
+        if (args[2] != 0 && (error = lwp_timeout_ticks(args[2], &ticks)) != 0)
+                return error;
+        mutex_lock(&b->sb_lock);
+        if ((error = copyin((const void *)(uintptr_t)uaddr, &word,
+            sizeof(word))) != 0 || word != (int32_t)args[1]) {
+                mutex_unlock(&b->sb_lock);
+                return error != 0 ? error : EAGAIN;
+        }
+        if (ticks == 0) {
+                mutex_unlock(&b->sb_lock);
+                return ETIMEDOUT;
+        }
+        aw.aw_as = l->l_proc->p_as;
+        aw.aw_addr = uaddr;
+        aw.aw_woken = 0;
+        aw.aw_next = b->sb_waiters;
+        b->sb_waiters = &aw;
+        id = lwp_timeout_start(ticks);
+        for (;;) {
+                if (aw.aw_woken) {
+                        error = 0;
+                        break;
+                }
+                if (l->l_timedout) {
+                        error = ETIMEDOUT;
+                        break;
+                }
+                if (sv_wait_mutex_sig(&b->sb_sv, &b->sb_lock) != 0 &&
+                    !aw.aw_woken && !l->l_timedout &&
+                    (r = sig_sleep_check()) != 0) {
+                        mutex_lock(&b->sb_lock);
+                        error = aw.aw_woken ? 0 : r == 1 ? EINTR : ERESTART;
+                        break;
+                }
+                mutex_lock(&b->sb_lock);
+        }
+        for (link = &b->sb_waiters; *link != &aw; link = &(*link)->aw_next)
+                continue;
+        *link = aw.aw_next;
+        mutex_unlock(&b->sb_lock);
+        lwp_timeout_stop(id);
+        return error;
+}
+
+/*
+ * _lwp_addr_wake(int32_t *addr, int n): wake up to n LWPs of this
+ * process waiting on addr (n <= 0: all of them). Returns how many.
+ */
+int
+sys_lwp_addr_wake(const uint64_t *args, uint64_t *rv)
+{
+        uint64_t uaddr = args[0];
+        struct semabucket *b = sema_bucket(uaddr);
+        const void *as = curproc->p_as;
+        int n = (int)args[1], woken = 0;
+
+        if ((uaddr & 3) != 0)
+                return EINVAL;
+        mutex_lock(&b->sb_lock);
+        for (struct addrwaiter *aw = b->sb_waiters; aw != NULL &&
+            (n <= 0 || woken < n); aw = aw->aw_next) {
+                if (aw->aw_as == as && aw->aw_addr == uaddr &&
+                    !aw->aw_woken) {
+                        aw->aw_woken = 1;
+                        woken++;
+                }
+        }
+        mutex_unlock(&b->sb_lock);
+        if (woken > 0)
+                sv_broadcast(&b->sb_sv);
+        rv[0] = (uint64_t)woken;
+        return 0;
 }

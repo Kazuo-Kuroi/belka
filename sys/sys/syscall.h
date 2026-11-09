@@ -77,6 +77,8 @@
 #define SYS_lwpself     176
 #define SYS_lwpinfo     177
 #define SYS_lwpprivate  178
+#define SYS_lwp_addr_wait 181    /* Belka: UnixWare left 181 and 182 free */
+#define SYS_lwp_addr_wake 182
 #define SYS_pread       189
 #define SYS_pwrite      190
 #define SYS_ftruncate   192

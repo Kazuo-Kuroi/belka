@@ -931,8 +931,15 @@ sys_sigsuspend(const uint64_t *args, uint64_t *rv __unused)
         return sig_suspend(mask);
 }
 
+/*
+ * Timed interruptible waits. A callout sets l_timedout and nudges the
+ * LWP, which ends its sleep as a pending signal would (sig_recalc_lwp
+ * counts l_timedout), so a timeout that fires just before the LWP goes
+ * to sleep is not missed. The waiter checks l_timedout after each
+ * sleep, and must stop the timeout before it returns.
+ */
 static void
-sigwait_timeout(void *arg)
+lwp_timeout_fire(void *arg)
 {
         struct lwp *l = arg;
         struct proc *p = l->l_proc;
@@ -941,6 +948,63 @@ sigwait_timeout(void *arg)
         l->l_timedout = 1;
         sig_recalc_lwp(p, l);
         sig_nudge_lwp(l);
+        spin_unlock(&p->p_siglock, s);
+}
+
+/*
+ * Copy in a relative timeout (a timespec of two int64_t) and convert
+ * it to clock ticks, rounding up.
+ */
+int
+lwp_timeout_ticks(uint64_t uts, long *ticks)
+{
+        int64_t ts[2];
+        int error;
+
+        if ((error = copyin((const void *)(uintptr_t)uts, ts,
+            sizeof(ts))) != 0)
+                return error;
+        if (ts[0] < 0 || ts[1] < 0 || ts[1] >= 1000000000)
+                return EINVAL;
+        if (ts[0] > INT32_MAX)
+                ts[0] = INT32_MAX;
+        *ticks = (long)(ts[0] * HZ + (ts[1] * HZ + 999999999) / 1000000000);
+        return 0;
+}
+
+/*
+ * Start timing the calling LWP's wait: after ticks ticks (none if
+ * ticks <= 0) it sees l_timedout. Returns the callout's id, or 0.
+ */
+int64_t
+lwp_timeout_start(long ticks)
+{
+        struct lwp *l = curlwp;
+        int s = spin_lock(&l->l_proc->p_siglock);
+
+        l->l_timedout = 0;
+        spin_unlock(&l->l_proc->p_siglock, s);
+        return ticks > 0 ? timeout(lwp_timeout_fire, l, ticks) : 0;
+}
+
+/*
+ * End the timed wait: cancel the callout, waiting for it if it is
+ * running, and only then clear l_timedout, which a late callout would
+ * otherwise leave set, cutting short every later sleep. Called without
+ * p_siglock.
+ */
+void
+lwp_timeout_stop(int64_t id)
+{
+        struct lwp *l = curlwp;
+        struct proc *p = l->l_proc;
+        int s;
+
+        if (id != 0)
+                (void)untimeout(id);
+        s = spin_lock(&p->p_siglock);
+        l->l_timedout = 0;
+        sig_recalc_lwp(p, l);
         spin_unlock(&p->p_siglock, s);
 }
 
@@ -957,7 +1021,7 @@ sys_sigwait(const uint64_t *args, uint64_t *rv)
         k_sigset_t set;
         siginfo_t info;
         long ticks = -1;
-        toid_t id = 0;
+        int64_t id;
         int s, sig = 0, error, r;
 
         if ((error = copyin_sigset(args[0], &set)) != 0)
@@ -965,22 +1029,11 @@ sys_sigwait(const uint64_t *args, uint64_t *rv)
         set &= ~CANTMASK;
         if (set == 0)
                 return EINVAL;
-        if (args[2] != 0) {
-                int64_t ts[2];
-
-                if ((error = copyin((const void *)(uintptr_t)args[2], ts,
-                    sizeof(ts))) != 0)
-                        return error;
-                if (ts[0] < 0 || ts[1] < 0 || ts[1] >= 1000000000)
-                        return EINVAL;
-                ticks = (long)(ts[0] * HZ +
-                    (ts[1] * HZ + 999999999) / 1000000000);
-        }
+        if (args[2] != 0 && (error = lwp_timeout_ticks(args[2], &ticks)) != 0)
+                return error;
+        id = lwp_timeout_start(ticks);
         s = spin_lock(&p->p_siglock);
         l->l_sigwait = set;
-        l->l_timedout = 0;
-        if (ticks > 0)
-                id = timeout(sigwait_timeout, l, ticks);
         for (;;) {
                 k_sigset_t cand = (p->p_sigpend | l->l_sigpend) & set;
 
@@ -1007,11 +1060,9 @@ sys_sigwait(const uint64_t *args, uint64_t *rv)
                 }
         }
         l->l_sigwait = 0;
-        l->l_timedout = 0;
         sig_recalc_lwp(p, l);
         spin_unlock(&p->p_siglock, s);
-        if (id != 0)
-                (void)untimeout(id);
+        lwp_timeout_stop(id);
         if (error != 0)
                 return error;
         rv[0] = (uint64_t)sig;

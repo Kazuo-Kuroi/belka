@@ -722,14 +722,73 @@ Recorded 2026-11-07.
   statuses, `execve`, `abort`, handlers, masks and pending signals, a
   fault handled with `longjmp`, the clocks, and `uname`. The process
   self-test runs it.
-- **Not yet:** threads (`pthread_create` over `_lwp_create`, and a
-  futex-like wait for contended locks: `FutexWait` and `FutexWake` fail
-  with `ENOSYS`, which a single-threaded program never reaches), shared
-  libraries and the dynamic linker, `nanosleep` and the other sleeps,
-  `getcwd`, pipes, terminals and `termios` with the System V values,
-  the `*at` calls relative to a directory descriptor, `chmod` and
-  `chown`, a monotonic clock, and the libt test programs moving onto
-  mlibc.
+- **Not yet:** shared libraries and the dynamic linker, `getcwd`,
+  pipes, terminals and `termios` with the System V values, the `*at`
+  calls relative to a directory descriptor, `chmod` and `chown`, a
+  monotonic clock, `sched_yield`, and the libt test programs moving
+  onto mlibc.
+
+## POSIX threads (2026-11-09)
+
+- **Model:** one POSIX thread is one LWP (1:1). mlibc's `pthread_create`
+  maps a stack (2 MB unless asked otherwise, with a guard of
+  inaccessible pages below it) and starts an LWP with `_lwp_create` in a
+  context giving its entry point, stack, and `%fs` base (the new TCB).
+  Threads are created `LWP_DETACHED`: `pthread_join` waits on a word in
+  the TCB, so the kernel need not keep exited LWPs for `_lwp_wait`.
+  When the last LWP exits, the process exits with status 0.
+- **Address waits** (decided 2026-11-09, native rather than UnixWare's
+  user-sync calls): `_lwp_addr_wait(int32_t *addr, int32_t expected,
+  const timespec *rel)` sleeps while `*addr` holds `expected`, until a
+  wake, a signal (`EINTR`), or the relative timeout (`ETIMEDOUT`), and
+  returns `EAGAIN` at once if the word differs. `_lwp_addr_wake(addr,
+  n)` wakes up to `n` waiters (all if `n <= 0`) and returns how many.
+  They take 181 and 182, which UnixWare left free. UnixWare's own calls
+  (`prepblock`, `block`, `rdblock`, `unblock`, `cancelblock`, 183 to
+  187) stay reserved for the i386 personality and its `libthread`:
+  they keep a waiter flag the kernel writes at an address the caller
+  names, and reader-writer classes, which fit mlibc's single-word
+  protocol badly.
+- **How they work:** waits are keyed by address space and address and
+  share the LWP semaphores' hash buckets. A waiter is queued under the
+  bucket's mutex from the check of its word on, so a waker, which marks
+  waiters under the same mutex, either finds it queued or changed the
+  word before the check; no wake is lost. Waiters sleep on the bucket's
+  sync variable and go back to sleep until marked, so a wake for another
+  address in the bucket costs only a recheck. Only a process's own LWPs
+  share keys; process-shared waits across address spaces are not done.
+- **Timeouts** are a callout that sets `l_timedout` and nudges the LWP
+  as a signal would, so a timeout that fires just before the sleep is
+  not missed. `lwp_timeout_start` and `lwp_timeout_stop` serve both the
+  address waits and `sigtimedwait`; stopping cancels the callout (waiting
+  for it if it is running) before clearing `l_timedout`. `sigtimedwait`
+  used to clear it first, which a late callout could undo, leaving every
+  later sleep of that LWP cut short.
+- **mlibc's futexes** are these calls; `nanosleep` and the other sleeps
+  are a timed address wait on a word no one wakes, with what is left
+  after a signal worked out from the time of day. `pthread_kill` is
+  `_lwp_kill`; thread cancellation uses `SIGLWP`.
+- **Cancellation is deferred-only in effect:** no system call is marked
+  cancellable yet, so a cancellation request takes effect at the next
+  cancellation point (`pthread_testcancel`, joins, waits), not inside a
+  blocked call, and never wherever a signal happens to land.
+- **Upstream fix:** mlibc 7.0.0's `pthread_create` cleared the TCB's
+  cancellation bits after the TCB was made with cancellation enabled,
+  so no thread could be cancelled; the fork starts threads with it
+  enabled (also unfixed on `master`).
+- **Tests:** `lwptest` checks the address waits directly (a lock built
+  on them under contention, wake counts, timeouts, `EAGAIN`, `EINVAL`,
+  `EFAULT`, and interruption by a handler); `threadtest`, built against
+  mlibc, checks creation and join, detached threads, mutexes (also timed
+  and recursive), condition variables and their timeouts, semaphores,
+  read-write locks, barriers, `pthread_once`, thread-specific data and
+  its destructors, per-thread `errno`, `pthread_kill`, cancellation,
+  `nanosleep`, and a process that exits while its threads are blocked.
+- **Not yet:** cancellation inside blocked system calls, thread
+  priorities and scheduling attributes (`priocntl`), CPU affinity,
+  process-shared mutexes and condition variables, robust mutexes,
+  freeing exited threads' stacks and TCBs (mlibc keeps them), and
+  SIGWAITING for a many-to-many library.
 
 ## File systems
 

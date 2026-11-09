@@ -6,11 +6,12 @@
 
 /*
  * LWPs from the point of view of a program: create, exit, and wait;
- * shared memory and atomics across LWPs; LWP semaphores; suspend and
- * continue; signals to one LWP and to the process; sigwait; exit, exec,
- * and faults that end every LWP; fork1 against forkall; concurrent
- * faults and mappings; job control of a multi-LWP process; and each
- * LWP's own floating-point state and private pointer.
+ * shared memory and atomics across LWPs; LWP semaphores; address waits
+ * and wakes; suspend and continue; signals to one LWP and to the
+ * process; sigwait; exit, exec, and faults that end every LWP; fork1
+ * against forkall; concurrent faults and mappings; job control of a
+ * multi-LWP process; and each LWP's own floating-point state and
+ * private pointer.
  *
  * Exits with the number of failed checks.
  */
@@ -152,6 +153,150 @@ test_sema(void)
         consumed_sum = sum;
         CHECK(sum == ITEMS * (ITEMS + 1) / 2);
         CHECK(_lwp_wait(id, &gone) == 0);
+}
+
+/* --- Address waits: a lock built on them, wake counts, timeouts. --- */
+
+static volatile int32_t lock_word;     /* 0 free, 1 held, 2 held with waiters */
+static volatile uint64_t locked_count;
+
+static void
+word_lock(void)
+{
+        int32_t c = 0;
+
+        if (__atomic_compare_exchange_n(&lock_word, &c, 1, 0,
+            __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+                return;
+        if (c != 2)
+                c = __atomic_exchange_n(&lock_word, 2, __ATOMIC_ACQUIRE);
+        while (c != 0) {
+                (void)_lwp_addr_wait(&lock_word, 2, NULL);
+                c = __atomic_exchange_n(&lock_word, 2, __ATOMIC_ACQUIRE);
+        }
+}
+
+static void
+word_unlock(void)
+{
+        if (__atomic_exchange_n(&lock_word, 0, __ATOMIC_RELEASE) == 2)
+                (void)_lwp_addr_wake(&lock_word, 1, NULL);
+}
+
+static void
+locker(void *arg)
+{
+        (void)arg;
+        for (int i = 0; i < 20000; i++) {
+                word_lock();
+                locked_count = locked_count + 1;        /* not atomic */
+                word_unlock();
+        }
+}
+
+static volatile int32_t gate;
+static volatile int gate_passed, gate_result[3];
+
+static void
+gate_waiter(void *arg)
+{
+        int slot = (int)(intptr_t)arg;
+
+        gate_result[slot] = _lwp_addr_wait(&gate, 0, NULL);
+        __atomic_fetch_add(&gate_passed, 1, __ATOMIC_RELAXED);
+}
+
+static volatile int32_t intr_word;
+static volatile int intr_got, intr_handled;
+
+static void
+on_usr1(int sig)
+{
+        (void)sig;
+        intr_handled++;
+}
+
+static void
+intr_waiter(void *arg)
+{
+        int64_t ts[2] = { 10, 0 };
+
+        (void)arg;
+        while (!intr_got) {
+                if (_lwp_addr_wait(&intr_word, 0, ts) == EINTR)
+                        intr_got = 1;
+        }
+}
+
+static void
+test_addr(void)
+{
+        int64_t zero[2] = { 0, 0 }, short_ts[2] = { 0, 30000000 };
+        int64_t bad_ts[2] = { 0, 1000000000 };
+        volatile int32_t w = 5;
+        lwpid_t ids[NLWP], gone;
+        struct sigaction sa;
+        int woken = -1, total = 0;
+        long t0;
+
+        CHECK(_lwp_addr_wait(&w, 4, NULL) == EAGAIN);
+        CHECK(_lwp_addr_wait(&w, 5, zero) == ETIMEDOUT);
+        CHECK(_lwp_addr_wait(&w, 5, bad_ts) == EINVAL);
+        CHECK(_lwp_addr_wait((volatile int32_t *)((char *)&w + 1), 5,
+            NULL) == EINVAL);
+        CHECK(_lwp_addr_wait((volatile int32_t *)8, 0, NULL) == EFAULT);
+        t0 = time();
+        CHECK(_lwp_addr_wait(&w, 5, short_ts) == ETIMEDOUT);
+        CHECK(time() - t0 <= 1);
+        CHECK(_lwp_addr_wake(&w, 0, &woken) == 0 && woken == 0);
+
+        /* Mutual exclusion through a lock that sleeps when contended. */
+        lock_word = 0;
+        locked_count = 0;
+        for (int i = 0; i < 4; i++)
+                CHECK(spawn_lwp(locker, NULL, 0, &ids[i]) == 0);
+        locker(NULL);
+        for (int i = 0; i < 4; i++)
+                CHECK(_lwp_wait(ids[i], &gone) == 0);
+        CHECK(locked_count == 5 * 20000);
+        CHECK(lock_word == 0);
+
+        /* One wake per waiter: poll with n = 1 until three were woken. */
+        gate = 0;
+        gate_passed = 0;
+        for (int i = 0; i < 3; i++)
+                CHECK(spawn_lwp(gate_waiter, (void *)(intptr_t)i, 0,
+                    &ids[i]) == 0);
+        for (long tries = 0; total < 3 && tries < 2000000; tries++) {
+                if (_lwp_addr_wake(&gate, 1, &woken) == 0) {
+                        CHECK(woken == 0 || woken == 1);
+                        total += woken;
+                }
+        }
+        CHECK(total == 3);
+        for (int i = 0; i < 3; i++)
+                CHECK(_lwp_wait(ids[i], &gone) == 0);
+        CHECK(gate_passed == 3);
+        CHECK(gate_result[0] == 0 && gate_result[1] == 0 &&
+            gate_result[2] == 0);
+
+        /* A handler interrupts the wait. */
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = on_usr1;
+        CHECK(sigaction(SIGUSR1, &sa, NULL) == 0);
+        intr_got = 0;
+        CHECK(spawn_lwp(intr_waiter, NULL, 0, &ids[0]) == 0);
+        /* Until it is in the wait when a signal comes; give it time under load. */
+        t0 = time();
+        while (!intr_got && time() - t0 < 5) {
+                _lwp_kill(ids[0], SIGUSR1);
+                spin_ticks(200000);
+        }
+        CHECK(intr_got && intr_handled > 0);
+        intr_got = 1;
+        CHECK(_lwp_wait(ids[0], &gone) == 0);
+        sa.sa_handler = SIG_DFL;
+        sigaction(SIGUSR1, &sa, NULL);
 }
 
 /* --- Suspend and continue. --- */
@@ -607,6 +752,7 @@ main(int argc, char **argv, char **envp __attribute__((__unused__)))
 
         test_create_wait();
         test_sema();
+        test_addr();
         test_suspend();
         test_signals();
         test_sigwait();

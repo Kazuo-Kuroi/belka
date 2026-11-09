@@ -469,6 +469,26 @@ _lwp_sema_trywait(_lwp_sema_t *sp)
         return SYS1(SYS_lwp_sema_trywait, sp) < 0 ? errno : 0;
 }
 
+/* Sleep while *addr == expected, for at most the relative time ts. */
+int
+_lwp_addr_wait(volatile int32_t *addr, int32_t expected, const int64_t *ts)
+{
+        return SYS3(SYS_lwp_addr_wait, addr, expected, ts) < 0 ? errno : 0;
+}
+
+/* Wake up to n waiters on addr (all if n <= 0); *woken says how many. */
+int
+_lwp_addr_wake(volatile int32_t *addr, int n, int *woken)
+{
+        long r = SYS2(SYS_lwp_addr_wake, addr, n);
+
+        if (r < 0)
+                return errno;
+        if (woken != NULL)
+                *woken = (int)r;
+        return 0;
+}
+
 /* Returns the signal, or -1 with errno (EAGAIN when the time ran out). */
 int
 sigtimedwait(const sigset_t *set, siginfo_t *info, const int64_t *ts)
