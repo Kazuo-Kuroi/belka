@@ -9,11 +9,10 @@ QEMU, GCC, Clang, GNU make, and git are already installed. The following
 are still needed:
 
 ```sh
-sudo apt install ovmf lld xorriso mtools
+sudo apt install ovmf xorriso mtools
 ```
 
 - `ovmf`: UEFI firmware for QEMU (`/usr/share/OVMF/OVMF_CODE_4M.fd`).
-- `lld`: the LLVM linker, for Clang builds.
 - `xorriso` and `mtools`: to build bootable ISO and FAT images.
 
 ## KVM access

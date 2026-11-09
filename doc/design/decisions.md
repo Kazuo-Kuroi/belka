@@ -32,6 +32,18 @@ Recorded 2026-11-07.
 - Assembly uses AT&T syntax in `.S` files, so it builds with both the GNU
   assembler and Clang's integrated assembler.
 - **GNU make** is the build tool.
+- **Linker** (decided 2026-11-09): GNU ld links everything, whichever
+  compiler built it; lld is not used. The system's own link-editor is
+  to be the illumos one (`ld` and `libld`, from the SVR4 lineage
+  UnixWare's linker shares); if it cannot be made to work, another is
+  chosen then. mlibc's runtime linker remains the `ld.so`.
+- **Other licences:** code under a licence other than MIT, such as
+  illumos's CDDL, may be used. It stays in its own clearly marked place
+  (a separate repository like `contrib/mlibc`, or a directory named for
+  the licence), keeps its files' licence and notices, and is never mixed
+  into MIT files.
+- **Python** is avoided in the main build. Meson, which mlibc needs, is
+  the one exception for now.
 - **Style:** `CODING_STYLE.md`, with **8-space** indentation (the
   examples in that file are authoritative over its section 8 text).
 
@@ -678,7 +690,8 @@ Recorded 2026-11-07.
   compiler as the kernel (`TOOLCHAIN`). For a bare ELF target Clang does
   not predefine `_GNU_SOURCE` in C++, as it does for Linux, so the Clang
   cross file passes it.
-- **Linking:** static only for now. Programs link mlibc's `crt1.o` and
+- **Linking:** static only for now, with GNU ld run directly rather
+  than through the compiler driver. Programs link mlibc's `crt1.o` and
   `crti.o`, the compiler's static start object (GCC's `crtbeginT.o` or
   compiler-rt's `crtbegin`, which define `__dso_handle`), `libc.a`, the
   compiler's run-time library (libgcc, or compiler-rt's builtins), its

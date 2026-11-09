@@ -194,9 +194,8 @@ LIBC_DBGBINS    := $(addprefix $(LIBC_DBGDIR)/,$(LIBC_PROGS))
 LIBC_CFLAGS     := -std=c99 -O2 -g -Wall -Wextra -Werror -nostdinc \
                    -isystem $(SYSROOT)/usr/include -isystem $(CC_INCLUDE) \
                    -fno-pic -fno-pie -fno-stack-protector
-LIBC_LDFLAGS    := -static -nostdlib -Wl,--build-id=none \
-                   -Wl,-z,max-page-size=4096 -Wl,-z,noexecstack \
-                   $(LIBC_LDFLAGS_TC)
+LIBC_LDFLAGS    := -static --build-id=none -z max-page-size=4096 \
+                   -z noexecstack
 LIBC_CRT0       := $(SYSROOT)/usr/lib/crt1.o $(SYSROOT)/usr/lib/crti.o \
                    $(LIBC_CRTBEGIN)
 LIBC_CRTN       := $(LIBC_CRTEND) $(SYSROOT)/usr/lib/crtn.o
@@ -230,10 +229,13 @@ $(ABICHECK)/ok: tools/abicheck/kernel.c tools/abicheck/libc.c \
 	    tools/abicheck/libc.c
 	@touch $@
 
+# Linked with $(LD) itself rather than through the compiler driver, so
+# that both toolchains link the same way.
 $(LIBC_DBGBINS): $(LIBC_DBGDIR)/%: usr/tests/%.c $(MLIBC) $(ABICHECK)/ok
 	@mkdir -p $(LIBC_DBGDIR)
-	$(LIBC_CC) $(LIBC_CFLAGS) $(LIBC_LDFLAGS) -o $@ $(LIBC_CRT0) $< \
-	    $(MLIBC) $(LIBC_RTLIB) $(LIBC_CRTN)
+	$(LIBC_CC) $(LIBC_CFLAGS) -c -o $@.o $<
+	$(LD) $(LIBC_LDFLAGS) -o $@ $(LIBC_CRT0) $@.o $(MLIBC) $(LIBC_RTLIB) \
+	    $(LIBC_CRTN)
 
 $(LIBC_BINS): $(LIBC_DIR)/%: $(LIBC_DBGDIR)/%
 	@mkdir -p $(LIBC_DIR)

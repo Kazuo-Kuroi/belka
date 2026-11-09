@@ -10,13 +10,13 @@ Design decisions are recorded in
 
 ## Building
 
-Requirements: GNU make, GCC or Clang (with `ld.lld`), `xorriso`, `curl`,
+Requirements: GNU make, GCC or Clang, GNU binutils, `xorriso`, `curl`,
 QEMU, and OVMF; for the C library, meson and ninja. See
 [doc/qemu-setup.md](doc/qemu-setup.md).
 
 ```sh
 make                    # build build/amd64-gcc/belka
-make TOOLCHAIN=clang    # build with Clang and ld.lld
+make TOOLCHAIN=clang    # build with Clang (GNU ld links)
 make run                # boot in QEMU with the serial console on stdio
 make test               # boot, run the self-tests, and report PASS/FAIL
 make test-fault         # boot, force a page fault, expect a clean panic
