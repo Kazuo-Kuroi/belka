@@ -7,8 +7,7 @@
 /*
  * Processes and LWPs, after the SVR4 model: a process owns the address
  * space, open files, directories, and credentials; its LWPs are what
- * run, each on a kthread of its own. Each process has exactly one LWP
- * for now, but nothing outside fork, exec, and exit assumes it.
+ * run, each on a kthread of its own (see kern_lwp.c).
  *
  * Process 0 stands for the kernel. Kernel threads belong to it, and
  * processes the kernel starts (proc_spawn) are its children.
@@ -21,9 +20,9 @@
  * - p_as may be replaced only by the process itself (exec), so its own
  *   LWP reads it without a lock.
  * - p_siglock (a spin lock, since signals are posted from interrupts)
- *   protects the signal state of the process and of its LWP: actions,
- *   pending signals and their information, the LWP's mask and alternate
- *   stack, and the stop state. It ranks above sync object locks, so a
+ *   protects the signal state of the process and of its LWPs: actions,
+ *   pending signals and their information, masks and alternate stacks,
+ *   and the stop state; and the LWP list and every LWP's l_flags. It ranks above sync object locks, so a
  *   poster can interrupt the LWP's sleep while holding it.
  */
 
@@ -58,7 +57,9 @@ typedef uint64_t k_sigset_t;
 struct lwp {
         struct kthread  *l_kthread;
         struct proc     *l_proc;
+        struct lwp      *l_next;        /* p_lwps or p_lwpzombies */
         uint32_t        l_lwpid;
+        int             l_flags;        /* LW_*, under p_siglock */
         struct trapframe *l_tf;         /* user registers */
         void            *l_fpu;         /* floating-point save area */
         uint64_t        l_fsbase;       /* LWP private data (%fs base) */
@@ -70,7 +71,19 @@ struct lwp {
         uint64_t        l_altsp;        /* alternate signal stack */
         size_t          l_altsize;
         int             l_altflags;     /* SS_DISABLE, or 0 */
+        k_sigset_t      l_sigpend;      /* directed at this LWP */
+        siginfo_t       l_siginfo[NSIG];
+        k_sigset_t      l_sigwait;      /* awaited in sigwait */
+        int             l_timedout;     /* a timed wait ran out */
 };
+
+/* l_flags */
+#define LW_DETACHED     0x0001  /* nobody will _lwp_wait for it */
+#define LW_SUSPREQ      0x0002  /* to be suspended at the next chance */
+#define LW_SUSPENDED    0x0004  /* suspended */
+#define LW_DESTROY      0x0008  /* to exit at the next chance */
+#define LW_QUIESCED     0x0010  /* parked for a rendezvous or a stop */
+#define LW_EXITING      0x0020  /* a zombie still leaving its thread */
 
 /* A signal's action, as the kernel keeps it. */
 struct ksigaction {
@@ -83,6 +96,11 @@ struct ksigaction {
 #define SIDL            1       /* being created */
 #define SRUN            2       /* has LWPs */
 #define SZOMB           3       /* exited, waiting to be reaped */
+
+/* p_lwpflags */
+#define PL_SINGLE       0x0001  /* exit or exec: other LWPs are going */
+#define PL_RENDEZ       0x0002  /* other LWPs are to park */
+#define PL_CONTNOTIFY   0x0004  /* tell the parent of a continue */
 
 /* p_sigflags */
 #define PS_JCTL         0x0001  /* tell the parent of stops (SIGCHLD) */
@@ -110,8 +128,20 @@ struct proc {
         int             p_wcont;        /* a continue not yet waited for */
 
         struct as       *p_as;
-        struct lwp      *p_lwp;         /* the only LWP, for now */
         struct cred     *p_cred;
+
+        /* LWPs, under p_siglock. */
+        struct lwp      *p_lwps;        /* live */
+        int             p_nlwp;
+        int             p_lwpleaving;   /* unlinked, thread still on it */
+        struct lwp      *p_lwpzombies;  /* exited, waiting for _lwp_wait */
+        uint32_t        p_lwpnext;      /* next id */
+        int             p_lwpflags;     /* PL_* */
+        struct lwp      *p_single;      /* making the process single */
+        struct lwp      *p_rendez;      /* asking for a rendezvous */
+        int             p_nquiesced;    /* LWPs parked (LW_QUIESCED) */
+        struct sv       p_lwpsv;        /* LWP state changed */
+        struct sv       p_rendezsv;     /* parked LWPs wait here */
 
         /* Under p_lock. */
         struct file     **p_ofile;
@@ -159,12 +189,23 @@ void proc_free(struct proc *);
 struct proc *proc_find(pid_t);
 struct proc *proc_find_locked(pid_t);
 void proc_iterate_locked(void (*)(struct proc *, void *), void *);
-struct lwp *lwp_alloc(struct proc *);
+/* kern_lwp.c */
+void lwp_sysinit(void);
+void lwp_sema_init(void);
+int lwp_alloc(struct proc *, struct lwp **);
 void lwp_free(struct lwp *);
-void lwp_start(struct lwp *, void (*)(void *), void *);
-void lwp_start_stopped(struct lwp *, void (*)(void *), void *);
-void lwp_run_new(struct lwp *);
-void lwp_fork_return(void *);
+struct lwp *lwp_find_locked(struct proc *, uint32_t);
+void lwp_newthread(struct lwp *, void (*)(void *), void *);
+void lwp_join_ts(struct lwp *, struct lwp *);
+void lwp_run(struct lwp *);
+void lwp_user_start(void *);
+int lwp_park(struct proc *, struct lwp *, int);
+int lwp_park_pending(const struct proc *, const struct lwp *);
+void lwp_exit(void) __dead;
+void lwp_free_zombies(struct proc *);
+int proc_single(int);
+int lwp_rendezvous(void);
+void lwp_rendezvous_done(void);
 void proc_reap_locked(struct proc *);
 int proc_spawn(const char *, char *const[], char *const[], pid_t *);
 int proc_wait(pid_t, int *, int *);
@@ -175,6 +216,12 @@ unsigned int proc_count(void);
 void sig_proc_init(struct proc *, struct proc *);
 void sig_exec(struct proc *);
 void sigtoproc(struct proc *, int, const siginfo_t *);
+void sigtolwp_locked(struct proc *, struct lwp *, int, const siginfo_t *);
+void sig_recalc_lwp(struct proc *, struct lwp *);
+void sig_recalc_all(struct proc *);
+void sig_nudge_lwp(struct lwp *);
+void sig_nudge_all(struct proc *);
+k_sigset_t sig_mask_from_user(const sigset_t *);
 void psignal(struct proc *, int);
 void trapsignal(int, int, uint64_t);
 void sig_userret(void);

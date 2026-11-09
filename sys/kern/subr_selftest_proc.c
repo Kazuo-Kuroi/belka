@@ -57,7 +57,7 @@ static int failures;
                 }                                                       \
         } while (0)
 
-#define NPARALLEL       4
+#define NPARALLEL       6
 #define PAGE_SLACK      64      /* zone growth, not a leak */
 
 static const char *const proc_zones[] = {
@@ -90,13 +90,17 @@ run_parallel(void)
 {
         char *argv[] = { "utest", "/p", NULL };
         char *sargv[] = { "sigtest", NULL };
+        char *largv[] = { "lwptest", "/p/bin/argtest", NULL };
+        static const char *const paths[] = {
+                "/p/bin/utest", "/p/bin/sigtest", "/p/bin/lwptest"
+        };
+        char *const *argvs[] = { argv, sargv, largv };
         pid_t pids[NPARALLEL];
         int ok = 1;
 
-        /* utests and sigtests side by side. */
+        /* utests, sigtests, and lwptests side by side. */
         for (int i = 0; i < NPARALLEL; i++) {
-                if (proc_spawn(i % 2 == 0 ? "/p/bin/utest" :
-                    "/p/bin/sigtest", i % 2 == 0 ? argv : sargv, NULL,
+                if (proc_spawn(paths[i % 3], argvs[i % 3], NULL,
                     &pids[i]) != 0) {
                         pids[i] = 0;
                         ok = 0;
@@ -204,6 +208,7 @@ selftest_proc(void)
         char *segv[] = { "segv", NULL };
         char *utest[] = { "utest", "/p", NULL };
         char *sigtest[] = { "sigtest", NULL };
+        char *lwptest[] = { "lwptest", "/p/bin/argtest", NULL };
         size_t used1, used2, zone0[NPROCZONES];
         int zones_ok = 1;
 
@@ -219,6 +224,7 @@ selftest_proc(void)
         CHECK(run("/p/bin/nothing", hello, CLD_EXITED, 127));
         CHECK(run("/p/bin/utest", utest, CLD_EXITED, 0));
         CHECK(run("/p/bin/sigtest", sigtest, CLD_EXITED, 0));
+        CHECK(run("/p/bin/lwptest", lwptest, CLD_EXITED, 0));
         test_kernel_signal();
         CHECK(proc_wait(12345, &(int){ 0 }, &(int){ 0 }) == ECHILD);
 

@@ -470,8 +470,8 @@ Recorded 2026-11-07.
   waitsys, brk, mmap, munmap, mprotect, getpid, getuid, getgid, time,
   gettimeofday, uname, and `__lwp_private`, which sets the %fs base.
 - **Processes and LWPs** are separate structures from the start (SVR4).
-  Each process has exactly one LWP for now, on a kthread of its own
-  that joins fair-share time-sharing on entry.
+  Each LWP runs on a kthread of its own that joins its process's
+  fair-share time-sharing job on entry (see "LWPs" below).
   - Process 0 stands for the kernel; its children are the processes it
     starts with `proc_spawn()`, which are given the console on fds 0 to 2.
   - Orphans go to process 0, which reaps them as they exit; there is no
@@ -545,7 +545,7 @@ Recorded 2026-11-07.
     copy-on-write.
   - `test-fault` and `test-apfault` now require the panic they provoke,
     so an unrelated panic can no longer pass as the expected one.
-- **Not yet:** multiple LWPs, dynamic linking, init and
+- **Not yet:** dynamic linking, init and
   sessions, device special files (the console is a private vnode),
   pipes, credentials beyond the kernel's, and resource limits.
 
@@ -616,10 +616,50 @@ Recorded 2026-11-07.
   and `pgrpsys` (getpgrp, setpgrp, getsid, setsid, getpgid, setpgid).
   exec resets caught signals and clears both SIGCHLD flags, as in
   UnixWare.
-- **Not yet:** multi-LWP rules (per-LWP pending signals, sigwait),
-  `/proc` tracing, core files, terminals and orphaned process groups,
+- **Not yet:** `/proc` tracing, core files, terminals and orphaned process groups,
   SIGXFSZ on EFBIG, and permission checks (every process is the
   superuser).
+
+## LWPs (2026-11-08)
+
+- **The model:** UnixWare's. A process holds a list of LWPs, each with
+  its own id (from 1, never reused within the process), signal mask,
+  pending signals, alternate stack, and FPU state; everything else is
+  shared. The list and every LWP's state flags are under `p_siglock`.
+- **The calls,** with UnixWare's numbers: `_lwp_create` (from a
+  `ucontext_t`, with `LWP_DETACHED` and `LWP_SUSPENDED`), `_lwp_exit`,
+  `_lwp_wait` (one LWP, or any undetached one with id 0), `_lwp_self`,
+  `_lwp_info`, `_lwp_kill`, `_lwp_suspend`, `_lwp_continue`,
+  `_lwp_sema_wait`, `_lwp_sema_trywait`, `_lwp_sema_post`, sigwait (and
+  so sigtimedwait), fork1, and forkall; fork is forkall, as in UnixWare.
+- **Process-wide changes** go through one of two operations:
+  - `proc_single()` makes the caller the only LWP: exit and exec mark
+    the others for destruction and wait until they are gone. Only one
+    LWP can win; the loser of two racing calls exits itself.
+  - `lwp_rendezvous()` parks every other LWP at its next return to
+    user mode (or in an interruptible sleep, which it leaves with
+    `ERESTART`), so that forkall copies a quiet set of user contexts.
+    Suspension uses the same parking.
+- **Exit:** the last LWP to exit ends the process with status 0. An
+  exiting LWP becomes a zombie for `_lwp_wait` unless detached; it
+  stays marked as exiting until its kthread is done with it, so a
+  waiter never sees it neither live nor waitable.
+- **Signals:** a signal to the process goes to an LWP waiting for it in
+  sigwait, else to one that has it unmasked, else stays pending on the
+  process. Faults and `_lwp_kill` go to one LWP. Stop and continue act
+  on every LWP; a stop is complete, and the parent told, once all are
+  parked.
+- **Address spaces:** faults by several LWPs on one page keep each
+  other's translation (they only change its protection), and a loser of
+  a race to map a file page drops its hold; mmap without `MAP_FIXED`
+  finds and maps its gap under one hold of the address space lock.
+- **LWP semaphores** keep their count in user memory, changed by the
+  kernel under a mutex of a bucket hashed by address space and address.
+- **Not yet:** SIGWAITING and SIGLWP from the kernel (for a
+  user-level thread library), bound and unbound LWPs, per-LWP
+  scheduling classes and `priocntl`, a system time in `_lwp_info` (all
+  of an LWP's ticks count as user time), and
+  process-shared semaphores across address spaces.
 
 ## File systems
 

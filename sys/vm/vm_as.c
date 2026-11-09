@@ -333,6 +333,32 @@ as_brk(struct as *as, vaddr_t base, size_t oldsize, size_t newsize)
         return error;
 }
 
+/*
+ * Map len bytes with a segment from crfn(seg, args) at the first free
+ * range at or above hint, finding and mapping in one locked step so
+ * that another LWP cannot take the range in between.
+ */
+int
+as_map_anywhere(struct as *as, size_t len, vaddr_t hint,
+    int (*crfn)(struct seg *, void *), void *args, vaddr_t *basep)
+{
+        struct seg *seg;
+        vaddr_t base;
+        int error;
+
+        len = pround(len);
+        mrupdate(&as->a_lock);
+        if ((error = as_gap(as, len, hint, &base)) == 0) {
+                seg = seg_alloc(as, base, len);
+                if ((error = crfn(seg, args)) != 0)
+                        seg_free(seg);
+                else
+                        *basep = base;
+        }
+        mrunlock(&as->a_lock);
+        return error;
+}
+
 /* as_gap() for callers that do not hold the lock. */
 int
 as_findgap(struct as *as, size_t len, vaddr_t hint, vaddr_t *basep)

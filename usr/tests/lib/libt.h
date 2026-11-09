@@ -20,6 +20,7 @@
 #include <sys/elf.h>
 #include <sys/errno.h>
 #include <sys/fcntl.h>
+#include <sys/lwp.h>
 #include <sys/mman.h>
 #include <sys/signal.h>
 #include <sys/stat.h>
@@ -97,6 +98,23 @@ pid_t setsid(void);
 int sigemptyset(sigset_t *);
 int sigaddset(sigset_t *, int);
 int sigismember(const sigset_t *, int);
+
+/* LWPs: these return 0 or an error number, as UnixWare's do. */
+int _lwp_makecontext(ucontext_t *, void (*)(void *), void *, void *, size_t);
+int _lwp_create(ucontext_t *, unsigned long, lwpid_t *);
+void _lwp_exit(void) __attribute__((__noreturn__));
+int _lwp_wait(lwpid_t, lwpid_t *);
+lwpid_t _lwp_self(void);
+int _lwp_kill(lwpid_t, int);
+int _lwp_suspend(lwpid_t);
+int _lwp_continue(lwpid_t);
+int _lwp_sema_init(_lwp_sema_t *, int);
+int _lwp_sema_wait(_lwp_sema_t *);
+int _lwp_sema_post(_lwp_sema_t *);
+int _lwp_sema_trywait(_lwp_sema_t *);
+int sigtimedwait(const sigset_t *, siginfo_t *, const int64_t *);
+pid_t fork1(void);
+pid_t forkall(void);
 
 size_t strlen(const char *);
 int strcmp(const char *, const char *);

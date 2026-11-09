@@ -21,6 +21,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_exit.c \
                    sys/kern/kern_fork.c \
                    sys/kern/kern_kthread.c \
+                   sys/kern/kern_lwp.c \
                    sys/kern/kern_mrlock.c \
                    sys/kern/kern_mutex.c \
                    sys/kern/kern_sched.c \

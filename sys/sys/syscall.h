@@ -71,11 +71,24 @@
 #define SYS_rename      134
 #define SYS_uname       135
 #define SYS_gettimeofday 171
+#define SYS_lwpcreate   173
+#define SYS_lwpexit     174
+#define SYS_lwpwait     175
+#define SYS_lwpself     176
+#define SYS_lwpinfo     177
 #define SYS_lwpprivate  178
 #define SYS_pread       189
 #define SYS_pwrite      190
 #define SYS_ftruncate   192
+#define SYS_lwpkill     193
+#define SYS_sigwait     194
 #define SYS_fork1       195
+#define SYS_forkall     196
+#define SYS_lwpsuspend  203
+#define SYS_lwpcontinue 204
+#define SYS_lwp_sema_wait 207
+#define SYS_lwp_sema_post 208
+#define SYS_lwp_sema_trywait 209
 
 #define NSYSCALL        210     /* table size, as in UnixWare */
 

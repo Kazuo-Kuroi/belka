@@ -161,7 +161,7 @@ QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
 # in /bin on both ext2 images.
 USER_CC         ?= $(HOSTCC)
 USER_DIR        := build/user
-USER_PROGS      := hello segv argtest utest sigtest
+USER_PROGS      := hello segv argtest utest sigtest lwptest
 USER_BINS       := $(addprefix $(USER_DIR)/,$(USER_PROGS))
 USER_CFLAGS     := -std=c99 -O2 -g -Wall -Wextra -Werror -ffreestanding \
                    -fno-builtin -fno-stack-protector -fno-pic -fno-pie \

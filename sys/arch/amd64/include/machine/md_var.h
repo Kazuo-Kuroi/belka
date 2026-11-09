@@ -57,6 +57,9 @@ int md_sendsig(struct lwp *, int, const struct siginfo *, uint64_t, uint64_t,
     int, int, uint64_t);
 void md_getcontext(struct lwp *, struct ucontext *);
 int md_setcontext(struct lwp *, const struct ucontext *);
+int md_context_ok(const struct ucontext *);
+void md_lwp_setcontext(struct lwp *, const struct ucontext *);
+void md_lwp_copy(const struct lwp *, struct lwp *);
 void syscall(struct trapframe *);
 
 /* Symbols defined by the linker script and locore.S. */

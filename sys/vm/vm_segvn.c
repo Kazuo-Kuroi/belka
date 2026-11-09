@@ -20,8 +20,11 @@
  * - Neither: a zero-filled anon.
  *
  * The slot array is protected by the map's lock, held across the whole
- * fault, so faults on one segment are serialised; that is enough while
- * each process has one LWP.
+ * fault, so faults on a private or anonymous segment are serialised.
+ * Faults on a shared file mapping (no map) can race between LWPs; the
+ * loser finds the page already mapped and drops its own hold. A fault
+ * on a page that is mapped already (another LWP got there first, or a
+ * write to a page about to become writable) keeps that translation.
  */
 
 #include <stddef.h>
@@ -291,15 +294,32 @@ segvn_setprot(struct seg *seg, unsigned int prot)
         return 0;
 }
 
-/* Install a page at va, replacing whatever translation was there. */
+#define SEGVN_RACED     (-1)    /* the page was mapped already */
+
+/*
+ * Map pp at va with attr. A translation of the same page is kept and
+ * only given attr, so that LWPs faulting on one page do not take each
+ * other's mappings away (two of them doing so in turn can keep both
+ * faulting for a long time); one of another page is replaced.
+ * Returns FC_OK, FC_NOMEM, or SEGVN_RACED if a translation of pp was
+ * there already, which the caller's own hold on pp is not needed for.
+ */
 static int
 segvn_load(struct seg *seg, vaddr_t va, struct page *pp, unsigned int attr)
 {
         struct hat *hat = seg->s_as->a_hat;
+        unsigned int cur;
+        paddr_t pa;
+        int r;
 
+        if (hat_probe(hat, va, &pa, &cur) && pa == page_to_pa(pp)) {
+                if (cur != attr)
+                        hat_chgprot(hat, va, 1, attr);
+                return SEGVN_RACED;
+        }
         segvn_unload(seg, va, 1);
-        return hat_memload(hat, va, page_to_pa(pp), attr) == 0 ? FC_OK :
-            FC_NOMEM;
+        r = hat_memload(hat, va, page_to_pa(pp), attr);
+        return r == 0 ? FC_OK : r == -1 ? SEGVN_RACED : FC_NOMEM;
 }
 
 static int
@@ -374,6 +394,8 @@ segvn_fault(struct seg *seg, vaddr_t va, enum seg_rw rw)
                         /* The mapping takes over the hold. */
                         if ((fc = segvn_load(seg, va, pp, attr)) != FC_OK)
                                 page_rele(pp);
+                        if (fc == SEGVN_RACED)
+                                fc = FC_OK;
                 }
         } else {
                 struct anon *nap = anon_zero();
@@ -390,5 +412,5 @@ segvn_fault(struct seg *seg, vaddr_t va, enum seg_rw rw)
 out:
         if (amp != NULL)
                 mutex_unlock(&amp->am_lock);
-        return fc;
+        return fc == SEGVN_RACED ? FC_OK : fc;
 }

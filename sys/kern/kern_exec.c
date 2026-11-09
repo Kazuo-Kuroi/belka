@@ -22,7 +22,8 @@
  *
  * Errors before the new address space replaces the old one are returned
  * to the caller; after that point there is nothing to return to, and
- * the process is killed, as in UnixWare.
+ * the process is killed, as in UnixWare. Once the program's headers are
+ * known to be good, every other LWP of the process exits.
  */
 
 #include <stddef.h>
@@ -350,6 +351,16 @@ exec_common(const char *path, struct execargs *ea)
         if ((error = VOP_ACCESS(vp, VEXEC, kcred)) != 0 ||
             (error = elf_read_headers(vp, &eh, ph)) != 0)
                 goto fail_vp;
+        /*
+         * The new image gets the calling LWP only: the others exit now.
+         * If another LWP is already ending the process, so do we.
+         */
+        if (proc_single(0) != 0) {
+                VN_RELE(vp);
+                kmem_free(ph, EXEC_MAXPHDR * sizeof(*ph));
+                execargs_free(ea);
+                lwp_exit();
+        }
         nas = as_alloc();
         if ((error = elf_map(nas, vp, &eh, ph, &brk, &phdr)) != 0) {
                 as_free(nas);

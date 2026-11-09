@@ -8,9 +8,8 @@
  * Memory management system calls: brk, mmap, munmap, and mprotect.
  *
  * mmap places a mapping without MAP_FIXED at the first free range at or
- * above the hint, or above VM_MMAP_BASE. With one LWP per process
- * nothing can map between finding the range and mapping it; that needs
- * one locked step when processes have several.
+ * above the hint, or above VM_MMAP_BASE, finding and mapping it in one
+ * locked step.
  */
 
 #include <stddef.h>
@@ -102,10 +101,12 @@ sys_mmap(const uint64_t *args, uint64_t *rv)
                         goto out;
                 }
                 (void)as_unmap(p->p_as, addr, len);
-        } else if ((error = as_findgap(p->p_as, len, addr, &addr)) != 0) {
-                goto out;
+                error = as_map(p->p_as, addr, len, segvn_create, &a);
+        } else {
+                error = as_map_anywhere(p->p_as, len, addr, segvn_create, &a,
+                    &addr);
         }
-        if ((error = as_map(p->p_as, addr, len, segvn_create, &a)) == 0)
+        if (error == 0)
                 rv[0] = addr;
 out:
         if (fp != NULL)

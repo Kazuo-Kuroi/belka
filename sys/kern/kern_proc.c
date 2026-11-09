@@ -52,7 +52,6 @@ struct mutex proctree_lock;
 static struct proc *pidhash[PIDHASH];
 static pid_t nextpid = 1;
 static struct kmem_zone *proc_zone;
-static struct kmem_zone *lwp_zone;
 static volatile uint32_t nprocs;
 
 static void proc_unlink(struct proc *);
@@ -75,7 +74,7 @@ void
 proc_init(void)
 {
         proc_zone = kmem_zone_init(sizeof(struct proc), "proc");
-        lwp_zone = kmem_zone_init(sizeof(struct lwp), "lwp");
+        lwp_sysinit();
         mutex_init(&proctree_lock, "proctree");
         mutex_init(&proc0.p_lock, "proc");
         sv_init(&proc0.p_waitsv, "wait");
@@ -142,6 +141,8 @@ proc_alloc(struct proc *parent)
         memset(p, 0, sizeof(*p));
         mutex_init(&p->p_lock, "proc");
         sv_init(&p->p_waitsv, "wait");
+        sv_init(&p->p_lwpsv, "lwps");
+        sv_init(&p->p_rendezsv, "parked");
         p->p_stat = SIDL;
         p->p_cred = parent->p_cred;
         p->p_cmask = parent->p_cmask;
@@ -195,83 +196,6 @@ proc_free(struct proc *p)
         (void)atomic_dec_32_nv(&nprocs);
 }
 
-struct lwp *
-lwp_alloc(struct proc *p)
-{
-        struct lwp *l = kmem_zone_alloc(lwp_zone, KM_SLEEP);
-
-        memset(l, 0, sizeof(*l));
-        l->l_proc = p;
-        l->l_lwpid = 1;
-        l->l_altflags = SS_DISABLE;
-        p->p_lwp = l;
-        return l;
-}
-
-void
-lwp_free(struct lwp *l)
-{
-        md_lwp_free(l);
-        kmem_zone_free(lwp_zone, l);
-}
-
-/*
- * Give l a stopped kernel thread that will run fn(arg) in the kernel,
- * with its user registers and floating-point area set up; lwp_run()
- * starts it.
- */
-static void
-lwp_create(struct lwp *l, void (*fn)(void *), void *arg)
-{
-        struct kthread *kt = kthread_create_stopped(fn, arg, USER_PRI,
-            l->l_proc->p_comm);
-
-        kt->kt_lwp = l;
-        l->l_kthread = kt;
-        md_lwp_init(l, kt->kt_stack);
-}
-
-static void
-lwp_run(struct lwp *l)
-{
-        kthread_run(l->l_kthread);
-}
-
-/* For fork, which fills the registers in between. */
-void
-lwp_start_stopped(struct lwp *l, void (*fn)(void *), void *arg)
-{
-        lwp_create(l, fn, arg);
-}
-
-void
-lwp_run_new(struct lwp *l)
-{
-        lwp_run(l);
-}
-
-void
-lwp_start(struct lwp *l, void (*fn)(void *), void *arg)
-{
-        lwp_create(l, fn, arg);
-        lwp_run(l);
-}
-
-/* First thing a new LWP's thread does: join time-sharing. */
-static void
-lwp_enter_ts(void)
-{
-        (void)kthread_setclass(curthread, SCHED_TS, TS_DEFWEIGHT);
-}
-
-/* fork: the child's LWP goes straight to user mode. */
-void
-lwp_fork_return(void *arg __unused)
-{
-        lwp_enter_ts();
-        user_enter(curlwp->l_tf);
-}
-
 struct spawn {
         char            sp_path[MAXPATHLEN];
         struct execargs *sp_args;
@@ -283,7 +207,6 @@ spawn_start(void *arg)
         struct spawn *sp = arg;
         int error;
 
-        lwp_enter_ts();
         error = exec_common(sp->sp_path, sp->sp_args);
         if (error != 0) {
                 printf("proc_spawn: %s: error %d\n", sp->sp_path, error);
@@ -291,7 +214,7 @@ spawn_start(void *arg)
                 proc_exit(CLD_EXITED, 127);
         }
         kmem_free(sp, sizeof(*sp));
-        user_enter(curlwp->l_tf);
+        lwp_user_start(NULL);
 }
 
 /*
@@ -306,6 +229,7 @@ proc_spawn(const char *path, char *const argv[], char *const envp[],
 {
         struct spawn *sp;
         struct execargs *ea;
+        struct lwp *l;
         struct proc *p;
         struct file *fp;
         const char *base = path;
@@ -343,15 +267,16 @@ proc_spawn(const char *path, char *const argv[], char *const envp[],
         }
         VN_HOLD(rootdir);
         p->p_cdir = rootdir;
-        (void)lwp_alloc(p);
-        lwp_create(p->p_lwp, spawn_start, sp);
+        (void)lwp_alloc(p, &l);
+        lwp_newthread(l, spawn_start, sp);
+        lwp_join_ts(l, NULL);
         mutex_lock(&proctree_lock);
         /* A process the kernel starts leads a session of its own. */
         p->p_pgid = p->p_sid = p->p_pid;
         p->p_stat = SRUN;
         mutex_unlock(&proctree_lock);
         *pidp = p->p_pid;
-        lwp_run(p->p_lwp);
+        lwp_run(l);
         return 0;
 }
 
@@ -411,6 +336,9 @@ proc_exit(int code, int data)
         struct proc *c, *zombies = NULL;
         int s, nowait;
 
+        /* The other LWPs go first; if another LWP is ending us, just go. */
+        if (proc_single(1) != 0)
+                lwp_exit();
         sig_cancel_alarm(p);
         fd_close_all(p);
         mutex_lock(&p->p_lock);
@@ -434,13 +362,16 @@ proc_exit(int code, int data)
          * see p_lwp gone under the signal lock and leave it alone.
          */
         s = spin_lock(&p->p_siglock);
-        p->p_lwp = NULL;
+        p->p_lwps = NULL;
+        p->p_nlwp = 0;
         curthread->kt_sigpend = 0;
         spin_unlock(&p->p_siglock, s);
         s = splhi();
         curthread->kt_lwp = NULL;
         splx(s);
+        md_lwp_free(l);
         lwp_free(l);
+        lwp_free_zombies(p);
 
         mutex_lock(&proctree_lock);
         /* Orphans go to process 0, which reaps them as they exit. */

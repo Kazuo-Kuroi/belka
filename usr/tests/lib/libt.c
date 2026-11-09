@@ -364,6 +364,141 @@ alarm(unsigned int secs)
         return (unsigned int)SYS1(SYS_alarm, secs);
 }
 
+/*
+ * A context for a new LWP: start at fn(arg) on the stack [stack,
+ * stack + size), with the psABI's entry alignment and a return address
+ * that ends the LWP, and the caller's mask and floating-point state.
+ */
+static void
+lwp_return(void)
+{
+        _lwp_exit();
+}
+
+int
+_lwp_makecontext(ucontext_t *uc, void (*fn)(void *), void *arg, void *stack,
+    size_t size)
+{
+        uint64_t sp = ((uint64_t)stack + size) & ~15UL;
+
+        if (getcontext(uc) != 0)
+                return errno;
+        sp -= 8;
+        *(uint64_t *)sp = (uint64_t)lwp_return;
+        uc->uc_mcontext.gregs[REG_RIP] = (greg_t)fn;
+        uc->uc_mcontext.gregs[REG_RDI] = (greg_t)arg;
+        uc->uc_mcontext.gregs[REG_RSP] = (greg_t)sp;
+        uc->uc_mcontext.gregs[REG_FSBASE] = 0;
+        uc->uc_flags = UC_ALL;
+        return 0;
+}
+
+int
+_lwp_create(ucontext_t *uc, unsigned long flags, lwpid_t *idp)
+{
+        long r = SYS2(SYS_lwpcreate, uc, flags);
+
+        if (r < 0)
+                return errno;
+        if (idp != NULL)
+                *idp = (lwpid_t)r;
+        return 0;
+}
+
+void
+_lwp_exit(void)
+{
+        (void)SYS0(SYS_lwpexit);
+        for (;;)
+                continue;
+}
+
+int
+_lwp_wait(lwpid_t id, lwpid_t *departed)
+{
+        return SYS2(SYS_lwpwait, id, departed) < 0 ? errno : 0;
+}
+
+lwpid_t
+_lwp_self(void)
+{
+        return (lwpid_t)SYS0(SYS_lwpself);
+}
+
+int
+_lwp_kill(lwpid_t id, int sig)
+{
+        return SYS2(SYS_lwpkill, id, sig) < 0 ? errno : 0;
+}
+
+int
+_lwp_suspend(lwpid_t id)
+{
+        return SYS1(SYS_lwpsuspend, id) < 0 ? errno : 0;
+}
+
+int
+_lwp_continue(lwpid_t id)
+{
+        return SYS1(SYS_lwpcontinue, id) < 0 ? errno : 0;
+}
+
+int
+_lwp_sema_init(_lwp_sema_t *sp, int count)
+{
+        memset(sp, 0, sizeof(*sp));
+        sp->sema_count = count;
+        return 0;
+}
+
+int
+_lwp_sema_wait(_lwp_sema_t *sp)
+{
+        return SYS1(SYS_lwp_sema_wait, sp) < 0 ? errno : 0;
+}
+
+int
+_lwp_sema_post(_lwp_sema_t *sp)
+{
+        return SYS1(SYS_lwp_sema_post, sp) < 0 ? errno : 0;
+}
+
+int
+_lwp_sema_trywait(_lwp_sema_t *sp)
+{
+        return SYS1(SYS_lwp_sema_trywait, sp) < 0 ? errno : 0;
+}
+
+/* Returns the signal, or -1 with errno (EAGAIN when the time ran out). */
+int
+sigtimedwait(const sigset_t *set, siginfo_t *info, const int64_t *ts)
+{
+        return (int)SYS3(SYS_sigwait, set, info, ts);
+}
+
+static pid_t
+fork_with(long n)
+{
+        long flag = 0;
+        long r = __sysc2(n, 0, 0, 0, &flag);
+
+        if (r < 0)
+                return -1;
+        return flag != 0 ? 0 : (pid_t)r;
+}
+
+pid_t
+fork1(void)
+{
+        return fork_with(SYS_fork1);
+}
+
+pid_t
+forkall(void)
+{
+        return fork_with(SYS_forkall);
+}
+
 /* getcontext is in crt0.S; these are the offsets it relies on. */
 typedef char uc_rip_offset[offsetof(ucontext_t,
     uc_mcontext.gregs[REG_RIP]) == 192 ? 1 : -1];

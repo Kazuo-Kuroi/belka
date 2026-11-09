@@ -106,8 +106,12 @@ wait_common(int idtype, pid_t id, int options, pid_t *pidp, int *codep,
                  * must not hide its exit.
                  */
                 if (curthread->kt_sigpend) {
+                        int r;
+
                         mutex_unlock(&proctree_lock);
-                        if (sig_sleep_check())
+                        if ((r = sig_sleep_check()) == 2)
+                                return ERESTART;
+                        if (r == 1)
                                 return sig_restart(EINTR);
                         mutex_lock(&proctree_lock);
                         continue;

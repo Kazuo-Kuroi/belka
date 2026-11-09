@@ -46,6 +46,8 @@ int as_fault(struct as *, vaddr_t, enum seg_rw);
 int as_gap(struct as *, size_t, vaddr_t, vaddr_t *);
 int as_findgap(struct as *, size_t, vaddr_t, vaddr_t *);
 int as_brk(struct as *, vaddr_t, size_t, size_t);
+int as_map_anywhere(struct as *, size_t, vaddr_t,
+    int (*)(struct seg *, void *), void *, vaddr_t *);
 struct seg *as_findseg(struct as *, vaddr_t);
 
 #endif /* _VM_AS_H_ */

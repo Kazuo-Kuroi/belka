@@ -112,52 +112,94 @@ md_getcontext(struct lwp *l, ucontext_t *uc)
         uc->uc_mcontext.gregs[REG_RFL] &= ~(greg_t)PSL_C;
 }
 
+/* Whether a context is one user mode may be given. */
+int
+md_context_ok(const ucontext_t *uc)
+{
+        const greg_t *g = uc->uc_mcontext.gregs;
+
+        if ((uc->uc_flags & UC_CPU) != 0 &&
+            ((uint64_t)g[REG_RIP] >= VM_USER_MAX ||
+            (uint64_t)g[REG_FSBASE] >= VM_USER_MAX))
+                return EINVAL;
+        return 0;
+}
+
+/* Load gregs into a trap frame, keeping to what user mode may hold. */
+static void
+load_gregs(struct trapframe *tf, const greg_t *g)
+{
+        tf->tf_rdi = (uint64_t)g[REG_RDI];
+        tf->tf_rsi = (uint64_t)g[REG_RSI];
+        tf->tf_rdx = (uint64_t)g[REG_RDX];
+        tf->tf_rcx = (uint64_t)g[REG_RCX];
+        tf->tf_r8 = (uint64_t)g[REG_R8];
+        tf->tf_r9 = (uint64_t)g[REG_R9];
+        tf->tf_rax = (uint64_t)g[REG_RAX];
+        tf->tf_rbx = (uint64_t)g[REG_RBX];
+        tf->tf_rbp = (uint64_t)g[REG_RBP];
+        tf->tf_r10 = (uint64_t)g[REG_R10];
+        tf->tf_r11 = (uint64_t)g[REG_R11];
+        tf->tf_r12 = (uint64_t)g[REG_R12];
+        tf->tf_r13 = (uint64_t)g[REG_R13];
+        tf->tf_r14 = (uint64_t)g[REG_R14];
+        tf->tf_r15 = (uint64_t)g[REG_R15];
+        tf->tf_rip = (uint64_t)g[REG_RIP];
+        tf->tf_rsp = (uint64_t)g[REG_RSP];
+        tf->tf_rflags = ((uint64_t)g[REG_RFL] & PSL_USER) | PSL_I |
+            PSL_RESERVED1;
+        tf->tf_cs = UCSEL;
+        tf->tf_ss = UDSEL;
+}
+
+/* A user FPU image, cleaned, into area. */
+static void
+load_fpregs(void *area, const fpregset_t *fp)
+{
+        char *img = fpu_area_alloc();
+
+        memcpy(img, fp->fp_state, fpu_area_size());
+        fpu_sanitize(img);
+        memcpy(area, img, fpu_area_size());
+        fpu_area_free(img);
+}
+
+/* setcontext for the calling LWP: its live registers change. */
 int
 md_setcontext(struct lwp *l, const ucontext_t *uc)
 {
-        struct trapframe *tf = l->l_tf;
         const greg_t *g = uc->uc_mcontext.gregs;
-        int s;
+        int s, error;
 
-        if ((uint64_t)g[REG_RIP] >= VM_USER_MAX ||
-            (uint64_t)g[REG_FSBASE] >= VM_USER_MAX)
-                return EINVAL;
+        if ((error = md_context_ok(uc)) != 0)
+                return error;
         if ((uc->uc_flags & UC_FP) != 0) {
-                char *img = fpu_area_alloc();
-
-                memcpy(img, uc->uc_mcontext.fpregs.fp_state, fpu_area_size());
-                fpu_sanitize(img);
+                load_fpregs(l->l_fpu, &uc->uc_mcontext.fpregs);
                 s = splhi();
-                memcpy(l->l_fpu, img, fpu_area_size());
                 fpu_restore(l->l_fpu);
                 splx(s);
-                fpu_area_free(img);
         }
         if ((uc->uc_flags & UC_CPU) != 0) {
-                tf->tf_rdi = (uint64_t)g[REG_RDI];
-                tf->tf_rsi = (uint64_t)g[REG_RSI];
-                tf->tf_rdx = (uint64_t)g[REG_RDX];
-                tf->tf_rcx = (uint64_t)g[REG_RCX];
-                tf->tf_r8 = (uint64_t)g[REG_R8];
-                tf->tf_r9 = (uint64_t)g[REG_R9];
-                tf->tf_rax = (uint64_t)g[REG_RAX];
-                tf->tf_rbx = (uint64_t)g[REG_RBX];
-                tf->tf_rbp = (uint64_t)g[REG_RBP];
-                tf->tf_r10 = (uint64_t)g[REG_R10];
-                tf->tf_r11 = (uint64_t)g[REG_R11];
-                tf->tf_r12 = (uint64_t)g[REG_R12];
-                tf->tf_r13 = (uint64_t)g[REG_R13];
-                tf->tf_r14 = (uint64_t)g[REG_R14];
-                tf->tf_r15 = (uint64_t)g[REG_R15];
-                tf->tf_rip = (uint64_t)g[REG_RIP];
-                tf->tf_rsp = (uint64_t)g[REG_RSP];
-                tf->tf_rflags = ((uint64_t)g[REG_RFL] & PSL_USER) | PSL_I |
-                    PSL_RESERVED1;
-                tf->tf_cs = UCSEL;
-                tf->tf_ss = UDSEL;
+                load_gregs(l->l_tf, g);
                 (void)md_set_private(l, (uint64_t)g[REG_FSBASE]);
         }
         return 0;
+}
+
+/*
+ * The starting context of a new LWP that has not run yet (_lwp_create);
+ * md_context_ok() has passed it. Without UC_FP it starts with clean
+ * floating-point state.
+ */
+void
+md_lwp_setcontext(struct lwp *l, const ucontext_t *uc)
+{
+        if ((uc->uc_flags & UC_FP) != 0)
+                load_fpregs(l->l_fpu, &uc->uc_mcontext.fpregs);
+        if ((uc->uc_flags & UC_CPU) != 0) {
+                load_gregs(l->l_tf, uc->uc_mcontext.gregs);
+                l->l_fsbase = (uint64_t)uc->uc_mcontext.gregs[REG_FSBASE];
+        }
 }
 
 int

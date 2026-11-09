@@ -126,7 +126,9 @@ md_lwp_init(struct lwp *l, vaddr_t kstack_top)
 void
 md_lwp_free(struct lwp *l)
 {
-        fpu_area_free(l->l_fpu);
+        if (l->l_fpu != NULL)
+                fpu_area_free(l->l_fpu);
+        l->l_fpu = NULL;
 }
 
 /*
@@ -168,6 +170,19 @@ md_lwp_fork(struct lwp *parent, struct lwp *child)
         fpu_save(child->l_fpu);
         child->l_fsbase = rdmsr(MSR_FSBASE);
         splx(s);
+}
+
+/*
+ * Make dst, which has not run, a copy of src, which is parked and so
+ * has its user registers in its trap frame and its floating-point state
+ * in its save area (forkall).
+ */
+void
+md_lwp_copy(const struct lwp *src, struct lwp *dst)
+{
+        *dst->l_tf = *src->l_tf;
+        memcpy(dst->l_fpu, src->l_fpu, fpu_area_size());
+        dst->l_fsbase = src->l_fsbase;
 }
 
 /* Set the system call return values of an LWP that has not run yet. */

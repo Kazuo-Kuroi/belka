@@ -19,7 +19,8 @@ typedef int sy_call_t(const uint64_t *, uint64_t *);
 int syscall_dispatch(uint64_t, const uint64_t *, uint64_t *);
 
 /* kern_exit.c, kern_fork.c, kern_exec.c */
-sy_call_t sys_exit, sys_wait, sys_waitsys, sys_fork, sys_execve, sys_exec;
+sy_call_t sys_exit, sys_wait, sys_waitsys, sys_fork, sys_fork1, sys_execve;
+sy_call_t sys_exec;
 /* sys_generic.c */
 sy_call_t sys_read, sys_write, sys_pread, sys_pwrite, sys_lseek, sys_close;
 sy_call_t sys_dup, sys_fcntl, sys_ioctl, sys_getdents, sys_ftruncate;
@@ -33,6 +34,10 @@ sy_call_t sys_brk, sys_mmap, sys_munmap, sys_mprotect;
 /* kern_sig.c */
 sy_call_t sys_kill, sys_sigaction, sys_sigprocmask, sys_sigsuspend;
 sy_call_t sys_sigpending, sys_sigaltstack, sys_signal, sys_pause, sys_alarm;
-sy_call_t sys_context, sys_pgrpsys;
+sy_call_t sys_context, sys_pgrpsys, sys_sigwait;
+/* kern_lwp.c */
+sy_call_t sys_lwpcreate, sys_lwpexit, sys_lwpwait, sys_lwpself, sys_lwpinfo;
+sy_call_t sys_lwpkill, sys_lwpsuspend, sys_lwpcontinue;
+sy_call_t sys_lwp_sema_wait, sys_lwp_sema_post, sys_lwp_sema_trywait;
 
 #endif /* _SYS_SYSENT_H_ */

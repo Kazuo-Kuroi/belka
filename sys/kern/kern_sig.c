@@ -105,25 +105,38 @@ sig_pick(k_sigset_t set)
         return sig;
 }
 
-/* Whether the LWP has a signal to look at. p_siglock is held. */
-static void
-sig_recalc(struct proc *p)
+/*
+ * Whether LWP l has something to do on its way to user mode: a signal
+ * it does not hold (or awaits in sigwait), or a reason to park or exit.
+ * p_siglock is held.
+ */
+void
+sig_recalc_lwp(struct proc *p, struct lwp *l)
 {
-        struct lwp *l = p->p_lwp;
+        k_sigset_t avail = (p->p_sigpend | l->l_sigpend) &
+            ~(l->l_sigmask & ~l->l_sigwait);
 
-        if (l != NULL && l->l_kthread != NULL)
-                l->l_kthread->kt_sigpend =
-                    (p->p_sigpend & ~l->l_sigmask) != 0;
+        if (l->l_kthread == NULL)
+                return;
+        l->l_kthread->kt_sigpend = avail != 0 || l->l_timedout ||
+            (l->l_flags & (LW_DESTROY | LW_SUSPREQ)) != 0 || p->p_stopped ||
+            ((p->p_lwpflags & PL_RENDEZ) != 0 && p->p_rendez != l);
 }
 
-/* Make the LWP look at its signals soon. p_siglock is held. */
-static void
-sig_nudge(struct proc *p)
+void
+sig_recalc_all(struct proc *p)
 {
-        struct kthread *kt;
+        for (struct lwp *l = p->p_lwps; l != NULL; l = l->l_next)
+                sig_recalc_lwp(p, l);
+}
 
-        if (p->p_lwp == NULL || (kt = p->p_lwp->l_kthread) == NULL ||
-            !kt->kt_sigpend)
+/* Make l look at its signals soon. p_siglock is held. */
+void
+sig_nudge_lwp(struct lwp *l)
+{
+        struct kthread *kt = l->l_kthread;
+
+        if (kt == NULL || !kt->kt_sigpend)
                 return;
         sleep_interrupt(kt);
         if (kt->kt_state == KT_ONPROC && kt->kt_cpu != NULL &&
@@ -131,47 +144,119 @@ sig_nudge(struct proc *p)
                 cpu_need_resched(kt->kt_cpu);
 }
 
+void
+sig_nudge_all(struct proc *p)
+{
+        for (struct lwp *l = p->p_lwps; l != NULL; l = l->l_next)
+                sig_nudge_lwp(l);
+}
+
+/*
+ * Job control side effects of posting sig: SIGCONT and SIGKILL end a
+ * stop and cancel pending stop signals; a stop signal cancels a pending
+ * SIGCONT. p_siglock is held.
+ */
+static void
+sig_jobctl(struct proc *p, int sig)
+{
+        k_sigset_t bit = sigbit(sig);
+        k_sigset_t cancel = 0;
+
+        if (sig == SIGCONT || sig == SIGKILL) {
+                cancel = STOPDEFAULT;
+                if (p->p_stopped) {
+                        p->p_stopped = 0;
+                        if (sig == SIGCONT)
+                                p->p_lwpflags |= PL_CONTNOTIFY;
+                        sv_broadcast(&p->p_rendezsv);
+                }
+        }
+        if ((STOPDEFAULT & bit) != 0)
+                cancel = sigbit(SIGCONT);
+        p->p_sigpend &= ~cancel;
+        for (struct lwp *l = p->p_lwps; l != NULL; l = l->l_next)
+                l->l_sigpend &= ~cancel;
+}
+
+/* Whether some LWP of p waits for sig in sigwait. p_siglock is held. */
+static int
+sig_awaited(const struct proc *p, int sig)
+{
+        for (const struct lwp *l = p->p_lwps; l != NULL; l = l->l_next) {
+                if ((l->l_sigwait & sigbit(sig)) != 0)
+                        return 1;
+        }
+        return 0;
+}
+
+static void
+sig_store_info(siginfo_t *dst, int sig, const siginfo_t *info)
+{
+        if (info != NULL)
+                *dst = *info;
+        else
+                memset(dst, 0, sizeof(*dst));
+        dst->si_signo = sig;
+}
+
 /*
  * Post sig to p, with info (or none). Callable from any context,
- * interrupts included.
+ * interrupts included. The signal goes to whichever LWP takes it first;
+ * one waiting for it in sigwait is nudged, or else one not holding it.
  */
 void
 sigtoproc(struct proc *p, int sig, const siginfo_t *info)
 {
         k_sigset_t bit = sigbit(sig);
+        struct lwp *target = NULL;
         int s;
 
         if (sig <= 0 || sig > MAXSIG || (p->p_flags & P_SYSTEM) != 0)
                 return;
         s = spin_lock(&p->p_siglock);
-        if (p->p_lwp == NULL) {                 /* exiting */
+        if (p->p_lwps == NULL) {                /* exiting */
                 spin_unlock(&p->p_siglock, s);
                 return;
         }
-        if (sig == SIGCONT || sig == SIGKILL) {
-                p->p_sigpend &= ~STOPDEFAULT;
-                if (p->p_stopped) {
-                        p->p_stopped = 0;
-                        sv_broadcast(&p->p_stopsv);
-                }
-        }
-        if ((STOPDEFAULT & bit) != 0)
-                p->p_sigpend &= ~sigbit(SIGCONT);
-        if (sig_ignored(p, sig) || (p->p_sigpend & bit) != 0) {
+        sig_jobctl(p, sig);
+        if ((sig_ignored(p, sig) && !sig_awaited(p, sig)) ||
+            (p->p_sigpend & bit) != 0) {
+                sig_recalc_all(p);
                 spin_unlock(&p->p_siglock, s);
                 return;
         }
         p->p_sigpend |= bit;
-        if (info != NULL) {
-                p->p_siginfo[sig] = *info;
-        } else {
-                memset(&p->p_siginfo[sig], 0, sizeof(siginfo_t));
-                p->p_siginfo[sig].si_signo = sig;
+        sig_store_info(&p->p_siginfo[sig], sig, info);
+        sig_recalc_all(p);
+        for (struct lwp *l = p->p_lwps; l != NULL; l = l->l_next) {
+                if ((l->l_sigwait & bit) != 0) {
+                        target = l;
+                        break;
+                }
+                if (target == NULL && (l->l_sigmask & bit) == 0)
+                        target = l;
         }
-        p->p_siginfo[sig].si_signo = sig;
-        sig_recalc(p);
-        sig_nudge(p);
+        if (target != NULL)
+                sig_nudge_lwp(target);
         spin_unlock(&p->p_siglock, s);
+}
+
+/* Post sig to LWP l of p (faults, _lwp_kill). p_siglock is held. */
+void
+sigtolwp_locked(struct proc *p, struct lwp *l, int sig, const siginfo_t *info)
+{
+        k_sigset_t bit = sigbit(sig);
+
+        sig_jobctl(p, sig);
+        if ((sig_ignored(p, sig) && (l->l_sigwait & bit) == 0) ||
+            (l->l_sigpend & bit) != 0) {
+                sig_recalc_all(p);
+                return;
+        }
+        l->l_sigpend |= bit;
+        sig_store_info(&l->l_siginfo[sig], sig, info);
+        sig_recalc_all(p);
+        sig_nudge_lwp(l);
 }
 
 /* A signal from the kernel, with no particular information. */
@@ -182,8 +267,8 @@ psignal(struct proc *p, int sig)
 }
 
 /*
- * A fault in the current LWP raises sig. A fault cannot be held off or
- * ignored: if it would be, the default action is restored first.
+ * A fault in the current LWP raises sig for it. A fault cannot be held
+ * off or ignored: if it would be, the default action is restored first.
  */
 void
 trapsignal(int sig, int code, uint64_t addr)
@@ -193,61 +278,35 @@ trapsignal(int sig, int code, uint64_t addr)
         siginfo_t si;
         int s;
 
+        memset(&si, 0, sizeof(si));
+        si.si_signo = sig;
+        si.si_code = code;
+        si.si_addr = addr;
         s = spin_lock(&p->p_siglock);
         if ((l->l_sigmask & sigbit(sig)) != 0 ||
             p->p_sigact[sig].ksa_handler == H_IGN) {
                 l->l_sigmask &= ~sigbit(sig);
                 p->p_sigact[sig].ksa_handler = H_DFL;
         }
+        sigtolwp_locked(p, l, sig, &si);
         spin_unlock(&p->p_siglock, s);
-        memset(&si, 0, sizeof(si));
-        si.si_signo = sig;
-        si.si_code = code;
-        si.si_addr = addr;
-        sigtoproc(p, sig, &si);
 }
 
-/*
- * Stop the calling process for sig, which it has just taken (p_stopped
- * is set), and wait to be continued or killed. No locks are held.
- */
+/* Tell p's parent that p stopped (with sig) or continued (sig 0). */
 static void
-sig_stop(struct proc *p, int sig)
+sig_tell_parent(struct proc *p, int sig)
 {
         struct proc *pp;
         siginfo_t si;
-        int s, killed;
 
         memset(&si, 0, sizeof(si));
         si.si_signo = SIGCHLD;
-        si.si_code = CLD_STOPPED;
+        si.si_code = sig != 0 ? CLD_STOPPED : CLD_CONTINUED;
         si.si_pid = p->p_pid;
-        si.si_status = sig;
+        si.si_status = sig != 0 ? sig : SIGCONT;
         mutex_lock(&proctree_lock);
-        p->p_wstop = 1;
-        p->p_wcont = 0;
-        pp = p->p_parent;
-        sv_broadcast(&pp->p_waitsv);
-        if ((pp->p_sigflags & PS_JCTL) != 0)
-                sigtoproc(pp, SIGCHLD, &si);
-        mutex_unlock(&proctree_lock);
-
-        s = spin_lock(&p->p_siglock);
-        while (p->p_stopped) {
-                sv_wait(&p->p_stopsv, &p->p_siglock, s);
-                s = spin_lock(&p->p_siglock);
-        }
-        killed = (p->p_sigpend & sigbit(SIGKILL)) != 0;
-        spin_unlock(&p->p_siglock, s);
-        if (killed)
-                return;
-
-        /* Continued: tell the parent, as for a stop. */
-        si.si_code = CLD_CONTINUED;
-        si.si_status = SIGCONT;
-        mutex_lock(&proctree_lock);
-        p->p_wstop = 0;
-        p->p_wcont = 1;
+        p->p_wstop = sig != 0;
+        p->p_wcont = sig == 0;
         pp = p->p_parent;
         sv_broadcast(&pp->p_waitsv);
         if ((pp->p_sigflags & PS_JCTL) != 0)
@@ -255,53 +314,68 @@ sig_stop(struct proc *p, int sig)
         mutex_unlock(&proctree_lock);
 }
 
+/* Take sig from l's or the process's pending set. p_siglock is held. */
+static void
+sig_take(struct proc *p, struct lwp *l, int sig, siginfo_t *info)
+{
+        k_sigset_t bit = sigbit(sig);
+
+        if ((l->l_sigpend & bit) != 0) {
+                l->l_sigpend &= ~bit;
+                *info = l->l_siginfo[sig];
+        } else {
+                p->p_sigpend &= ~bit;
+                *info = p->p_siginfo[sig];
+        }
+        sig_recalc_all(p);
+}
+
 /*
- * After an interruptible sleep was ended: take any pending stops and
- * discards here, and return 1 if a signal remains that must reach user
- * mode (a handler, or a fatal default), 0 if the sleep should go on.
+ * After an interruptible sleep was ended: discard what needs no action
+ * and return what the sleeper should do. 0: go on sleeping. 1: return
+ * EINTR (a handler or a fatal default awaits). 2: return ERESTART, so
+ * that the LWP can park, stop, or exit on its way out and reissue the
+ * call afterwards.
  */
 int
 sig_sleep_check(void)
 {
         struct proc *p = curproc;
         struct lwp *l = curlwp;
+        int s = spin_lock(&p->p_siglock);
 
         for (;;) {
-                int s = spin_lock(&p->p_siglock);
-                k_sigset_t cand = p->p_sigpend & ~l->l_sigmask;
+                k_sigset_t cand = (p->p_sigpend | l->l_sigpend) &
+                    ~l->l_sigmask;
                 const struct ksigaction *a;
+                siginfo_t info;
                 int sig;
 
+                if ((l->l_flags & LW_DESTROY) != 0 || lwp_park_pending(p, l)) {
+                        spin_unlock(&p->p_siglock, s);
+                        return 2;
+                }
                 if (cand == 0) {
-                        sig_recalc(p);
+                        sig_recalc_lwp(p, l);
                         spin_unlock(&p->p_siglock, s);
                         return 0;
                 }
                 sig = sig_pick(cand);
                 a = &p->p_sigact[sig];
                 if (a->ksa_handler > H_HOLD || (a->ksa_handler == H_DFL &&
-                    ((IGNDEFAULT | STOPDEFAULT) & sigbit(sig)) == 0)) {
+                    (IGNDEFAULT & sigbit(sig)) == 0)) {
                         spin_unlock(&p->p_siglock, s);
-                        return 1;
+                        return (STOPDEFAULT & sigbit(sig)) != 0 &&
+                            a->ksa_handler == H_DFL ? 2 : 1;
                 }
-                p->p_sigpend &= ~sigbit(sig);
-                sig_recalc(p);
-                if (a->ksa_handler == H_DFL &&
-                    (STOPDEFAULT & sigbit(sig)) != 0) {
-                        p->p_stopped = 1;
-                        p->p_stopsig = sig;
-                        spin_unlock(&p->p_siglock, s);
-                        sig_stop(p, sig);
-                        continue;
-                }
-                spin_unlock(&p->p_siglock, s);
+                sig_take(p, l, sig, &info);
         }
 }
 
 /*
  * The error for a wait a signal ended: ERESTART if the signal about to
- * be handled was set up with SA_RESTART (the C library then reissues
- * the call), EINTR otherwise.
+ * be handled was set up with SA_RESTART, or if there is none to handle
+ * (the LWP was stopped, suspended, or parked); EINTR otherwise.
  */
 int
 sig_restart(int error)
@@ -314,8 +388,10 @@ sig_restart(int error)
         if (error != EINTR)
                 return error;
         s = spin_lock(&p->p_siglock);
-        cand = p->p_sigpend & ~l->l_sigmask;
-        if (cand != 0) {
+        cand = (p->p_sigpend | l->l_sigpend) & ~l->l_sigmask;
+        if (cand == 0) {
+                error = ERESTART;
+        } else {
                 sig = sig_pick(cand);
                 if (p->p_sigact[sig].ksa_handler > H_HOLD &&
                     (p->p_sigact[sig].ksa_flags & SA_RESTART) != 0)
@@ -333,9 +409,10 @@ on_altstack(const struct lwp *l, uint64_t sp)
 }
 
 /*
- * Act on the LWP's signals before it returns to user mode. At most one
- * handler frame is built per return; signals still pending are taken at
- * the next return, which the handler's own system calls provide.
+ * Everything an LWP does on its way to user mode, once kt_sigpend says
+ * there is something: exit if destroyed, park while it must, then act
+ * on one signal. At most one handler frame is built per return; signals
+ * still pending are taken at the next return.
  */
 void
 sig_userret(void)
@@ -343,37 +420,59 @@ sig_userret(void)
         struct lwp *l = curlwp;
         struct proc *p = l->l_proc;
 
-        while (curthread->kt_sigpend) {
+        for (;;) {
                 struct ksigaction act;
-                k_sigset_t bit, restore;
+                k_sigset_t bit, restore, cand;
                 siginfo_t info;
                 int s, sig, onstack, insig;
                 uint64_t retaddr;
 
                 s = spin_lock(&p->p_siglock);
-                if ((p->p_sigpend & ~l->l_sigmask) == 0) {
-                        sig_recalc(p);
+                if ((l->l_flags & LW_DESTROY) != 0) {
                         spin_unlock(&p->p_siglock, s);
-                        break;
+                        lwp_exit();
                 }
-                sig = sig_pick(p->p_sigpend & ~l->l_sigmask);
+                if (lwp_park_pending(p, l)) {
+                        s = lwp_park(p, l, s);
+                        if ((p->p_lwpflags & PL_CONTNOTIFY) != 0) {
+                                p->p_lwpflags &= ~PL_CONTNOTIFY;
+                                spin_unlock(&p->p_siglock, s);
+                                sig_tell_parent(p, 0);
+                                continue;
+                        }
+                        sig_recalc_lwp(p, l);
+                        spin_unlock(&p->p_siglock, s);
+                        continue;
+                }
+                cand = (p->p_sigpend | l->l_sigpend) & ~l->l_sigmask;
+                if (cand == 0) {
+                        /* A sigsuspend whose signal needed no handler. */
+                        if (l->l_sigsuspend) {
+                                l->l_sigmask = l->l_sigoldmask;
+                                l->l_sigsuspend = 0;
+                        }
+                        sig_recalc_lwp(p, l);
+                        spin_unlock(&p->p_siglock, s);
+                        return;
+                }
+                sig = sig_pick(cand);
                 bit = sigbit(sig);
-                p->p_sigpend &= ~bit;
-                info = p->p_siginfo[sig];
+                sig_take(p, l, sig, &info);
                 act = p->p_sigact[sig];
                 if (act.ksa_handler == H_IGN || (act.ksa_handler == H_DFL &&
                     (IGNDEFAULT & bit) != 0)) {
-                        sig_recalc(p);
                         spin_unlock(&p->p_siglock, s);
                         continue;
                 }
                 if (act.ksa_handler == H_DFL) {
                         if ((STOPDEFAULT & bit) != 0) {
+                                /* The whole process stops. */
                                 p->p_stopped = 1;
                                 p->p_stopsig = sig;
-                                sig_recalc(p);
+                                sig_recalc_all(p);
+                                sig_nudge_all(p);
                                 spin_unlock(&p->p_siglock, s);
-                                sig_stop(p, sig);
+                                sig_tell_parent(p, sig);
                                 continue;
                         }
                         spin_unlock(&p->p_siglock, s);
@@ -395,7 +494,7 @@ sig_userret(void)
                 onstack = (act.ksa_flags & SA_ONSTACK) != 0 &&
                     (l->l_altflags & SS_DISABLE) == 0 && !insig;
                 retaddr = p->p_sigreturn;
-                sig_recalc(p);
+                sig_recalc_lwp(p, l);
                 spin_unlock(&p->p_siglock, s);
                 if (md_sendsig(l, sig, (act.ksa_flags & SA_SIGINFO) != 0 ?
                     &info : NULL, act.ksa_handler, restore, onstack,
@@ -405,17 +504,6 @@ sig_userret(void)
                         proc_exit(CLD_KILLED, SIGSEGV);
                 }
                 return;
-        }
-        /* A sigsuspend whose signal turned out to need no handler. */
-        if (l->l_sigsuspend) {
-                int s = spin_lock(&p->p_siglock);
-
-                if (l->l_sigsuspend) {
-                        l->l_sigmask = l->l_sigoldmask;
-                        l->l_sigsuspend = 0;
-                        sig_recalc(p);
-                }
-                spin_unlock(&p->p_siglock, s);
         }
 }
 
@@ -448,7 +536,7 @@ sig_child_exit(struct proc *child, int code, int data)
 void
 sig_exec(struct proc *p)
 {
-        struct lwp *l = p->p_lwp;
+        struct lwp *l = p->p_lwps;      /* the only one now */
         int s = spin_lock(&p->p_siglock);
 
         for (int sig = 1; sig <= MAXSIG; sig++) {
@@ -457,15 +545,18 @@ sig_exec(struct proc *p)
                 if (a->ksa_handler > H_HOLD)
                         a->ksa_handler = H_DFL;
                 a->ksa_flags &= ~(SA_ONSTACK | SA_RESETHAND | SA_NODEFER);
-                if (a->ksa_handler == H_DFL && (IGNDEFAULT & sigbit(sig)) != 0)
+                if (a->ksa_handler == H_DFL &&
+                    (IGNDEFAULT & sigbit(sig)) != 0) {
                         p->p_sigpend &= ~sigbit(sig);
+                        l->l_sigpend &= ~sigbit(sig);
+                }
         }
         l->l_altflags = SS_DISABLE;
         l->l_altsp = 0;
         l->l_altsize = 0;
         p->p_sigflags = 0;
         p->p_sigreturn = 0;
-        sig_recalc(p);
+        sig_recalc_lwp(p, l);
         spin_unlock(&p->p_siglock, s);
 }
 
@@ -528,6 +619,13 @@ sigset_in(const sigset_t *us)
 {
         return ((k_sigset_t)us->__sigbits[0] |
             (k_sigset_t)us->__sigbits[1] << 32) & SIG_ALL;
+}
+
+/* A mask from user mode, without what cannot be held. */
+k_sigset_t
+sig_mask_from_user(const sigset_t *us)
+{
+        return sigset_in(us) & ~CANTMASK;
 }
 
 static void
@@ -652,7 +750,9 @@ sig_discard_if_ignored(struct proc *p, int sig)
 {
         if (sig_ignored(p, sig)) {
                 p->p_sigpend &= ~sigbit(sig);
-                sig_recalc(p);
+                for (struct lwp *l = p->p_lwps; l != NULL; l = l->l_next)
+                        l->l_sigpend &= ~sigbit(sig);
+                sig_recalc_all(p);
         }
 }
 
@@ -775,7 +875,7 @@ sys_sigprocmask(const uint64_t *args, uint64_t *rv __unused)
                         return EINVAL;
                 }
                 l->l_sigmask &= ~CANTMASK;
-                sig_recalc(p);
+                sig_recalc_lwp(p, curlwp);
         }
         spin_unlock(&p->p_siglock, s);
         return args[2] != 0 ? copyout_sigset(old, args[2]) : 0;
@@ -788,11 +888,11 @@ sig_pause(void)
         struct proc *p = curproc;
 
         for (;;) {
-                int s = spin_lock(&p->p_siglock);
+                int s = spin_lock(&p->p_siglock), r;
 
                 (void)sv_wait_sig(&p->p_pausesv, &p->p_siglock, s);
-                if (sig_sleep_check())
-                        return EINTR;
+                if ((r = sig_sleep_check()) != 0)
+                        return r == 1 ? EINTR : ERESTART;
         }
 }
 
@@ -810,10 +910,12 @@ sig_suspend(k_sigset_t mask)
         struct lwp *l = curlwp;
         int s = spin_lock(&p->p_siglock);
 
-        l->l_sigoldmask = l->l_sigmask;
+        /* A reissued sigsuspend keeps the mask the first one saved. */
+        if (!l->l_sigsuspend)
+                l->l_sigoldmask = l->l_sigmask;
         l->l_sigsuspend = 1;
         l->l_sigmask = mask & ~CANTMASK;
-        sig_recalc(p);
+        sig_recalc_lwp(p, curlwp);
         spin_unlock(&p->p_siglock, s);
         return sig_pause();
 }
@@ -829,6 +931,94 @@ sys_sigsuspend(const uint64_t *args, uint64_t *rv __unused)
         return sig_suspend(mask);
 }
 
+static void
+sigwait_timeout(void *arg)
+{
+        struct lwp *l = arg;
+        struct proc *p = l->l_proc;
+        int s = spin_lock(&p->p_siglock);
+
+        l->l_timedout = 1;
+        sig_recalc_lwp(p, l);
+        sig_nudge_lwp(l);
+        spin_unlock(&p->p_siglock, s);
+}
+
+/*
+ * sigtimedwait(set, siginfo_t *, timeout), UnixWare's sigwait (194):
+ * take a pending signal of set, waiting for one up to timeout (none:
+ * forever). Returns the signal; EAGAIN if the time ran out.
+ */
+int
+sys_sigwait(const uint64_t *args, uint64_t *rv)
+{
+        struct proc *p = curproc;
+        struct lwp *l = curlwp;
+        k_sigset_t set;
+        siginfo_t info;
+        long ticks = -1;
+        toid_t id = 0;
+        int s, sig = 0, error, r;
+
+        if ((error = copyin_sigset(args[0], &set)) != 0)
+                return error;
+        set &= ~CANTMASK;
+        if (set == 0)
+                return EINVAL;
+        if (args[2] != 0) {
+                int64_t ts[2];
+
+                if ((error = copyin((const void *)(uintptr_t)args[2], ts,
+                    sizeof(ts))) != 0)
+                        return error;
+                if (ts[0] < 0 || ts[1] < 0 || ts[1] >= 1000000000)
+                        return EINVAL;
+                ticks = (long)(ts[0] * HZ +
+                    (ts[1] * HZ + 999999999) / 1000000000);
+        }
+        s = spin_lock(&p->p_siglock);
+        l->l_sigwait = set;
+        l->l_timedout = 0;
+        if (ticks > 0)
+                id = timeout(sigwait_timeout, l, ticks);
+        for (;;) {
+                k_sigset_t cand = (p->p_sigpend | l->l_sigpend) & set;
+
+                if (cand != 0) {
+                        sig = sig_pick(cand);
+                        sig_take(p, l, sig, &info);
+                        break;
+                }
+                if (ticks == 0 || l->l_timedout) {
+                        error = EAGAIN;
+                        break;
+                }
+                (void)sv_wait_sig(&p->p_pausesv, &p->p_siglock, s);
+                s = spin_lock(&p->p_siglock);
+                if (((p->p_sigpend | l->l_sigpend) & set) != 0 ||
+                    l->l_timedout)
+                        continue;
+                spin_unlock(&p->p_siglock, s);
+                r = sig_sleep_check();
+                s = spin_lock(&p->p_siglock);
+                if (r != 0) {
+                        error = r == 1 ? EINTR : ERESTART;
+                        break;
+                }
+        }
+        l->l_sigwait = 0;
+        l->l_timedout = 0;
+        sig_recalc_lwp(p, l);
+        spin_unlock(&p->p_siglock, s);
+        if (id != 0)
+                (void)untimeout(id);
+        if (error != 0)
+                return error;
+        rv[0] = (uint64_t)sig;
+        return args[1] != 0 ? copyout(&info, (void *)(uintptr_t)args[1],
+            sizeof(info)) : 0;
+}
+
 /* sigpending(cmd, set): the pending set, or the set of valid signals. */
 int
 sys_sigpending(const uint64_t *args, uint64_t *rv __unused)
@@ -840,7 +1030,8 @@ sys_sigpending(const uint64_t *args, uint64_t *rv __unused)
         switch ((int)args[0]) {
         case SIGPENDING_PENDING:
                 s = spin_lock(&p->p_siglock);
-                set = p->p_sigpend & curlwp->l_sigmask;
+                set = (p->p_sigpend | curlwp->l_sigpend) &
+                    curlwp->l_sigmask;
                 spin_unlock(&p->p_siglock, s);
                 break;
         case SIGPENDING_FILLSET:
@@ -963,7 +1154,7 @@ sys_signal(const uint64_t *args, uint64_t *rv)
                 return EINVAL;
         }
         l->l_sigmask &= ~CANTMASK;
-        sig_recalc(p);
+        sig_recalc_lwp(p, curlwp);
         spin_unlock(&p->p_siglock, s);
         return 0;
 }
@@ -1001,7 +1192,7 @@ sys_context(const uint64_t *args, uint64_t *rv __unused)
                         s = spin_lock(&p->p_siglock);
                         l->l_sigmask = sigset_in(&uc->uc_sigmask) &
                             ~CANTMASK;
-                        sig_recalc(p);
+                        sig_recalc_lwp(p, curlwp);
                         spin_unlock(&p->p_siglock, s);
                 }
                 error = (uc->uc_flags & UC_MCONTEXT) != 0 ? EJUSTRETURN : 0;

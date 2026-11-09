@@ -91,6 +91,7 @@ typedef struct siginfo {
 
 /* si_code: sent by a process (kill), or by the kernel for a reason. */
 #define SI_USER         0
+#define SI_LWP          (-1)    /* sent by _lwp_kill */
 #define SI_FROMUSER(sip) ((sip)->si_code <= 0)
 
 #define ILL_ILLOPC      1
