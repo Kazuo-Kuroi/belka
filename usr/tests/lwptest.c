@@ -232,7 +232,7 @@ static void
 test_addr(void)
 {
         int64_t zero[2] = { 0, 0 }, short_ts[2] = { 0, 30000000 };
-        int64_t bad_ts[2] = { 0, 1000000000 };
+        int64_t bad_ts[2] = { 0, 1000000000 }, tick[2] = { 0, 10000000 };
         volatile int32_t w = 5;
         lwpid_t ids[NLWP], gone;
         struct sigaction sa;
@@ -267,13 +267,26 @@ test_addr(void)
         for (int i = 0; i < 3; i++)
                 CHECK(spawn_lwp(gate_waiter, (void *)(intptr_t)i, 0,
                     &ids[i]) == 0);
-        for (long tries = 0; total < 3 && tries < 2000000; tries++) {
+        /*
+         * Until all three were woken one at a time, sleeping a tick
+         * between tries so that waiters not yet queued get to run, even
+         * on one processor. If that fails, wake the rest, so that the
+         * waits below end.
+         */
+        t0 = time();
+        while (total < 3 && time() - t0 < 5) {
                 if (_lwp_addr_wake(&gate, 1, &woken) == 0) {
                         CHECK(woken == 0 || woken == 1);
                         total += woken;
                 }
+                if (total < 3)
+                        (void)_lwp_addr_wait(&w, 5, tick);
         }
         CHECK(total == 3);
+        if (total < 3) {
+                gate = 1;
+                (void)_lwp_addr_wake(&gate, 0, NULL);
+        }
         for (int i = 0; i < 3; i++)
                 CHECK(_lwp_wait(ids[i], &gone) == 0);
         CHECK(gate_passed == 3);
