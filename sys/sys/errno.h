@@ -59,6 +59,8 @@
 #define EL2HLT          44
 #define EDEADLK         45
 #define ENOLCK          46
+#define ENOTSUP         48      /* not in UnixWare 2; later SVR4 */
+#define EDQUOT          49      /* not in UnixWare 2; later SVR4 */
 #define EBADE           50
 #define EBADR           51
 #define EXFULL          52
@@ -67,6 +69,7 @@
 #define EBADSLT         55
 #define EDEADLOCK       56
 #define EBFONT          57
+#define EOWNERDEAD      58      /* not in UnixWare 2; later SVR4 */
 #define ECLNRACE        59
 #define ENOSTR          60
 #define ENODATA         61
@@ -109,6 +112,7 @@
 #define EMSGSIZE        97
 #define EPROTOTYPE      98
 #define ENOPROTOOPT     99
+#define ENOTRECOVERABLE 100     /* not in UnixWare 2; a free number */
 #define EPROTONOSUPPORT 120
 #define ESOCKTNOSUPPORT 121
 #define EOPNOTSUPP      122

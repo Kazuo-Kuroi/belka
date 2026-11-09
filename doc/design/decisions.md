@@ -661,6 +661,76 @@ Recorded 2026-11-07.
   of an LWP's ticks count as user time), and
   process-shared semaphores across address spaces.
 
+## The C library (2026-11-09)
+
+- **mlibc**, from the `belka` branch of the fork at
+  `github.com/Kazuo-Kuroi/mlibc`, which starts from upstream's `v7.x`
+  release branch (7.0.0) rather than `master`. Belka carries it as the
+  submodule `contrib/mlibc`; the port lives in the fork, in
+  `sysdeps/belka` (the system calls) and `abis/belka` (the ABI headers),
+  so that it can be rebased onto later releases and offered upstream.
+  It is mlibc's own code, under its MIT licence and copyright; the
+  clean-room rules apply to the SVR4 and IRIX sources, not to it.
+- **Language:** mlibc is C++23 and builds with meson and ninja. That
+  stays inside mlibc; the kernel and Belka's own programs remain C99
+  and GNU make, which drives meson. mlibc builds with GCC and with
+  Clang, each from a cross file in `tools/mlibc`, with the same
+  compiler as the kernel (`TOOLCHAIN`). For a bare ELF target Clang does
+  not predefine `_GNU_SOURCE` in C++, as it does for Linux, so the Clang
+  cross file passes it.
+- **Linking:** static only for now. Programs link mlibc's `crt1.o` and
+  `crti.o`, the compiler's static start object (GCC's `crtbeginT.o` or
+  compiler-rt's `crtbegin`, which define `__dso_handle`), `libc.a`, the
+  compiler's run-time library (libgcc, or compiler-rt's builtins), its
+  end object, and `crtn.o`. Test images get copies stripped of debug
+  information.
+- **ABI headers** (`abis/belka`) give the kernel's values and layouts:
+  UnixWare error numbers, signal numbers and flags, `open` flags and
+  `fcntl` commands, `waitsys` options, mapping flags, and the native
+  `struct stat`, `sigaction`, `siginfo_t`, `stack_t`, `ucontext_t`, and
+  `utsname`. Headers for facilities Belka lacks (sockets, terminals,
+  resource limits) point at mlibc's Linux ones until the kernel defines
+  its own. `tools/abicheck` checks at build time that every shared
+  constant, size, and offset agrees with the kernel's headers.
+- **Names the kernel lacked:** `ENOTSUP` (48), `EDQUOT` (49), and
+  `EOWNERDEAD` (58) take the numbers later System V releases gave them;
+  `ENOTRECOVERABLE` takes 100, which UnixWare left free. Linux-only names
+  that mlibc's `strerror` lists take values from 4080, which no kernel
+  error uses. `SI_QUEUE`, `SI_TIMER`, `SI_ASYNCIO`, and `SI_MESGQ` take
+  the later System V values, and `SI_TKILL` is `SI_LWP`. There are no
+  real-time signals: `SIGRTMIN` is 35 and `SIGRTMAX` 34, an empty range.
+  mlibc's thread cancellation signal is `SIGLWP`.
+- **What the library does itself:** `O_CLOEXEC`, `O_DIRECTORY`, and
+  `O_NOFOLLOW` (values from later System V) are carried out around
+  `open`; `F_DUPFD_CLOEXEC` and the `dup` flags likewise; the `*at`
+  calls work for `AT_FDCWD` or absolute paths, and fail with `ENOSYS`
+  otherwise; `readdir` rewrites the kernel's records, which have no
+  `d_type`; `waitpid` runs over `waitsys` and builds the status word
+  from the `siginfo_t`; every clock reads `gettimeofday`; `isatty` asks
+  for `TCGETA`. System calls that fail with `ERESTART` are reissued, and
+  signal handlers return through a trampoline passed with every
+  `sigaction`, as the kernel expects.
+- **The thread pointer** is the `%fs` base, set with `__lwp_private`, so
+  `errno` and other thread-local data work from the first instruction
+  of `main`.
+- **Upstream fix:** mlibc 7.0.0's `recvfrom` instantiated the `Recvfrom`
+  sysdep even for systems without one; the fork calls it through
+  `sysdep_or_enosys` (also unfixed on `master`).
+- **Tests:** `usr/tests/libctest.c`, built against mlibc, checks
+  start-up and the environment, formatting and conversions, the heap,
+  stdio on files, `stat`, errno, directories, `fork`, exit and signal
+  statuses, `execve`, `abort`, handlers, masks and pending signals, a
+  fault handled with `longjmp`, the clocks, and `uname`. The process
+  self-test runs it.
+- **Not yet:** threads (`pthread_create` over `_lwp_create`, and a
+  futex-like wait for contended locks: `FutexWait` and `FutexWake` fail
+  with `ENOSYS`, which a single-threaded program never reaches), shared
+  libraries and the dynamic linker, `nanosleep` and the other sleeps,
+  `getcwd`, pipes, terminals and `termios` with the System V values,
+  the `*at` calls relative to a directory descriptor, `chmod` and
+  `chown`, a monotonic clock, and the libt test programs moving onto
+  mlibc.
+
 ## File systems
 
 1. **tmpfs**, for testing.
@@ -706,7 +776,8 @@ Recorded 2026-11-07.
 
 ## Userland and scope
 
-- **C library:** mlibc, with a Belka system-dependent layer.
+- **C library:** mlibc, with a Belka system-dependent layer (see The C
+  library above).
 - **Out of scope for now:** MAC, ACLs, auditing, and other security
   features. Their hooks are not designed in until they are scheduled.
 

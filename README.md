@@ -11,7 +11,8 @@ Design decisions are recorded in
 ## Building
 
 Requirements: GNU make, GCC or Clang (with `ld.lld`), `xorriso`, `curl`,
-QEMU, and OVMF. See [doc/qemu-setup.md](doc/qemu-setup.md).
+QEMU, and OVMF; for the C library, meson and ninja. See
+[doc/qemu-setup.md](doc/qemu-setup.md).
 
 ```sh
 make                    # build build/amd64-gcc/belka
@@ -36,11 +37,17 @@ checks both with `e2fsck -fn`, and `tools/check-ext2.sh` reads back
 with `debugfs` the files the kernel left. This needs e2fsprogs
 (`E2FSCK` and `DEBUGFS` name the programs).
 
-User-mode test programs live in `usr/tests`. A tiny C library in
-`usr/tests/lib` stands in until mlibc is ported. They are built with the
-host compiler (`USER_CC`, default `HOSTCC`) against the kernel's own ABI
-headers, and installed in `/bin` on both test images. The kernel runs
-them during `make test`. `make user-progs` builds them alone.
+User-mode test programs live in `usr/tests`. Most use a tiny C library
+in `usr/tests/lib` and are built with the host compiler (`USER_CC`,
+default `HOSTCC`) against the kernel's own ABI headers. `libctest` is
+built against mlibc, the C library, which comes from the `contrib/mlibc`
+submodule (`git submodule update --init`); building it needs meson and
+ninja (`MESON` and `NINJA` name them), and its first configure fetches
+mlibc's own subprojects. mlibc is built with the kernel's compiler and
+installed into `build/sysroot-$(TOOLCHAIN)`; `make mlibc` builds it
+alone. All the programs are installed in `/bin` on both test images,
+and the kernel runs them during `make test`. `make user-progs` builds
+them alone.
 `SMP=n` and `MEM=size` set the guest's processors and memory.
 `make INLINE_ASM=no` builds the out-of-line fallbacks for every inline
 assembly primitive, which is what a compiler without GNU extensions
@@ -54,6 +61,8 @@ downloads a pinned, checksummed Limine release into `build/`.
 | `sys/kern` | machine-independent kernel |
 | `sys/vm` | physical pages, the page cache, address spaces, anonymous memory |
 | `usr/tests` | user-mode test programs and their tiny C library |
+| `contrib/mlibc` | the C library (a submodule) |
+| `tools/mlibc`, `tools/abicheck` | mlibc's cross files, and its ABI check against the kernel |
 | `sys/libkern` | freestanding C library routines |
 | `sys/sys` | machine-independent headers (`<sys/...>`) |
 | `sys/dev/ic` | drivers for chips, independent of the bus |

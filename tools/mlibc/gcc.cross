@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-09
+# SPDX-License-Identifier: MIT
+#
+# Meson cross file: mlibc for Belka on amd64, built with gcc.
+#
+# g++ for a Linux host predefines _GNU_SOURCE in C++, which mlibc needs.
+
+[binaries]
+c = 'gcc'
+cpp = 'g++'
+ar = 'ar'
+strip = 'strip'
+
+[built-in options]
+c_args = ['-fno-pic']
+cpp_args = ['-fno-pic']
+
+[host_machine]
+system = 'belka'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'

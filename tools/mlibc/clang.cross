@@ -1,0 +1,24 @@
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-09
+# SPDX-License-Identifier: MIT
+#
+# Meson cross file: mlibc for Belka on amd64, built with clang.
+#
+# clang for a bare ELF target does not predefine _GNU_SOURCE in C++, as it
+# does for Linux, so it is given here: mlibc builds itself with it.
+
+[binaries]
+c = ['clang', '--target=x86_64-unknown-elf']
+cpp = ['clang++', '--target=x86_64-unknown-elf']
+ar = 'ar'
+strip = 'strip'
+
+[built-in options]
+c_args = ['-fno-pic']
+cpp_args = ['-fno-pic', '-D_GNU_SOURCE']
+
+[host_machine]
+system = 'belka'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'

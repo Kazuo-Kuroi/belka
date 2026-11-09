@@ -13,20 +13,20 @@
 #   /link               -> hello.txt            (fast symlink)
 #   /longlink           -> a 100-byte target    (slow symlink)
 #   /many/f000..f199    each holding its own name, hash-indexed
-#   /bin/*              the files of bindir, if given (user test programs)
+#   /bin/*              the files of each bindir given (user test programs)
 #
-# usage: mkext2.sh image blocksize [bindir]
+# usage: mkext2.sh image blocksize [bindir...]
 #
 
 set -eu
 
-if [ $# -ne 2 ] && [ $# -ne 3 ]; then
-        echo "usage: $0 image blocksize [bindir]" >&2
+if [ $# -lt 2 ]; then
+        echo "usage: $0 image blocksize [bindir...]" >&2
         exit 1
 fi
 img=$1
 bsize=$2
-bindir=${3:-}
+shift 2
 MKE2FS=${MKE2FS:-/sbin/mke2fs}
 E2FSCK=${E2FSCK:-/sbin/e2fsck}
 
@@ -40,10 +40,10 @@ mkdir -p "$src/dir/sub" "$src/many"
 printf 'deep\n' > "$src/dir/sub/deep.txt"
 ln -s hello.txt "$src/link"
 ln -s "$(printf '%0100d' 0 | tr 0 x)" "$src/longlink"
-if [ -n "$bindir" ]; then
+for bindir in "$@"; do
         mkdir -p "$src/bin"
         cp "$bindir"/* "$src/bin/"
-fi
+done
 i=0
 while [ $i -lt 200 ]; do
         n=$(printf 'f%03d' $i)

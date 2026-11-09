@@ -86,7 +86,7 @@ LDFLAGS         := -nostdlib -static -z max-page-size=0x1000 \
 SRCS            := $(MI_SRCS) $(MD_SRCS)
 OBJS            := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS)))
 
-.PHONY: ext2-images user-progs all iso run test test-fault test-apfault test-stack test-uaf \
+.PHONY: FORCE mlibc ext2-images user-progs all iso run test test-fault test-apfault test-stack test-uaf \
 	test-reboot test-all limine clean distclean
 
 all: $(KERNEL)
@@ -174,18 +174,83 @@ $(USER_DIR)/%: usr/tests/%.c $(USER_LIB) usr/tests/lib/libt.h
 	@mkdir -p $(USER_DIR)
 	$(USER_CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_LIB) $<
 
-user-progs: $(USER_BINS)
+# The C library: mlibc, from the contrib/mlibc submodule (the belka
+# branch of github.com/Kazuo-Kuroi/mlibc), built with meson and ninja
+# and installed into a sysroot, with the same compiler as the kernel.
+# The first configure fetches mlibc's own subprojects (frigg and the
+# freestanding headers). Programs that use it are linked statically;
+# the test images get copies stripped of debug information.
+MESON           ?= meson
+NINJA           ?= ninja
+MLIBC_SRC       := contrib/mlibc
+MLIBC_BUILD     := build/mlibc-$(TOOLCHAIN)
+SYSROOT         := build/sysroot-$(TOOLCHAIN)
+MLIBC           := $(SYSROOT)/usr/lib/libc.a
+LIBC_DIR        := build/user-libc-$(TOOLCHAIN)
+LIBC_PROGS      := libctest
+LIBC_BINS       := $(addprefix $(LIBC_DIR)/,$(LIBC_PROGS))
+LIBC_DBGDIR     := $(LIBC_DIR)-debug
+LIBC_DBGBINS    := $(addprefix $(LIBC_DBGDIR)/,$(LIBC_PROGS))
+LIBC_CFLAGS     := -std=c99 -O2 -g -Wall -Wextra -Werror -nostdinc \
+                   -isystem $(SYSROOT)/usr/include -isystem $(CC_INCLUDE) \
+                   -fno-pic -fno-pie -fno-stack-protector
+LIBC_LDFLAGS    := -static -nostdlib -Wl,--build-id=none \
+                   -Wl,-z,max-page-size=4096 -Wl,-z,noexecstack \
+                   $(LIBC_LDFLAGS_TC)
+LIBC_CRT0       := $(SYSROOT)/usr/lib/crt1.o $(SYSROOT)/usr/lib/crti.o \
+                   $(LIBC_CRTBEGIN)
+LIBC_CRTN       := $(LIBC_CRTEND) $(SYSROOT)/usr/lib/crtn.o
+
+# ninja decides what to rebuild; installing only changed files leaves
+# libc.a's time alone when nothing did.
+$(MLIBC): FORCE
+	@test -f $(MLIBC_SRC)/meson.build || { echo "$(MLIBC_SRC):" \
+	    "run git submodule update --init" >&2; exit 1; }
+	@test -f $(MLIBC_BUILD)/build.ninja || $(MESON) setup $(MLIBC_BUILD) \
+	    $(MLIBC_SRC) --cross-file tools/mlibc/$(TOOLCHAIN).cross \
+	    --prefix=/usr -Ddefault_library=static -Dbuildtype=debugoptimized \
+	    -Duse_freestnd_hdrs=enabled -Dlibgcc_dependency=false
+	$(NINJA) -C $(MLIBC_BUILD)
+	$(MESON) install -C $(MLIBC_BUILD) --destdir $(abspath $(SYSROOT)) \
+	    --only-changed --quiet
+
+mlibc: $(MLIBC)
+
+# The kernel's ABI as mlibc's headers describe it must match the
+# kernel's own headers (tools/abicheck).
+ABICHECK        := build/abicheck-$(TOOLCHAIN)
+
+$(ABICHECK)/ok: tools/abicheck/kernel.c tools/abicheck/libc.c \
+                tools/abicheck/abi.def $(MLIBC) $(wildcard sys/sys/*.h)
+	@mkdir -p $(ABICHECK)
+	$(HOSTCC) -std=c99 -ffreestanding -Isys -Isys/arch/$(ARCH)/include \
+	    -o $(ABICHECK)/kernel tools/abicheck/kernel.c
+	$(ABICHECK)/kernel > $(ABICHECK)/kernel-abi.h
+	$(LIBC_CC) $(LIBC_CFLAGS) -I$(ABICHECK) -c -o $(ABICHECK)/libc.o \
+	    tools/abicheck/libc.c
+	@touch $@
+
+$(LIBC_DBGBINS): $(LIBC_DBGDIR)/%: usr/tests/%.c $(MLIBC) $(ABICHECK)/ok
+	@mkdir -p $(LIBC_DBGDIR)
+	$(LIBC_CC) $(LIBC_CFLAGS) $(LIBC_LDFLAGS) -o $@ $(LIBC_CRT0) $< \
+	    $(MLIBC) $(LIBC_RTLIB) $(LIBC_CRTN)
+
+$(LIBC_BINS): $(LIBC_DIR)/%: $(LIBC_DBGDIR)/%
+	@mkdir -p $(LIBC_DIR)
+	strip --strip-debug -o $@ $<
+
+user-progs: $(USER_BINS) $(LIBC_BINS)
 
 # Every recipe that boots the kernel rebuilds the images first, since a
 # prerequisite would run only once for all the boots of one make run.
 MKEXT2          = @mkdir -p build && \
-                  sh tools/mkext2.sh $(EXT2_1K) 1024 $(USER_DIR) && \
-                  sh tools/mkext2.sh $(EXT2_4K) 4096 $(USER_DIR)
+                  sh tools/mkext2.sh $(EXT2_1K) 1024 $(USER_DIR) $(LIBC_DIR) && \
+                  sh tools/mkext2.sh $(EXT2_4K) 4096 $(USER_DIR) $(LIBC_DIR)
 
-ext2-images: $(USER_BINS)
+ext2-images: $(USER_BINS) $(LIBC_BINS)
 	$(MKEXT2)
 
-run: $(ISO) $(DISK) $(USER_BINS)
+run: $(ISO) $(DISK) $(USER_BINS) $(LIBC_BINS)
 	$(MKEXT2)
 	$(QEMU) $(QEMU_FLAGS) -cdrom $(ISO) -serial mon:stdio
 
@@ -195,7 +260,7 @@ run: $(ISO) $(DISK) $(USER_BINS)
 # address and expects the resulting panic; "test-apfault" does the same
 # on a secondary processor; "test-stack" and "test-uaf" check that stack
 # overflow and use after free are caught.
-test: $(TEST_ISO) $(USER_BINS)
+test: $(TEST_ISO) $(USER_BINS) $(LIBC_BINS)
 	$(MKEXT2)
 	sh tools/qemu-test.sh pass $(BUILD)/test-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(TEST_ISO)
@@ -205,27 +270,27 @@ test: $(TEST_ISO) $(USER_BINS)
 	$(E2FSCK) -fn $(EXT2_4K)
 	sh tools/check-ext2.sh $(DEBUGFS) $(EXT2_1K) $(EXT2_4K)
 
-test-fault: $(FAULT_ISO) $(USER_BINS)
+test-fault: $(FAULT_ISO) $(USER_BINS) $(LIBC_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="panic: page fault" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-fault-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(FAULT_ISO)
 
-test-apfault: $(APFAULT_ISO) $(USER_BINS)
+test-apfault: $(APFAULT_ISO) $(USER_BINS) $(LIBC_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="panic: page fault" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-apfault-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(APFAULT_ISO)
 
 # A kernel stack overflow must hit the guard page and double fault.
-test-stack: $(STACK_ISO) $(USER_BINS)
+test-stack: $(STACK_ISO) $(USER_BINS) $(LIBC_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="double fault" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-stack-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(STACK_ISO)
 
 # A write to freed kmem must be caught when the object is reused.
-test-uaf: $(UAF_ISO) $(USER_BINS)
+test-uaf: $(UAF_ISO) $(USER_BINS) $(LIBC_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="modified after free" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-uaf-serial.log \
@@ -233,7 +298,7 @@ test-uaf: $(UAF_ISO) $(USER_BINS)
 
 # A reboot through the ACPI reset register makes QEMU, run with
 # -no-reboot, exit with status 0.
-test-reboot: $(REBOOT_ISO) $(USER_BINS)
+test-reboot: $(REBOOT_ISO) $(USER_BINS) $(LIBC_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="rebooting" sh tools/qemu-test.sh reset \
 	    $(BUILD)/test-reboot-serial.log \
