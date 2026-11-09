@@ -21,7 +21,11 @@
  * - A woken thread goes back to the processor it last ran on if that
  *   one is idle, else to any idle processor, else to its last one.
  * - Idle processors steal runnable threads from the others, scanning
- *   from their right-hand neighbour.
+ *   from their right-hand neighbour. So does a busy one whose thread's
+ *   time slice ends with nothing as good queued locally, taking a thread
+ *   of at least the same priority: otherwise a processor could keep
+ *   running a thread of low standing while better or equal ones wait
+ *   behind another processor's work indefinitely.
  *
  * Scheduling classes (IRIX's fair-share time-share tree, real-time,
  * gang, batch, and the frame scheduler) are not here yet: every thread
@@ -57,7 +61,7 @@ static int runq_best_pri(const struct runq *);
 static struct kthread *runq_take(struct runq *, int, struct cpu_info *,
     int *);
 static struct cpu_info *sched_choose_cpu(struct kthread *);
-static int sched_steal(struct cpu_info *);
+static int sched_steal(struct cpu_info *, int);
 static void sched_finish(void);
 
 int
@@ -462,6 +466,7 @@ sched_tick(void)
         struct schedcpu *sc = &ci->ci_sched;
         struct kthread *kt = ci->ci_curthread;
         const struct sched_class *cl;
+        int steal = PRI_IDLE;
 
         if (!sched_running || kt == NULL)
                 return;
@@ -485,26 +490,38 @@ sched_tick(void)
                 if (runq_best_pri(&sc->sc_rq) >= kt->kt_pri) {
                         sc->sc_slice_expired = 1;
                         sc->sc_want_resched = 1;
+                } else if (ncpus > 1) {
+                        steal = kt->kt_pri;
                 }
         }
         thread_unlock(kt, 0);
+        if (steal != PRI_IDLE && sched_steal(ci, steal)) {
+                sc->sc_slice_expired = 1;
+                sc->sc_want_resched = 1;
+        }
 }
 
 /*
- * Called on the way out of an interrupt that arrived at spl0, with
- * interrupts disabled: switch if a reschedule is pending.
+ * Switch if a reschedule is pending. Called on the way out of an
+ * interrupt that arrived at spl0, with interrupts disabled, and on the
+ * way back to user mode (userret), with them enabled. The processor and
+ * its current thread are read at splhi: with interrupts enabled the
+ * caller could be preempted and moved between the two reads, and would
+ * then lock another processor's thread and switch itself out unlocked.
  */
 void
 sched_preempt_check(void)
 {
+        int s = splhi();
         struct cpu_info *ci = curcpu();
         struct schedcpu *sc = &ci->ci_sched;
         struct kthread *kt = ci->ci_curthread;
-        int s;
 
-        if (!sched_running || !sc->sc_want_resched || kt == NULL)
+        if (!sched_running || !sc->sc_want_resched || kt == NULL) {
+                splx(s);
                 return;
-        s = thread_lock(kt);
+        }
+        (void)thread_lock(kt);          /* at splhi already */
         kt->kt_state = KT_RUN;
         if (sc->sc_slice_expired)
                 kt->kt_flags |= KTF_YIELD;
@@ -515,11 +532,12 @@ sched_preempt_check(void)
 }
 
 /*
- * Take one runnable thread from another processor's queue onto ours.
- * Returns nonzero if one was moved. Called by the idle thread at splhi.
+ * Take one runnable thread of at least priority minpri from another
+ * processor's queue onto ours. Returns nonzero if one was moved. Called
+ * at splhi, by the idle thread or at the end of a time slice.
  */
 static int
-sched_steal(struct cpu_info *self)
+sched_steal(struct cpu_info *self, int minpri)
 {
         unsigned int n = ncpus;
 
@@ -528,13 +546,14 @@ sched_steal(struct cpu_info *self)
                 struct runq *rq;
                 struct kthread *kt;
 
-                if (ci == NULL || ci->ci_sched.sc_rq.rq_count == 0)
+                if (ci == NULL || ci->ci_sched.sc_rq.rq_count == 0 ||
+                    runq_best_pri(&ci->ci_sched.sc_rq) < minpri)
                         continue;
                 rq = &ci->ci_sched.sc_rq;
                 int busy = 0;
 
                 (void)spin_lock(&rq->rq_lock);
-                kt = runq_take(rq, PRI_MIN, self, &busy);
+                kt = runq_take(rq, minpri, self, &busy);
                 spin_unlock(&rq->rq_lock, 0);
                 if (kt == NULL)
                         continue;
@@ -560,7 +579,7 @@ sched_idle(void)
 
                 ci = curcpu();
                 if (ci->ci_sched.sc_rq.rq_count == 0)
-                        (void)sched_steal(ci);
+                        (void)sched_steal(ci, PRI_MIN);
                 if (ci->ci_sched.sc_rq.rq_count != 0) {
                         struct kthread *kt = ci->ci_curthread;
 

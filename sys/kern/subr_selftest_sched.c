@@ -42,6 +42,7 @@ int selftest_sched(void);
 
 /* Every test thread posts this when it finishes. */
 static struct sema done;
+static struct sema ready;
 static volatile uint32_t stop;
 
 static void
@@ -418,6 +419,66 @@ test_preemption(void)
         CHECK(late_wakeups == 0);
 }
 
+/*
+ * --- A busy processor takes over a thread stuck behind another's. ---
+ *
+ * Every processor is kept busy: processor 0 with a low-priority
+ * spinner, the others with high-priority ones. A thread of a priority
+ * in between, which last ran on processor 1, is then woken; it is
+ * queued there behind the spinner, and must be taken by processor 0 when
+ * its spinner's time slice ends.
+ */
+
+static struct sema steal_go;
+static volatile uint64_t steal_ran;
+
+static void
+steal_waiter(void *arg __unused)
+{
+        kthread_bind(KT_NOCPU);
+        vsema(&ready);
+        psema(&steal_go);
+        steal_ran = lbolt;
+        vsema(&done);
+}
+
+static void
+steal_spinner(void *arg __unused)
+{
+        while (!stop)
+                continue;
+        vsema(&done);
+}
+
+static void
+test_steal(void)
+{
+        unsigned int n = ncpus;
+        uint64_t woken, ran;
+
+        if (n < 2)
+                return;
+        stop = 0;
+        steal_ran = 0;
+        sema_init(&steal_go, 0, "selftest_steal");
+        (void)kthread_create_bound(steal_waiter, NULL, 20, "waiter", 1);
+        psema(&ready);
+        (void)kthread_create_bound(steal_spinner, NULL, 10, "low", 0);
+        for (unsigned int i = 1; i < n; i++)
+                (void)kthread_create_bound(steal_spinner, NULL, 30, "high",
+                    (int)i);
+        delay(2);
+        woken = lbolt;
+        vsema(&steal_go);
+        delay(4 * SCHED_SLICE);
+        ran = steal_ran;
+        stop = 1;
+        wait_done(n + 1);
+        printf("selftest: steal: waiting thread ran after %jd ticks\n",
+            ran != 0 ? (intmax_t)(ran - woken) : (intmax_t)-1);
+        CHECK(ran != 0);
+}
+
 /* --- Priority inheritance. --- */
 
 static struct mutex pi_mutex;
@@ -552,8 +613,6 @@ test_bind(void)
 }
 
 /* --- Scheduling classes. --- */
-
-static struct sema ready;
 
 /* Enter the class encoded in arg, report ready, and spin until stop. */
 #define CLASSARG(cls, param)    ((void *)(uintptr_t)(((cls) << 8) | (param)))
@@ -839,6 +898,7 @@ selftest_sched(void)
         test_mrlock();
         test_round_robin();
         test_preemption();
+        test_steal();
         test_priority_inheritance();
         test_spread();
         test_bind();

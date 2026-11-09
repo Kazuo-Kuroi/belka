@@ -190,7 +190,11 @@ Recorded 2026-11-07.
   its own stack and a context switch cannot do a TLB shootdown.
 - The boot context becomes **thread0**, bound to processor 0. Each
   processor has an **idle thread**; on secondary processors it is the
-  start-up context. Idle processors steal work from the others.
+  start-up context. Idle processors steal work from the others, and so
+  does a busy one whose thread's time slice ends with nothing as good
+  queued locally, taking a thread of at least that priority (without
+  that, a spinning thread could keep one processor while equal or better
+  threads waited behind another's work indefinitely).
 - **Priorities** 0-127, higher more urgent. One run queue per
   processor with a bitmap of non-empty priorities. Equal priorities
   share by a 10-tick slice; a preempted thread returns to the head of
