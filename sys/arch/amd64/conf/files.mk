@@ -11,6 +11,9 @@ MD_CFLAGS       := -mcmodel=kernel -mno-red-zone \
 MD_ASFLAGS      :=
 
 LDSCRIPT        := sys/arch/amd64/conf/kernel.ld
+KERNEL_MAP      := sys/arch/amd64/conf/kernel.map
+KERNEL_BEGIN_SRC := sys/arch/amd64/amd64/kernel_begin.S
+KERNEL_END_SRC  := sys/arch/amd64/amd64/kernel_end.S
 
 MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_clock.c \

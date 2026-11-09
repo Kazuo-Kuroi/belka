@@ -2,3 +2,7 @@
 	path = contrib/mlibc
 	url = https://github.com/Kazuo-Kuroi/mlibc.git
 	branch = belka
+[submodule "contrib/illumos-ld"]
+	path = contrib/illumos-ld
+	url = https://github.com/Kazuo-Kuroi/illumos-ld.git
+	branch = main

@@ -1,0 +1,42 @@
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-09
+# SPDX-License-Identifier: MIT
+#
+# Link map for the amd64 kernel, for the illumos link-editor (mapfile
+# version 2); kernel.ld is the GNU ld one. The kernel is linked in the
+# top 2 GB of the address space, as the Limine protocol requires, with
+# text, read-only data, and writable data in separate page-aligned
+# segments so that each can be mapped with the narrowest permissions.
+# The ELF and program headers are not loaded. kernel_begin.S and
+# kernel_end.S, linked first and last, mark the segments' bounds.
+#
+
+$mapfile_version 2
+
+HDR_NOALLOC;
+
+LOAD_SEGMENT text {
+	VADDR = 0xffffffff80000000;
+	ALIGN = 0x1000;
+	FLAGS = READ EXECUTE;
+	ASSIGN_SECTION {
+		FLAGS = ALLOC EXECUTE;
+	};
+};
+
+LOAD_SEGMENT rodata {
+	ALIGN = 0x1000;
+	FLAGS = READ;
+	ASSIGN_SECTION {
+		FLAGS = ALLOC !WRITE !EXECUTE;
+	};
+};
+
+LOAD_SEGMENT data {
+	ALIGN = 0x1000;
+	FLAGS = READ WRITE;
+	ASSIGN_SECTION {
+		FLAGS = ALLOC WRITE;
+	};
+};

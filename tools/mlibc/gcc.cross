@@ -5,6 +5,8 @@
 # Meson cross file: mlibc for Belka on amd64, built with gcc.
 #
 # g++ for a Linux host predefines _GNU_SOURCE in C++, which mlibc needs.
+# -fno-gnu-unique: the illumos link-editor does not know the
+# STB_GNU_UNIQUE binding g++ otherwise gives some template statics.
 
 [binaries]
 c = 'gcc'
@@ -14,7 +16,7 @@ strip = 'strip'
 
 [built-in options]
 c_args = ['-fno-pic']
-cpp_args = ['-fno-pic']
+cpp_args = ['-fno-pic', '-fno-gnu-unique']
 
 [host_machine]
 system = 'belka'

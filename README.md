@@ -10,13 +10,15 @@ Design decisions are recorded in
 
 ## Building
 
-Requirements: GNU make, GCC or Clang, GNU binutils, `xorriso`, `curl`,
-QEMU, and OVMF; for the C library, meson and ninja. See
-[doc/qemu-setup.md](doc/qemu-setup.md).
+Requirements: GNU make, GCC or Clang, GNU binutils, GNU m4, `xorriso`,
+`curl`, QEMU, and OVMF; for the C library, meson and ninja. See
+[doc/qemu-setup.md](doc/qemu-setup.md). Run `git submodule update
+--init` first: the link-editor and the C library are submodules.
 
 ```sh
 make                    # build build/amd64-gcc/belka
-make TOOLCHAIN=clang    # build with Clang (GNU ld links)
+make TOOLCHAIN=clang    # build with Clang
+make LINKER=gnu         # link with GNU ld instead of the illumos ld
 make run                # boot in QEMU with the serial console on stdio
 make test               # boot, run the self-tests, and report PASS/FAIL
 make test-fault         # boot, force a page fault, expect a clean panic
@@ -48,6 +50,10 @@ installed into `build/sysroot-$(TOOLCHAIN)`; `make mlibc` builds it
 alone. All the programs are installed in `/bin` on both test images,
 and the kernel runs them during `make test`. `make user-progs` builds
 them alone.
+Everything is linked by the illumos link-editor, from the
+`contrib/illumos-ld` submodule, which the build compiles for the host
+first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU
+ld instead, with its outputs kept apart.
 `SMP=n` and `MEM=size` set the guest's processors and memory.
 `make INLINE_ASM=no` builds the out-of-line fallbacks for every inline
 assembly primitive, which is what a compiler without GNU extensions
@@ -62,6 +68,9 @@ downloads a pinned, checksummed Limine release into `build/`.
 | `sys/vm` | physical pages, the page cache, address spaces, anonymous memory |
 | `usr/tests` | user-mode test programs and their tiny C library |
 | `contrib/mlibc` | the C library (a submodule) |
+| `contrib/illumos-ld` | the illumos link-editor (a submodule, CDDL) |
+| `usr/lib/crt` | start and end objects for programs the illumos link-editor links |
+| `tools/ld` | link maps for user programs |
 | `tools/mlibc`, `tools/abicheck` | mlibc's cross files, and its ABI check against the kernel |
 | `sys/libkern` | freestanding C library routines |
 | `sys/sys` | machine-independent headers (`<sys/...>`) |

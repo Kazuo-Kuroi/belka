@@ -9,11 +9,12 @@ QEMU, GCC, Clang, GNU make, and git are already installed. The following
 are still needed:
 
 ```sh
-sudo apt install ovmf xorriso mtools
+sudo apt install ovmf xorriso mtools m4
 ```
 
 - `ovmf`: UEFI firmware for QEMU (`/usr/share/OVMF/OVMF_CODE_4M.fd`).
 - `xorriso` and `mtools`: to build bootable ISO and FAT images.
+- `m4`: GNU m4, which the illumos link-editor's libelf build uses.
 
 ## KVM access
 

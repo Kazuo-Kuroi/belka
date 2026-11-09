@@ -10,6 +10,9 @@
 # Linker output
 *.ilk
 *.map
+# ... but not the link-editor's mapfiles, which are sources
+!tools/ld/*.map
+!sys/arch/*/conf/*.map
 *.exp
 
 # Precompiled Headers

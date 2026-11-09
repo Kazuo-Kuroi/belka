@@ -8,7 +8,9 @@
  * data, and writable data get separate page-aligned segments so that
  * each can be mapped with the narrowest permissions: kernel_start to
  * etext is executable, etext to erodata is read-only, and erodata to
- * kernel_end is writable.
+ * kernel_end is writable. Those symbols come from kernel_begin.S and
+ * kernel_end.S, linked first and last. This is the GNU ld map; the
+ * illumos link-editor uses kernel.map.
  */
 
 OUTPUT_FORMAT(elf64-x86-64)
@@ -24,33 +26,25 @@ PHDRS
 SECTIONS
 {
         . = 0xffffffff80000000;
-        kernel_start = .;
 
         .text : {
                 *(.text .text.*)
         } :text
 
         . = ALIGN(4096);
-        etext = .;
         .rodata : {
                 *(.rodata .rodata.*)
         } :rodata
 
         . = ALIGN(4096);
-        erodata = .;
         .data : {
                 *(.data .data.*)
         } :data
 
         .bss : {
-                bss_start = .;
                 *(.bss .bss.*)
                 *(COMMON)
-                bss_end = .;
         } :data
-
-        . = ALIGN(4096);
-        kernel_end = .;
 
         /DISCARD/ : {
                 *(.eh_frame .eh_frame_hdr)

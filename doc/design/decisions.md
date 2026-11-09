@@ -32,11 +32,11 @@ Recorded 2026-11-07.
 - Assembly uses AT&T syntax in `.S` files, so it builds with both the GNU
   assembler and Clang's integrated assembler.
 - **GNU make** is the build tool.
-- **Linker** (decided 2026-11-09): GNU ld links everything, whichever
-  compiler built it; lld is not used. The system's own link-editor is
-  to be the illumos one (`ld` and `libld`, from the SVR4 lineage
-  UnixWare's linker shares); if it cannot be made to work, another is
-  chosen then. mlibc's runtime linker remains the `ld.so`.
+- **Linker** (decided 2026-11-09): the illumos link-editor (`ld` and
+  `libld`, from the SVR4 lineage UnixWare's linker shares) links the
+  kernel and every user program, whichever compiler built them; see The
+  link-editor below. GNU ld remains available (`LINKER=gnu`); lld is
+  not used. mlibc's runtime linker remains the `ld.so`.
 - **Other licences:** code under a licence other than MIT, such as
   illumos's CDDL, may be used. It stays in its own clearly marked place
   (a separate repository like `contrib/mlibc`, or a directory named for
@@ -690,13 +690,14 @@ Recorded 2026-11-07.
   compiler as the kernel (`TOOLCHAIN`). For a bare ELF target Clang does
   not predefine `_GNU_SOURCE` in C++, as it does for Linux, so the Clang
   cross file passes it.
-- **Linking:** static only for now, with GNU ld run directly rather
-  than through the compiler driver. Programs link mlibc's `crt1.o` and
-  `crti.o`, the compiler's static start object (GCC's `crtbeginT.o` or
-  compiler-rt's `crtbegin`, which define `__dso_handle`), `libc.a`, the
-  compiler's run-time library (libgcc, or compiler-rt's builtins), its
-  end object, and `crtn.o`. Test images get copies stripped of debug
-  information.
+- **Linking:** static only for now, with the link-editor run directly
+  rather than through the compiler driver. Programs link mlibc's
+  `crt1.o` and `crti.o`, a start object, `libc.a`, the compiler's
+  run-time library (libgcc, or compiler-rt's builtins), an end object,
+  and `crtn.o`. With the illumos link-editor the start and end objects
+  are Belka's own (`usr/lib/crt`); with GNU ld they are the compiler's
+  (GCC's `crtbeginT.o` or compiler-rt's `crtbegin`). Test images get
+  copies stripped of debug information.
 - **ABI headers** (`abis/belka`) give the kernel's values and layouts:
   UnixWare error numbers, signal numbers and flags, `open` flags and
   `fcntl` commands, `waitsys` options, mapping flags, and the native
@@ -802,6 +803,64 @@ Recorded 2026-11-07.
   process-shared mutexes and condition variables, robust mutexes,
   freeing exited threads' stacks and TCBs (mlibc keeps them), and
   SIGWAITING for a many-to-many library.
+
+## The link-editor (2026-11-09)
+
+- **The illumos link-editor**, from the repository `illumos-ld`
+  (carried as the submodule `contrib/illumos-ld`): `ld`, `libld`,
+  `libelf`, `liblddbg`, `libconv`, and the `sgsmsg` tool, imported
+  unchanged from illumos-gate `d493fab2c163` under their own paths, with
+  Belka's changes as separate commits and a GNU make build for other
+  hosts in `port/`. It is CDDL, with the notices kept and a "Portions
+  Copyright" line in each file Belka changed; the build layer is MIT.
+- **It is built for the host** with `HOSTCC` (GCC or Clang) and GNU m4,
+  into `build/tools/illumos-ld`, before anything is linked. Solaris
+  interfaces the sources expect come from `port/compat`: types and
+  macros, Solaris threads over POSIX threads, `sysinfo` and
+  `resolvepath`, and illumos's ELF headers, linked in so that they
+  shadow only the host's matching ones. No Perl or Python is needed.
+- **Changes to libld**, each needed by a static, Limine-booted system
+  that illumos is not:
+  1. the debug stream is not initialized with `stderr`, which need not
+     be a constant;
+  2. TLS is allowed in static executables (illumos has none): every
+     access model relaxes to local-exec, as in a dynamic executable;
+  3. the `__tls_get_addr` call in a relaxed TLS sequence is dropped when
+     that function is defined locally, instead of being relocated over
+     the rewritten code;
+  4. static executables map their ELF and program headers, so that the
+     kernel can pass `AT_PHDR`;
+  5. a segment with a mapfile `VADDR` keeps its mapfile `ALIGN` (Limine
+     rejects alignment 0);
+  6. executables' segments get physical addresses equal to their
+     virtual ones (Limine loads by them);
+  7. initialization and finalization arrays are ordered by priority
+     (`.init_array.N`), as GNU ld does, which mlibc's start-up relies
+     on.
+- **The kernel** is linked with a mapfile (`kernel.map`, beside the GNU
+  `kernel.ld`). `kernel_begin.S` and `kernel_end.S`, linked first and
+  last with either linker, mark the segments' bounds (`kernel_start`,
+  `etext`, `erodata`, `kernel_end`); `tools/check-kernel.sh` checks after
+  every link that there are three page-aligned segments, R-X, R--, and
+  RW-, with physical addresses equal to virtual ones, and the symbols at
+  their bounds.
+- **Programs** are linked with `-dn` and `tools/ld/program.map`, which
+  makes their data non-executable, between `usr/lib/crt/crtbegin.o` and
+  `crtend.o`. Those mark the initialization arrays (the start labels in
+  sections of priority 0, so that the priority order puts them first)
+  and define `__dso_handle`, which GNU ld and the compiler's crtbegin
+  would otherwise provide; compiler-rt's crtbegin also has two
+  `.eh_frame` sections libld will not merge.
+- **mlibc changes:** static start-up finds the program headers in the
+  auxiliary vector, not through `__ehdr_start`, which only GNU ld and
+  lld define (a fallback remains); GNU IFUNCs are off, since libld does
+  not support them (the generic string functions are used); and GCC
+  builds it with `-fno-gnu-unique`, since libld does not know the
+  `STB_GNU_UNIQUE` binding.
+- **Not yet:** shared objects and a runtime linker for them; driving
+  the link-editor through the compiler drivers (an `x86_64-belka`
+  target); C++ name demangling in its messages; and a native `ld` on
+  Belka itself.
 
 ## File systems
 

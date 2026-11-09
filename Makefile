@@ -11,6 +11,8 @@
 #               fallback paths that a compiler without GNU inline
 #               assembly would use
 #   WERROR      yes to treat warnings as errors
+#   LINKER      illumos (default) or gnu: the link-editor for the
+#               kernel and user programs (mk/linker-*.mk)
 #   SMP         number of CPUs given to QEMU (default 4)
 #
 # Targets: all, iso, run, test, test-fault, test-apfault, test-stack,
@@ -19,18 +21,30 @@
 
 ARCH            ?= amd64
 TOOLCHAIN       ?= gcc
+LINKER          ?= illumos
 INLINE_ASM      ?= yes
 WERROR          ?= no
 SMP             ?= 4
 MEM             ?= 512M
 
+# Outputs that depend on the link-editor are kept apart for each.
+ifeq ($(LINKER),illumos)
+LDSUFFIX        :=
+else
+LDSUFFIX        := -$(LINKER)ld
+endif
+
 BUILD           := build/$(ARCH)-$(TOOLCHAIN)
 ifneq ($(INLINE_ASM),yes)
 BUILD           := $(BUILD)-noasm
 endif
+BUILD           := $(BUILD)$(LDSUFFIX)
+
+.DEFAULT_GOAL   := all
 
 include mk/toolchain-$(TOOLCHAIN).mk
 include sys/arch/$(ARCH)/conf/files.mk
+include mk/linker-$(LINKER).mk
 
 LIMINE_VERSION  := 11.2.1
 LIMINE_DIR      := build/limine-$(LIMINE_VERSION)
@@ -80,19 +94,24 @@ CFLAGS          := -std=c99 -pedantic $(WARNINGS) -O2 -g \
                    -fno-asynchronous-unwind-tables -fno-unwind-tables \
                    $(MD_CFLAGS) $(TC_CFLAGS) $(DEFINES) $(INCLUDES)
 ASFLAGS         := -g -fno-pic -fno-pie $(MD_ASFLAGS) $(TC_CFLAGS) $(DEFINES) $(INCLUDES)
-LDFLAGS         := -nostdlib -static -z max-page-size=0x1000 \
-                   -z noexecstack -T $(LDSCRIPT)
 
 SRCS            := $(MI_SRCS) $(MD_SRCS)
 OBJS            := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS)))
+
+# Linked first and last: they mark the kernel's segments (kernel_begin.S).
+KERNEL_BEGIN    := $(BUILD)/$(basename $(KERNEL_BEGIN_SRC)).o
+KERNEL_END      := $(BUILD)/$(basename $(KERNEL_END_SRC)).o
+KERNEL_OBJS     := $(KERNEL_BEGIN) $(OBJS) $(KERNEL_END)
 
 .PHONY: FORCE mlibc ext2-images user-progs all iso run test test-fault test-apfault test-stack test-uaf \
 	test-reboot test-all limine clean distclean
 
 all: $(KERNEL)
 
-$(KERNEL): $(OBJS) $(LDSCRIPT)
-	$(LD) $(LDFLAGS) -o $@ $(OBJS)
+$(KERNEL): $(KERNEL_OBJS) $(LDSCRIPT) $(KERNEL_MAP) $(LD_DEPS) \
+                tools/check-kernel.sh
+	$(LINK_KERNEL) $(KERNEL_OBJS)
+	sh tools/check-kernel.sh $@
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -102,7 +121,7 @@ $(BUILD)/%.o: %.S
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -MMD -MP -c -o $@ $<
 
--include $(OBJS:.o=.d)
+-include $(KERNEL_OBJS:.o=.d)
 
 limine: $(LIMINE_DIR)/.stamp
 
@@ -160,19 +179,26 @@ QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
 # kernel's own ABI headers and a tiny C library (usr/tests/lib), and put
 # in /bin on both ext2 images.
 USER_CC         ?= $(HOSTCC)
-USER_DIR        := build/user
+USER_DIR        := build/user$(LDSUFFIX)
+USER_OBJ        := build/user-obj
 USER_PROGS      := hello segv argtest utest sigtest lwptest
 USER_BINS       := $(addprefix $(USER_DIR)/,$(USER_PROGS))
 USER_CFLAGS     := -std=c99 -O2 -g -Wall -Wextra -Werror -ffreestanding \
                    -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
                    -Isys -Isys/arch/$(ARCH)/include
-USER_LDFLAGS    := -static -nostdlib -no-pie -Wl,--build-id=none \
-                   -Wl,-z,max-page-size=4096 -Wl,-z,noexecstack
-USER_LIB        := usr/tests/lib/crt0.S usr/tests/lib/libt.c
+USER_LIB        := $(USER_OBJ)/lib/crt0.o $(USER_OBJ)/lib/libt.o
 
-$(USER_DIR)/%: usr/tests/%.c $(USER_LIB) usr/tests/lib/libt.h
+$(USER_OBJ)/%.o: usr/tests/%.c usr/tests/lib/libt.h
+	@mkdir -p $(dir $@)
+	$(USER_CC) $(USER_CFLAGS) -c -o $@ $<
+
+$(USER_OBJ)/%.o: usr/tests/%.S
+	@mkdir -p $(dir $@)
+	$(USER_CC) $(USER_CFLAGS) -c -o $@ $<
+
+$(USER_BINS): $(USER_DIR)/%: $(USER_OBJ)/%.o $(USER_LIB) $(LD_DEPS)
 	@mkdir -p $(USER_DIR)
-	$(USER_CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_LIB) $<
+	$(LINK_PROGRAM) $(USER_LIB) $<
 
 # The C library: mlibc, from the contrib/mlibc submodule (the belka
 # branch of github.com/Kazuo-Kuroi/mlibc), built with meson and ninja
@@ -186,7 +212,7 @@ MLIBC_SRC       := contrib/mlibc
 MLIBC_BUILD     := build/mlibc-$(TOOLCHAIN)
 SYSROOT         := build/sysroot-$(TOOLCHAIN)
 MLIBC           := $(SYSROOT)/usr/lib/libc.a
-LIBC_DIR        := build/user-libc-$(TOOLCHAIN)
+LIBC_DIR        := build/user-libc-$(TOOLCHAIN)$(LDSUFFIX)
 LIBC_PROGS      := libctest threadtest
 LIBC_BINS       := $(addprefix $(LIBC_DIR)/,$(LIBC_PROGS))
 LIBC_DBGDIR     := $(LIBC_DIR)-debug
@@ -194,11 +220,15 @@ LIBC_DBGBINS    := $(addprefix $(LIBC_DBGDIR)/,$(LIBC_PROGS))
 LIBC_CFLAGS     := -std=c99 -O2 -g -Wall -Wextra -Werror -nostdinc \
                    -isystem $(SYSROOT)/usr/include -isystem $(CC_INCLUDE) \
                    -fno-pic -fno-pie -fno-stack-protector
-LIBC_LDFLAGS    := -static --build-id=none -z max-page-size=4096 \
-                   -z noexecstack
-LIBC_CRT0       := $(SYSROOT)/usr/lib/crt1.o $(SYSROOT)/usr/lib/crti.o \
-                   $(LIBC_CRTBEGIN)
-LIBC_CRTN       := $(LIBC_CRTEND) $(SYSROOT)/usr/lib/crtn.o
+LIBC_CRT0       := $(SYSROOT)/usr/lib/crt1.o $(SYSROOT)/usr/lib/crti.o
+LIBC_CRTN       := $(SYSROOT)/usr/lib/crtn.o
+
+# Belka's own crtbegin and crtend, for the illumos link-editor.
+CRT_DIR         := build/crt-$(TOOLCHAIN)
+
+$(CRT_DIR)/%.o: usr/lib/crt/%.S
+	@mkdir -p $(CRT_DIR)
+	$(LIBC_CC) -c -o $@ $<
 
 # ninja decides what to rebuild; installing only changed files leaves
 # libc.a's time alone when nothing did.
@@ -229,13 +259,14 @@ $(ABICHECK)/ok: tools/abicheck/kernel.c tools/abicheck/libc.c \
 	    tools/abicheck/libc.c
 	@touch $@
 
-# Linked with $(LD) itself rather than through the compiler driver, so
-# that both toolchains link the same way.
-$(LIBC_DBGBINS): $(LIBC_DBGDIR)/%: usr/tests/%.c $(MLIBC) $(ABICHECK)/ok
+# Linked with the link-editor itself rather than through the compiler
+# driver, so that both toolchains link the same way.
+$(LIBC_DBGBINS): $(LIBC_DBGDIR)/%: usr/tests/%.c $(MLIBC) $(ABICHECK)/ok \
+                $(PROGRAM_BEGIN) $(PROGRAM_END) $(LD_DEPS)
 	@mkdir -p $(LIBC_DBGDIR)
 	$(LIBC_CC) $(LIBC_CFLAGS) -c -o $@.o $<
-	$(LD) $(LIBC_LDFLAGS) -o $@ $(LIBC_CRT0) $@.o $(MLIBC) $(LIBC_RTLIB) \
-	    $(LIBC_CRTN)
+	$(LINK_PROGRAM) $(LIBC_CRT0) $(PROGRAM_BEGIN) $@.o $(MLIBC) \
+	    $(LIBC_RTLIB) $(PROGRAM_END) $(LIBC_CRTN)
 
 $(LIBC_BINS): $(LIBC_DIR)/%: $(LIBC_DBGDIR)/%
 	@mkdir -p $(LIBC_DIR)

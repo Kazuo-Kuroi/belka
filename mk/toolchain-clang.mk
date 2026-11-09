@@ -3,11 +3,10 @@
 # Created: 2026-11-07
 # SPDX-License-Identifier: MIT
 #
-# Clang, targeting a bare ELF platform, with the GNU linker (as for GCC).
+# Clang, targeting a bare ELF platform.
 #
 
 CC              := clang
-LD              := ld
 CC_INCLUDE      := $(shell $(CC) -print-file-name=include)
 TC_CFLAGS       := --target=x86_64-unknown-none-elf
 
