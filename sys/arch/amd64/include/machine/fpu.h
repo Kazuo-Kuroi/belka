@@ -27,6 +27,7 @@ void fpu_area_free(void *);
 void fpu_area_reset(void *);
 void fpu_save(void *);
 void fpu_restore(void *);
+void fpu_sanitize(void *);
 size_t fpu_area_size(void);
 
 /* fpusubr.S */

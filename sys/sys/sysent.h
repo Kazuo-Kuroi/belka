@@ -30,5 +30,9 @@ sy_call_t sys_chmod, sys_stat, sys_lstat, sys_access, sys_rmdir, sys_mkdir;
 sy_call_t sys_symlink, sys_readlink, sys_rename;
 /* vm_mman.c */
 sy_call_t sys_brk, sys_mmap, sys_munmap, sys_mprotect;
+/* kern_sig.c */
+sy_call_t sys_kill, sys_sigaction, sys_sigprocmask, sys_sigsuspend;
+sy_call_t sys_sigpending, sys_sigaltstack, sys_signal, sys_pause, sys_alarm;
+sy_call_t sys_context, sys_pgrpsys;
 
 #endif /* _SYS_SYSENT_H_ */

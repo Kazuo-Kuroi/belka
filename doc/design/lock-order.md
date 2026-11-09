@@ -32,6 +32,7 @@ Listed roughly from outermost to innermost.
 
 | Lock | Protects | Taken after | Notes |
 |---|---|---|---|
+| `p_siglock`, one per process (`sys/proc.h`) | the process's and its LWP's signal state | `proctree_lock` (a mutex) may be held | Taken from interrupts (alarm) too. A poster interrupts the LWP's sleep under it, so it ranks above the sync object locks; stopped LWPs sleep on `p_stopsv` with it. Never held while calling `untimeout()`, whose callout takes it. |
 | sync object locks: `m_lock`, `sv_lock`, `s_lock`, `mr_lock` (`kern/kern_mutex.c`, `kern_synch.c`, `kern_mrlock.c`) | the object's state and sleep queue | a caller's spin lock (`sv_wait`) | A sleeper drops the object's lock before taking its own `kt_lock`. A waker dequeues under it, then drops it before `wakeup_thread()`, so it never touches the object once the sleeper can run; only the mutex handoff takes the new owner's `kt_lock` under `m_lock`. |
 | `bc_lock` (`kern/vfs_bio.c`) | the buffer hash, free list, flags of every buffer, and counters | nothing | Never held across I/O; a buffer is marked busy and the lock dropped first. Waiters sleep on `bc_wait` with `sv_wait()`. |
 | `h_lock`, one per user address space (`arch/amd64/amd64/hat.c`) | that space's page tables | nothing | Taken before the node locks (table pages are allocated under it) and so before any `pc_lock`; never held across a TLB flush. |

@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/errno.h>
 #include <sys/kthread.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
@@ -31,6 +32,7 @@
 #include <machine/md_var.h>
 #include <machine/segments.h>
 #include <machine/tss.h>
+#include <machine/vmparam.h>
 
 #include <vm/as.h>
 #include <vm/hat.h>
@@ -177,15 +179,22 @@ md_set_return(struct lwp *l, uint64_t rv1, uint64_t rv2)
         l->l_tf->tf_rflags &= ~(uint64_t)PSL_C;
 }
 
-/* Set the calling LWP's private data pointer, the %fs base. */
-void
+/*
+ * Set the calling LWP's private data pointer, the %fs base. It must be
+ * a user address: a non-canonical one would fault in wrmsr.
+ */
+int
 md_set_private(struct lwp *l, uint64_t base)
 {
-        int s = splhi();
+        int s;
 
+        if (base >= VM_USER_MAX)
+                return EINVAL;
+        s = splhi();
         l->l_fsbase = base;
         wrmsr(MSR_FSBASE, base);
         splx(s);
+        return 0;
 }
 
 /*

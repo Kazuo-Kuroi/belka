@@ -370,7 +370,7 @@ exec_common(const char *path, struct execargs *ea)
             (sp = exec_stack(ea, &eh, phdr)) == 0) {
                 kmem_free(ph, EXEC_MAXPHDR * sizeof(*ph));
                 execargs_free(ea);
-                proc_fault(SIGKILL, 0);
+                proc_exit(CLD_KILLED, SIGKILL);
         }
         mutex_lock(&p->p_lock);
         p->p_brkbase = brk;
@@ -384,6 +384,7 @@ exec_common(const char *path, struct execargs *ea)
                 p->p_comm[i] = base[i];
         mutex_unlock(&p->p_lock);
         fd_close_exec(p);
+        sig_exec(p);
         md_setregs(l, eh.e_entry, sp);
         kmem_free(ph, EXEC_MAXPHDR * sizeof(*ph));
         execargs_free(ea);

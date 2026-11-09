@@ -108,6 +108,14 @@ struct kthread {
         struct kthread  *kt_sqnext;
         struct kthread  *kt_sqprev;
         struct mutex    *kt_blockedon;  /* mutex it waits for */
+        /*
+         * Interruptible sleeps: the lock of the object slept on, set and
+         * cleared under that lock, so that a signal can find the thread
+         * and take it off the queue; kt_sigpend says a signal is waiting.
+         */
+        struct spinlock *volatile kt_sqlock;
+        volatile int    kt_sigpend;
+        int             kt_interrupted;
         struct mutex    *kt_mutexes;    /* owned mutexes with waiters */
 
         vaddr_t         kt_stack;       /* stack top; 0 for the boot thread */

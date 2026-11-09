@@ -23,6 +23,8 @@
 
 #include <sys/errno.h>
 #include <sys/kmem.h>
+#include <sys/kthread.h>
+#include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/signal.h>
 #include <sys/systm.h>
@@ -87,11 +89,15 @@ static int
 run_parallel(void)
 {
         char *argv[] = { "utest", "/p", NULL };
+        char *sargv[] = { "sigtest", NULL };
         pid_t pids[NPARALLEL];
         int ok = 1;
 
+        /* utests and sigtests side by side. */
         for (int i = 0; i < NPARALLEL; i++) {
-                if (proc_spawn("/p/bin/utest", argv, NULL, &pids[i]) != 0) {
+                if (proc_spawn(i % 2 == 0 ? "/p/bin/utest" :
+                    "/p/bin/sigtest", i % 2 == 0 ? argv : sargv, NULL,
+                    &pids[i]) != 0) {
                         pids[i] = 0;
                         ok = 0;
                 }
@@ -161,6 +167,26 @@ test_vm(void)
         CHECK(anon_pages() == base);
 }
 
+/* A signal posted by the kernel ends a process that waits for one. */
+static void
+test_kernel_signal(void)
+{
+        char *argv[] = { "sigtest", "pause", NULL };
+        struct proc *p;
+        int c = -1, d = -1;
+        pid_t pid;
+
+        CHECK(proc_spawn("/p/bin/sigtest", argv, NULL, &pid) == 0);
+        delay(HZ / 5);
+        mutex_lock(&proctree_lock);
+        if ((p = proc_find_locked(pid)) != NULL)
+                psignal(p, SIGTERM);
+        mutex_unlock(&proctree_lock);
+        CHECK(p != NULL);
+        CHECK(proc_wait(pid, &c, &d) == 0 && c == CLD_KILLED &&
+            d == SIGTERM);
+}
+
 static size_t
 pages_in_use(void)
 {
@@ -177,6 +203,7 @@ selftest_proc(void)
         char *hello[] = { "hello", NULL };
         char *segv[] = { "segv", NULL };
         char *utest[] = { "utest", "/p", NULL };
+        char *sigtest[] = { "sigtest", NULL };
         size_t used1, used2, zone0[NPROCZONES];
         int zones_ok = 1;
 
@@ -191,6 +218,8 @@ selftest_proc(void)
         CHECK(run("/p/bin/segv", segv, CLD_KILLED, SIGSEGV));
         CHECK(run("/p/bin/nothing", hello, CLD_EXITED, 127));
         CHECK(run("/p/bin/utest", utest, CLD_EXITED, 0));
+        CHECK(run("/p/bin/sigtest", sigtest, CLD_EXITED, 0));
+        test_kernel_signal();
         CHECK(proc_wait(12345, &(int){ 0 }, &(int){ 0 }) == ECHILD);
 
         CHECK(run_parallel());

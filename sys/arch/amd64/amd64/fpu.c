@@ -18,6 +18,7 @@
 #include <stdint.h>
 
 #include <sys/systm.h>
+#include <sys/ucontext.h>
 
 #include <machine/cpufunc.h>
 #include <machine/fpu.h>
@@ -46,6 +47,7 @@ static int fpu_use_xsave;
 static uint64_t fpu_xcr0;
 static size_t fpu_size = 512;           /* FXSAVE's area */
 static void *fpu_template;              /* the initial state */
+static uint32_t fpu_mxcsr_mask = 0xffbf;        /* MXCSR bits allowed */
 
 void
 fpu_cpu_init(void)
@@ -79,16 +81,49 @@ fpu_init(void)
                 cpuid(0xd, 0, regs);
                 fpu_size = regs[1];
         }
-        if (fpu_size > PAGESIZE)
+        /* It must fit a page, and a ucontext_t's fpregs. */
+        if (fpu_size > PAGESIZE || fpu_size > FPREGS_SIZE)
                 panic("fpu_init: save area of %zu bytes", fpu_size);
 
         fpu_template = fpu_area_alloc();
         fpu_fninit();
         fpu_ldmxcsr(&mxcsr);
         fpu_save(fpu_template);
+        /* The FXSAVE image says which MXCSR bits may be set (offset 28). */
+        {
+                uint32_t mask;
+
+                memcpy(&mask, (char *)fpu_template + 28, sizeof(mask));
+                if (mask != 0)
+                        fpu_mxcsr_mask = mask;
+        }
         printf("fpu: %s, %zu-byte save area%s\n",
             fpu_use_xsave ? "xsave" : "fxsave", fpu_size,
             (fpu_xcr0 & XCR0_AVX) != 0 ? ", AVX" : "");
+}
+
+/*
+ * Make a save area from user space safe to load: an MXCSR or an XSAVE
+ * header the processor rejects would fault in the kernel. Only bits for
+ * enabled state components survive, in the standard (uncompacted) form.
+ */
+void
+fpu_sanitize(void *area)
+{
+        char *a = area;
+        uint32_t mxcsr;
+
+        memcpy(&mxcsr, a + 24, sizeof(mxcsr));
+        mxcsr &= fpu_mxcsr_mask;
+        memcpy(a + 24, &mxcsr, sizeof(mxcsr));
+        if (fpu_use_xsave) {
+                uint64_t bv;
+
+                memcpy(&bv, a + 512, sizeof(bv));
+                bv &= fpu_xcr0;
+                memcpy(a + 512, &bv, sizeof(bv));
+                memset(a + 520, 0, 56);         /* XCOMP_BV, reserved */
+        }
 }
 
 size_t

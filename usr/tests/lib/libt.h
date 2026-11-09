@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/ucontext.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 
@@ -77,6 +78,25 @@ int mprotect(void *, size_t, int);
 int uname(struct utsname *);
 long time(void);
 int lwp_private(void *);
+
+void __sigtramp(void);
+int sigaction(int, const struct sigaction *, struct sigaction *);
+void (*signal(int, void (*)(int)))(int);
+int sigprocmask(int, const sigset_t *, sigset_t *);
+int sigsuspend(const sigset_t *);
+int sigpending(sigset_t *);
+int sigaltstack(const stack_t *, stack_t *);
+int kill(pid_t, int);
+int pause(void);
+unsigned int alarm(unsigned int);
+int getcontext(ucontext_t *);
+int setcontext(const ucontext_t *);
+pid_t getpgrp(void);
+int setpgid(pid_t, pid_t);
+pid_t setsid(void);
+int sigemptyset(sigset_t *);
+int sigaddset(sigset_t *, int);
+int sigismember(const sigset_t *, int);
 
 size_t strlen(const char *);
 int strcmp(const char *, const char *);

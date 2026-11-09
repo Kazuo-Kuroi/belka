@@ -66,9 +66,14 @@ test_basics(void)
             strcmp(u.machine, "amd64") == 0);
         CHECK(time() > 1700000000L);
 
-        /* Errors come back with the carry flag set and errno in %rax. */
+        /*
+         * Errors come back with the carry flag set and errno in %rax. An
+         * unassigned number also raises SIGSYS, ignored here.
+         */
+        CHECK(signal(SIGSYS, SIG_IGN) != SIG_ERR);
         r = __sysc_cf(250, 0, &cf);
         CHECK(cf == 1 && r == EINVAL);
+        CHECK(signal(SIGSYS, SIG_DFL) == SIG_IGN);
         r = __sysc_cf(SYS_close, 99, &cf);
         CHECK(cf == 1 && r == EBADF);
         r = __sysc_cf(SYS_getpid, 0, &cf);

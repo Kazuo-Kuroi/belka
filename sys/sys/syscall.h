@@ -8,8 +8,9 @@
  * System call numbers. The native amd64 table uses the UnixWare numbers,
  * with arguments in %rdi, %rsi, %rdx, %r10, %r8, and %r9 and the number
  * in %rax; see doc/design/decisions.md for the return convention. Only
- * the calls implemented so far are listed; every other number returns
- * EINVAL, as an unassigned UnixWare slot does.
+ * the calls implemented so far are listed; every other number posts
+ * SIGSYS and returns EINVAL, as an unassigned UnixWare slot does (127,
+ * UnixWare's invsys, returns EINVAL alone).
  *
  * This header is shared with user programs and uses no kernel types.
  */
@@ -36,11 +37,16 @@
 #define SYS_lseek       19
 #define SYS_getpid      20
 #define SYS_getuid      24
+#define SYS_alarm       27
 #define SYS_fstat       28
+#define SYS_pause       29
 #define SYS_access      33
 #define SYS_sync        36
+#define SYS_kill        37
+#define SYS_pgrpsys     39
 #define SYS_dup         41
 #define SYS_getgid      47
+#define SYS_signal      48
 #define SYS_ioctl       54
 #define SYS_execve      59
 #define SYS_umask       60
@@ -51,6 +57,12 @@
 #define SYS_lstat       88
 #define SYS_symlink     89
 #define SYS_readlink    90
+#define SYS_sigprocmask 95
+#define SYS_sigsuspend  96
+#define SYS_sigaltstack 97
+#define SYS_sigaction   98
+#define SYS_sigpending  99
+#define SYS_context     100
 #define SYS_waitsys     107
 #define SYS_mmap        115
 #define SYS_mprotect    116

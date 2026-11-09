@@ -541,9 +541,81 @@ Recorded 2026-11-07.
     copy-on-write.
   - `test-fault` and `test-apfault` now require the panic they provoke,
     so an unrelated panic can no longer pass as the expected one.
-- **Not yet:** signals, multiple LWPs, dynamic linking, init and
+- **Not yet:** multiple LWPs, dynamic linking, init and
   sessions, device special files (the console is a private vnode),
   pipes, credentials beyond the kernel's, and resource limits.
+
+## Signals (2026-11-08)
+
+- **Numbers and flags** are UnixWare's: 34 signals (`SIGCLD` 18, `SIGSTOP`
+  23, `SIGCONT` 25, ...), the `sigaction` flag values, and the old
+  multiplexed `signal` call (48) with its sigset, sighold, sigrelse,
+  sigignore and sigpause bits. The structures (`sigset_t` of 128 bits,
+  `struct sigaction`, `stack_t`, `siginfo_t`, `ucontext_t`) use native
+  amd64 layouts.
+- **Posting** follows UnixWare: a pending signal is not posted again and
+  keeps its first `siginfo`; SIGCONT cancels pending stops and a stop
+  cancels a pending SIGCONT; ignored signals are discarded.
+- **Delivery** happens on every return to user mode (system call,
+  exception, interrupt). The LWP takes SIGKILL first, then the
+  highest-numbered pending signal it does not hold, as UnixWare's
+  `signext` does; at most one handler frame is built per return.
+  - The handler runs with its `sa_mask` and the signal itself held
+    (unless `SA_NODEFER`). `SA_RESETHAND` resets the action, except for
+    SIGILL, SIGTRAP and SIGPWR.
+  - Default actions: terminate, ignore (SIGCONT, SIGCLD, SIGPWR,
+    SIGWINCH, SIGURG, SIGWAITING, SIGLWP, SIGAIO), or stop (SIGSTOP,
+    SIGTSTP, SIGTTIN, SIGTTOU).
+  - There are no core files yet, so a fatal signal reports `CLD_KILLED`,
+    which is what UnixWare reports when no core is written.
+- **The handler frame** follows the psABI.
+  - The handler is called as `handler(sig, siginfo_t *, ucontext_t *)`
+    below the red zone or on the alternate stack. `siginfo` is passed
+    only with `SA_SIGINFO`, and the handler starts with clean FPU state.
+  - Its return address is the library trampoline registered as
+    `sigaction`'s fourth argument (after UnixWare's `p_sigactret`), or a
+    non-canonical value. The trampoline returns through `setcontext`
+    (call 100) with the context from %rbx.
+- **setcontext** validates everything it loads: user selectors, user-only
+  rflags bits, a user %rip and %fs base, and an FPU image cleaned of
+  any XSAVE header or MXCSR bits the processor would refuse.
+  `__lwp_private` checks its address the same way.
+- **Interrupted calls** return EINTR, or ERESTART (91) when the handler
+  has `SA_RESTART`; the library reissues the call, as UnixWare's does.
+  - A wait rescans its children before giving up, so the SIGCHLD of the
+    very child it waits for cannot hide that child's exit.
+  - A stop and continue during pause, sigsuspend or wait just resumes
+    the wait.
+- **Interruptible sleeps** (`sv_wait_sig`, `sv_wait_mutex_sig`) record
+  the object's lock, so a poster can take the sleeper off its queue.
+  - The sleeper re-checks for a signal after queueing itself, with full
+    barriers on both sides, so a signal arriving as it falls asleep is
+    never lost.
+  - Only objects that live as long as the sleeper's process are slept on
+    this way.
+- **Faults** raise their signals with `siginfo`. A page fault with no
+  mapping gives SIGSEGV `SEGV_MAPERR`, one on a protected page
+  `SEGV_ACCERR`, and an object error SIGBUS `BUS_OBJERR`; divide gives
+  SIGFPE `FPE_INTDIV`, and so on. A fault that is held or ignored gets
+  its default action back first.
+  - An unassigned system call number posts SIGSYS, then fails with
+    EINVAL (127, `invsys`, only fails).
+- **Job control:** stopped processes wait until SIGCONT or SIGKILL.
+  waitsys reports `CLD_STOPPED` and `CLD_CONTINUED` with `WSTOPPED` and
+  `WCONTINUED`.
+  - SIGCHLD follows UnixWare's two flags. Without `SA_NOCLDSTOP` the
+    parent hears of stops (process 0 starts that way and fork copies it).
+    SIGCHLD ignored, or `SA_NOCLDWAIT`, means no zombies, and any
+    zombies already present are freed.
+- **Also:** alarm and pause, sigsuspend, sigpending, sigaltstack,
+  getcontext and setcontext, kill to a process, a group, or everyone,
+  and `pgrpsys` (getpgrp, setpgrp, getsid, setsid, getpgid, setpgid).
+  exec resets caught signals and clears both SIGCHLD flags, as in
+  UnixWare.
+- **Not yet:** multi-LWP rules (per-LWP pending signals, sigwait),
+  `/proc` tracing, core files, terminals and orphaned process groups,
+  SIGXFSZ on EFBIG, and permission checks (every process is the
+  superuser).
 
 ## File systems
 

@@ -88,9 +88,16 @@ waitpid(pid_t pid, int *status, int options)
             WEXITED | options, 0, 0);
         if (r < 0)
                 return -1;
-        if (si.si_pid != 0 && status != NULL)
-                *status = si.si_code == CLD_EXITED ?
-                    (si.si_status & 0xff) << 8 : si.si_status & 0x7f;
+        if (si.si_pid != 0 && status != NULL) {
+                if (si.si_code == CLD_EXITED)
+                        *status = (si.si_status & 0xff) << 8;
+                else if (si.si_code == CLD_STOPPED)
+                        *status = (si.si_status & 0xff) << 8 | WSTOPFLG;
+                else if (si.si_code == CLD_CONTINUED)
+                        *status = WCONTFLG;
+                else
+                        *status = si.si_status & 0x7f;
+        }
         return si.si_pid;
 }
 
@@ -294,6 +301,119 @@ int
 lwp_private(void *p)
 {
         return (int)SYS1(SYS_lwpprivate, p);
+}
+
+/* Handlers return through __sigtramp, registered with every sigaction. */
+int
+sigaction(int sig, const struct sigaction *act, struct sigaction *oact)
+{
+        return (int)__sysc(SYS_sigaction, sig, (long)act, (long)oact,
+            (long)__sigtramp, 0, 0);
+}
+
+void (*
+signal(int sig, void (*fn)(int)))(int)
+{
+        long r;
+
+        /* Register the trampoline too, as UnixWare's library does. */
+        (void)__sysc(SYS_sigaction, sig, 0, 0, (long)__sigtramp, 0, 0);
+        r = SYS2(SYS_signal, sig, fn);
+        return r == -1 ? SIG_ERR : (void (*)(int))r;
+}
+
+int
+sigprocmask(int how, const sigset_t *set, sigset_t *oset)
+{
+        return (int)SYS3(SYS_sigprocmask, how, set, oset);
+}
+
+int
+sigsuspend(const sigset_t *set)
+{
+        return (int)SYS1(SYS_sigsuspend, set);
+}
+
+int
+sigpending(sigset_t *set)
+{
+        return (int)SYS2(SYS_sigpending, SIGPENDING_PENDING, set);
+}
+
+int
+sigaltstack(const stack_t *ss, stack_t *oss)
+{
+        return (int)SYS2(SYS_sigaltstack, ss, oss);
+}
+
+int
+kill(pid_t pid, int sig)
+{
+        return (int)SYS2(SYS_kill, pid, sig);
+}
+
+int
+pause(void)
+{
+        return (int)SYS0(SYS_pause);
+}
+
+unsigned int
+alarm(unsigned int secs)
+{
+        return (unsigned int)SYS1(SYS_alarm, secs);
+}
+
+/* getcontext is in crt0.S; these are the offsets it relies on. */
+typedef char uc_rip_offset[offsetof(ucontext_t,
+    uc_mcontext.gregs[REG_RIP]) == 192 ? 1 : -1];
+typedef char uc_rsp_offset[offsetof(ucontext_t,
+    uc_mcontext.gregs[REG_RSP]) == 216 ? 1 : -1];
+typedef char uc_rax_offset[offsetof(ucontext_t,
+    uc_mcontext.gregs[REG_RAX]) == 104 ? 1 : -1];
+
+int
+setcontext(const ucontext_t *uc)
+{
+        return (int)SYS2(SYS_context, SETCONTEXT, uc);
+}
+
+pid_t
+getpgrp(void)
+{
+        return (pid_t)SYS1(SYS_pgrpsys, 0);
+}
+
+int
+setpgid(pid_t pid, pid_t pgid)
+{
+        return (int)SYS3(SYS_pgrpsys, 5, pid, pgid);
+}
+
+pid_t
+setsid(void)
+{
+        return (pid_t)SYS1(SYS_pgrpsys, 3);
+}
+
+int
+sigemptyset(sigset_t *set)
+{
+        memset(set, 0, sizeof(*set));
+        return 0;
+}
+
+int
+sigaddset(sigset_t *set, int sig)
+{
+        set->__sigbits[(sig - 1) / 32] |= 1u << ((sig - 1) % 32);
+        return 0;
+}
+
+int
+sigismember(const sigset_t *set, int sig)
+{
+        return (set->__sigbits[(sig - 1) / 32] >> ((sig - 1) % 32)) & 1;
 }
 
 size_t

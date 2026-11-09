@@ -35,12 +35,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/errno.h>
 #include <sys/kthread.h>
 #include <sys/schedclass.h>
 #include <sys/spinlock.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
 
+#include <machine/atomic.h>
 #include <machine/cpu.h>
 #include <machine/intr.h>
 
@@ -114,6 +116,24 @@ sleepq_remove_first(struct sleepq *sq)
         kt->kt_sqprev = NULL;
         kt->kt_sleepq = NULL;
         return kt;
+}
+
+/* Take kt off sq, wherever it is. The object's lock is held. */
+void
+sleepq_remove(struct sleepq *sq, struct kthread *kt)
+{
+        if (kt->kt_sqprev != NULL)
+                kt->kt_sqprev->kt_sqnext = kt->kt_sqnext;
+        else
+                sq->sq_head = kt->kt_sqnext;
+        if (kt->kt_sqnext != NULL)
+                kt->kt_sqnext->kt_sqprev = kt->kt_sqprev;
+        else
+                sq->sq_tail = kt->kt_sqprev;
+        sq->sq_count--;
+        kt->kt_sqnext = NULL;
+        kt->kt_sqprev = NULL;
+        kt->kt_sleepq = NULL;
 }
 
 /*
@@ -228,6 +248,101 @@ sv_wait_mutex(struct sv *sv, struct mutex *m)
         spin_unlock(&sv->sv_lock, s);
         mutex_unlock(m);
         sleep_finish();
+}
+
+/*
+ * Interruptible waits. The sleeper records its object's lock in
+ * kt_sqlock while queued; sleep_interrupt() takes that lock, takes the
+ * thread off the queue, and wakes it with kt_interrupted set.
+ *
+ * A signal that arrives while the thread is falling asleep is not lost:
+ * the poster sets kt_sigpend before it looks at kt_sqlock, and the
+ * sleeper sets kt_sqlock before it looks at kt_sigpend, each with a full
+ * barrier in between, so at least one of them sees the other.
+ *
+ * Only objects that live as long as the sleeper's process may be slept
+ * on this way, since sleep_interrupt() may take the lock of an object
+ * the thread has just left.
+ */
+static int
+sv_sleep_sig(struct sv *sv, struct spinlock *lk, struct mutex *m, int s)
+{
+        struct kthread *kt = curthread;
+        int interrupted;
+
+        (void)spin_lock(&sv->sv_lock);
+        sleepq_insert(&sv->sv_waiters, kt, SQ_FIFO);
+        kt->kt_interrupted = 0;
+        kt->kt_sqlock = &sv->sv_lock;
+        membar_sync();
+        if (kt->kt_sigpend) {
+                sleepq_remove(&sv->sv_waiters, kt);
+                kt->kt_wchan = NULL;
+                kt->kt_sqlock = NULL;
+                spin_unlock(&sv->sv_lock, 0);
+                if (lk != NULL)
+                        spin_unlock(lk, 0);
+                splx(s);
+                if (m != NULL)
+                        mutex_unlock(m);
+                return EINTR;
+        }
+        spin_unlock(&sv->sv_lock, 0);
+        if (lk != NULL)
+                spin_unlock(lk, 0);
+        if (m != NULL) {
+                splx(s);
+                mutex_unlock(m);
+                s = splhi();
+        }
+        sleep_finish();
+        (void)spin_lock(&sv->sv_lock);
+        kt->kt_sqlock = NULL;
+        interrupted = kt->kt_interrupted;
+        spin_unlock(&sv->sv_lock, s);
+        return interrupted ? EINTR : 0;
+}
+
+/*
+ * sv_wait(), but a signal for the thread (kt_sigpend) ends the wait with
+ * EINTR. Returns 0 if woken normally.
+ */
+int
+sv_wait_sig(struct sv *sv, struct spinlock *lk, int s)
+{
+        return sv_sleep_sig(sv, lk, NULL, s);
+}
+
+int
+sv_wait_mutex_sig(struct sv *sv, struct mutex *m)
+{
+        return sv_sleep_sig(sv, NULL, m, splhi());
+}
+
+/*
+ * End kt's interruptible wait, if it is in one. Callable from any
+ * context; the caller may hold spin locks that rank above sync object
+ * locks (a process's signal lock).
+ */
+void
+sleep_interrupt(struct kthread *kt)
+{
+        struct spinlock *lk;
+        int s;
+
+        membar_sync();
+        if ((lk = kt->kt_sqlock) == NULL)
+                return;
+        s = spin_lock(lk);
+        if (kt->kt_sqlock == lk && kt->kt_sleepq != NULL) {
+                sleepq_remove(kt->kt_sleepq, kt);
+                kt->kt_interrupted = 1;
+                spin_unlock(lk, 0);
+                wakeup_thread(kt);
+                splx(s);
+                return;
+        }
+        spin_unlock(lk, s);
 }
 
 /* Wake one waiter. Returns 1 if there was one. */

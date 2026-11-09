@@ -6,7 +6,8 @@
 
 /*
  * Waiting for children, with the System V values: the old wait() status
- * word, and waitsys()'s id types, options, and siginfo codes.
+ * word, and waitsys()'s id types, options, and siginfo codes. waitsys()
+ * reports through a siginfo_t (<sys/signal.h>).
  */
 
 #ifndef _SYS_WAIT_H_
@@ -14,10 +15,13 @@
 
 #include <stdint.h>
 
+#include <sys/signal.h>
+
 /* waitsys() id types. */
 #define P_PID           0
 #define P_PPID          1
 #define P_PGID          2
+#define P_SID           3
 #define P_ALL           7
 
 /* waitsys() options. */
@@ -32,27 +36,19 @@
 #define CLD_EXITED      1
 #define CLD_KILLED      2
 #define CLD_DUMPED      3
+#define CLD_TRAPPED     4
+#define CLD_STOPPED     5
+#define CLD_CONTINUED   6
 
 /* The old status word. */
 #define WIFEXITED(s)    (((s) & 0xff) == 0)
 #define WEXITSTATUS(s)  (((s) >> 8) & 0xff)
 #define WIFSIGNALED(s)  (((s) & 0xff) != 0 && ((s) & 0xff00) == 0)
 #define WTERMSIG(s)     ((s) & 0x7f)
+#define WIFSTOPPED(s)   (((s) & 0xff) == 0x7f)
+#define WSTOPSIG(s)     (((s) >> 8) & 0xff)
+#define WSTOPFLG        0x7f    /* the low byte of a stopped status */
+#define WCONTFLG        0xffff  /* the status of a continued child */
 
-/*
- * What waitsys() reports. The layout is the native one, 128 bytes; the
- * members that signals need are added with signal delivery.
- */
-typedef struct siginfo {
-        int32_t         si_signo;
-        int32_t         si_code;
-        int32_t         si_errno;
-        int32_t         si_pad0;
-        int32_t         si_pid;
-        int32_t         si_uid;
-        int32_t         si_status;
-        int32_t         si_pad1;
-        uint8_t         si_pad[96];
-} siginfo_t;
 
 #endif /* _SYS_WAIT_H_ */

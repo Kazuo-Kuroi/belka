@@ -19,6 +19,7 @@
 
 #include <sys/errno.h>
 #include <sys/proc.h>
+#include <sys/spinlock.h>
 #include <sys/sysent.h>
 #include <sys/systm.h>
 #include <sys/vnode.h>
@@ -53,6 +54,16 @@ sys_fork(const uint64_t *args __unused, uint64_t *rv)
         mutex_unlock(&p->p_lock);
 
         cl = lwp_alloc(cp);
+        {
+                int s = spin_lock(&p->p_siglock);
+
+                /* The mask and alternate stack; nothing pending. */
+                cl->l_sigmask = l->l_sigmask;
+                cl->l_altsp = l->l_altsp;
+                cl->l_altsize = l->l_altsize;
+                cl->l_altflags = l->l_altflags;
+                spin_unlock(&p->p_siglock, s);
+        }
         lwp_start_stopped(cl, lwp_fork_return, NULL);
         md_lwp_fork(l, cl);
         md_set_return(cl, (uint64_t)p->p_pid, 1);

@@ -48,9 +48,15 @@ void md_lwp_free(struct lwp *);
 void md_setregs(struct lwp *, uint64_t, uint64_t);
 void md_lwp_fork(struct lwp *, struct lwp *);
 void md_set_return(struct lwp *, uint64_t, uint64_t);
-void md_set_private(struct lwp *, uint64_t);
+int md_set_private(struct lwp *, uint64_t);
 void md_syscall_return(struct trapframe *, int, uint64_t, uint64_t);
 void user_enter(struct trapframe *) __dead;
+struct siginfo;
+struct ucontext;
+int md_sendsig(struct lwp *, int, const struct siginfo *, uint64_t, uint64_t,
+    int, int, uint64_t);
+void md_getcontext(struct lwp *, struct ucontext *);
+int md_setcontext(struct lwp *, const struct ucontext *);
 void syscall(struct trapframe *);
 
 /* Symbols defined by the linker script and locore.S. */

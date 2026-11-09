@@ -85,6 +85,8 @@ proc_init(void)
         proc0.p_cred = kcred;
         proc0.p_cmask = 022;
         memcpy(proc0.p_comm, "sched", 6);
+        sig_proc_init(&proc0, NULL);
+        proc0.p_sigflags = PS_JCTL;
         VN_RELE(cons_vnode());          /* set it up now */
 }
 
@@ -95,7 +97,7 @@ proc_count(void)
 }
 
 /* The process with id pid, or NULL. proctree_lock is held. */
-static struct proc *
+struct proc *
 proc_find_locked(pid_t pid)
 {
         struct proc *p = pidhash[(unsigned int)pid % PIDHASH];
@@ -103,6 +105,16 @@ proc_find_locked(pid_t pid)
         while (p != NULL && p->p_pid != pid)
                 p = p->p_hnext;
         return p;
+}
+
+/* Call fn(p, arg) for every process but 0. proctree_lock is held. */
+void
+proc_iterate_locked(void (*fn)(struct proc *, void *), void *arg)
+{
+        for (unsigned int h = 0; h < PIDHASH; h++) {
+                for (struct proc *p = pidhash[h]; p != NULL; p = p->p_hnext)
+                        fn(p, arg);
+        }
 }
 
 struct proc *
@@ -134,6 +146,7 @@ proc_alloc(struct proc *parent)
         p->p_cred = parent->p_cred;
         p->p_cmask = parent->p_cmask;
         memcpy(p->p_comm, parent->p_comm, PSCOMSIZ);
+        sig_proc_init(p, parent);
 
         mutex_lock(&proctree_lock);
         do {
@@ -147,6 +160,8 @@ proc_alloc(struct proc *parent)
         p->p_parent = parent;
         p->p_sibling = parent->p_children;
         parent->p_children = p;
+        p->p_pgid = parent->p_pgid;
+        p->p_sid = parent->p_sid;
         mutex_unlock(&proctree_lock);
         (void)atomic_inc_32_nv(&nprocs);
         return p;
@@ -188,6 +203,7 @@ lwp_alloc(struct proc *p)
         memset(l, 0, sizeof(*l));
         l->l_proc = p;
         l->l_lwpid = 1;
+        l->l_altflags = SS_DISABLE;
         p->p_lwp = l;
         return l;
 }
@@ -330,6 +346,8 @@ proc_spawn(const char *path, char *const argv[], char *const envp[],
         (void)lwp_alloc(p);
         lwp_create(p->p_lwp, spawn_start, sp);
         mutex_lock(&proctree_lock);
+        /* A process the kernel starts leads a session of its own. */
+        p->p_pgid = p->p_sid = p->p_pid;
         p->p_stat = SRUN;
         mutex_unlock(&proctree_lock);
         *pidp = p->p_pid;
@@ -393,6 +411,7 @@ proc_exit(int code, int data)
         struct proc *c, *zombies = NULL;
         int s, nowait;
 
+        sig_cancel_alarm(p);
         fd_close_all(p);
         mutex_lock(&p->p_lock);
         cdir = p->p_cdir;
@@ -410,11 +429,17 @@ proc_exit(int code, int data)
         if (as != NULL)
                 as_free(as);
 
-        /* Detach the LWP: from here on this is a kernel thread. */
+        /*
+         * Detach the LWP: from here on this is a kernel thread. Posters
+         * see p_lwp gone under the signal lock and leave it alone.
+         */
+        s = spin_lock(&p->p_siglock);
+        p->p_lwp = NULL;
+        curthread->kt_sigpend = 0;
+        spin_unlock(&p->p_siglock, s);
         s = splhi();
         curthread->kt_lwp = NULL;
         splx(s);
-        p->p_lwp = NULL;
         lwp_free(l);
 
         mutex_lock(&proctree_lock);
@@ -434,11 +459,12 @@ proc_exit(int code, int data)
         p->p_wcode = code;
         p->p_wdata = data;
         p->p_stat = SZOMB;
-        nowait = (p->p_flags & P_NOWAIT) != 0;
+        nowait = (p->p_flags & P_NOWAIT) != 0 ||
+            sig_child_exit(p, code, data);
+        /* Wake the parent either way: a wait may now find no children. */
+        sv_broadcast(&p->p_parent->p_waitsv);
         if (nowait)
                 proc_unlink(p);
-        else
-                sv_broadcast(&p->p_parent->p_waitsv);
         mutex_unlock(&proctree_lock);
 
         /* Orphaned zombies were already off the hash's other lists. */
@@ -462,16 +488,3 @@ proc_exit(int code, int data)
         kthread_exit();
 }
 
-/*
- * A fault the process cannot survive. Without signal delivery yet, it
- * ends as if killed by sig, with a note on the console.
- */
-void
-proc_fault(int sig, uint64_t addr)
-{
-        struct proc *p = curproc;
-
-        printf("pid %d (%s): signal %d at %#jx; killed\n", p->p_pid,
-            p->p_comm, sig, (uintmax_t)addr);
-        proc_exit(CLD_KILLED, sig);
-}

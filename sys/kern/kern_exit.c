@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include <sys/errno.h>
+#include <sys/kthread.h>
 #include <sys/proc.h>
 #include <sys/signal.h>
 #include <sys/synch.h>
@@ -31,8 +32,11 @@ sys_exit(const uint64_t *args, uint64_t *rv __unused)
 }
 
 /*
- * Wait for a child matching idtype and id to exit. Returns 0 with its
- * process id (0 if WNOHANG and none has exited yet), code, and status.
+ * Wait for a child matching idtype and id to exit, or, as options ask,
+ * to stop or continue. Returns 0 with its process id (0 if WNOHANG and
+ * nothing has happened yet), code, and status. A signal ends the wait
+ * with EINTR, or ERESTART if its handler asked for restarts; a stop and
+ * continue of the waiter just goes back to waiting.
  */
 static int
 wait_common(int idtype, pid_t id, int options, pid_t *pidp, int *codep,
@@ -40,9 +44,9 @@ wait_common(int idtype, pid_t id, int options, pid_t *pidp, int *codep,
 {
         struct proc *p = curproc;
 
-        if (idtype != P_PID && idtype != P_ALL)
+        if (idtype != P_PID && idtype != P_PGID && idtype != P_ALL)
                 return EINVAL;
-        if ((options & WEXITED) == 0 ||
+        if ((options & (WEXITED | WTRAPPED | WSTOPPED | WCONTINUED)) == 0 ||
             (options & ~(WEXITED | WTRAPPED | WSTOPPED | WCONTINUED |
             WNOHANG | WNOWAIT)) != 0)
                 return EINVAL;
@@ -52,19 +56,40 @@ wait_common(int idtype, pid_t id, int options, pid_t *pidp, int *codep,
 
                 for (struct proc *c = p->p_children; c != NULL;
                     c = c->p_sibling) {
-                        if (idtype == P_PID && c->p_pid != id)
+                        if ((idtype == P_PID && c->p_pid != id) ||
+                            (idtype == P_PGID && c->p_pgid != id))
                                 continue;
                         found = 1;
-                        if (c->p_stat != SZOMB)
+                        if (c->p_stat == SZOMB && (options & WEXITED) != 0) {
+                                *pidp = c->p_pid;
+                                *codep = c->p_wcode;
+                                *datap = c->p_wdata;
+                                if ((options & WNOWAIT) != 0)
+                                        mutex_unlock(&proctree_lock);
+                                else
+                                        proc_reap_locked(c);
+                                return 0;
+                        }
+                        if (c->p_stat == SZOMB)
                                 continue;
-                        *pidp = c->p_pid;
-                        *codep = c->p_wcode;
-                        *datap = c->p_wdata;
-                        if ((options & WNOWAIT) != 0)
+                        if (c->p_wstop && (options & WSTOPPED) != 0) {
+                                *pidp = c->p_pid;
+                                *codep = CLD_STOPPED;
+                                *datap = c->p_stopsig;
+                                if ((options & WNOWAIT) == 0)
+                                        c->p_wstop = 0;
                                 mutex_unlock(&proctree_lock);
-                        else
-                                proc_reap_locked(c);
-                        return 0;
+                                return 0;
+                        }
+                        if (c->p_wcont && (options & WCONTINUED) != 0) {
+                                *pidp = c->p_pid;
+                                *codep = CLD_CONTINUED;
+                                *datap = SIGCONT;
+                                if ((options & WNOWAIT) == 0)
+                                        c->p_wcont = 0;
+                                mutex_unlock(&proctree_lock);
+                                return 0;
+                        }
                 }
                 if (!found) {
                         mutex_unlock(&proctree_lock);
@@ -75,7 +100,19 @@ wait_common(int idtype, pid_t id, int options, pid_t *pidp, int *codep,
                         *pidp = 0;
                         return 0;
                 }
-                sv_wait_mutex(&p->p_waitsv, &proctree_lock);
+                /*
+                 * A signal ends the wait only once the children have been
+                 * looked at again: the SIGCHLD of the very child awaited
+                 * must not hide its exit.
+                 */
+                if (curthread->kt_sigpend) {
+                        mutex_unlock(&proctree_lock);
+                        if (sig_sleep_check())
+                                return sig_restart(EINTR);
+                        mutex_lock(&proctree_lock);
+                        continue;
+                }
+                (void)sv_wait_mutex_sig(&p->p_waitsv, &proctree_lock);
                 mutex_lock(&proctree_lock);
         }
 }
@@ -87,7 +124,7 @@ sys_wait(const uint64_t *args __unused, uint64_t *rv)
         pid_t pid;
         int code, data, error;
 
-        if ((error = wait_common(P_ALL, 0, WEXITED, &pid, &code,
+        if ((error = wait_common(P_ALL, 0, WEXITED | WTRAPPED, &pid, &code,
             &data)) != 0)
                 return error;
         rv[0] = (uint64_t)pid;

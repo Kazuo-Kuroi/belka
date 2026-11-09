@@ -93,6 +93,8 @@ int mutex_owned(const struct mutex *);
 void sv_init(struct sv *, const char *);
 void sv_wait(struct sv *, struct spinlock *, int);
 void sv_wait_mutex(struct sv *, struct mutex *);
+int sv_wait_sig(struct sv *, struct spinlock *, int);
+int sv_wait_mutex_sig(struct sv *, struct mutex *);
 int sv_signal(struct sv *);
 int sv_broadcast(struct sv *);
 
@@ -111,10 +113,12 @@ void mrunlock(struct mrlock *);
 /* kern_synch.c: the sleep and wakeup core. */
 void sleepq_init(struct sleepq *);
 void sleepq_insert(struct sleepq *, struct kthread *, int);
+void sleepq_remove(struct sleepq *, struct kthread *);
 struct kthread *sleepq_remove_first(struct sleepq *);
 struct kthread *sleepq_remove_all(struct sleepq *);
 void sleep_finish(void);
 void wakeup_thread(struct kthread *);
+void sleep_interrupt(struct kthread *);
 int wakeup_threads(struct kthread *);
 
 #endif /* _SYS_SYNCH_H_ */

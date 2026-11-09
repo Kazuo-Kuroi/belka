@@ -9,10 +9,12 @@
  *
  * - A page fault in user mode, or in the kernel on a user address while
  *   a copy routine has set kt_onfault, is resolved through the process's
- *   address space. If it cannot be, a user fault ends the process as if
- *   by the signal the fault would raise (there is no signal delivery
- *   yet), and a kernel one resumes at the copy routine's recovery point.
- * - Any other exception in user mode ends the process the same way.
+ *   address space. If it cannot be, a user fault raises SIGSEGV or
+ *   SIGBUS with the address, and a kernel one resumes at the copy
+ *   routine's recovery point.
+ * - Any other exception in user mode raises its signal.
+ * - Every return to user mode passes through userret(), which takes a
+ *   pending reschedule and then acts on pending signals.
  * - Everything else, apart from what a self-test expects, ends in a
  *   panic after a register dump and a backtrace of the interrupted code.
  */
@@ -193,25 +195,46 @@ trap_backtrace(uint64_t rip, uint64_t rbp)
         }
 }
 
-/* The signal a user-mode exception raises. */
+/* The signal, and its si_code, that a user-mode exception raises. */
 static int
-trap_signal(uint64_t vector)
+trap_signal(uint64_t vector, int *codep)
 {
         switch (vector) {
         case DIVERR:
+                *codep = FPE_INTDIV;
+                return SIGFPE;
         case EXTERRFLT:
         case SIMDFLT:
+                *codep = FPE_FLTINV;
                 return SIGFPE;
         case SGLSTP:
+                *codep = TRAP_TRACE;
+                return SIGTRAP;
         case BPTFLT:
+                *codep = TRAP_BRKPT;
                 return SIGTRAP;
         case INVOPFLT:
+                *codep = ILL_ILLOPC;
                 return SIGILL;
         case ALIGNFLT:
+                *codep = BUS_ADRALN;
                 return SIGBUS;
         default:
+                *codep = SEGV_ACCERR;
                 return SIGSEGV;
         }
+}
+
+/*
+ * On the way back to user mode, with interrupts enabled: switch if a
+ * reschedule is due, then act on a pending signal.
+ */
+static void
+userret(void)
+{
+        sched_preempt_check();
+        if (curthread->kt_sigpend && curlwp != NULL)
+                sig_userret();
 }
 
 /*
@@ -245,7 +268,7 @@ trap_pagefault(struct trapframe *tf, int user)
         fc = p->p_as != NULL ? as_fault(p->p_as, va, rw) : FC_NOMAP;
         if (fc == FC_OK) {
                 if (user)
-                        sched_preempt_check();
+                        userret();
                 disable_intr();
                 return 1;
         }
@@ -254,7 +277,23 @@ trap_pagefault(struct trapframe *tf, int user)
                 tf->tf_rip = kt->kt_onfault;
                 return 1;
         }
-        proc_fault(fc == FC_OBJERR ? SIGBUS : SIGSEGV, va);
+        switch (fc) {
+        case FC_NOMAP:
+                trapsignal(SIGSEGV, SEGV_MAPERR, va);
+                break;
+        case FC_PROT:
+                trapsignal(SIGSEGV, SEGV_ACCERR, va);
+                break;
+        case FC_OBJERR:
+                trapsignal(SIGBUS, BUS_OBJERR, va);
+                break;
+        default:
+                trapsignal(SIGKILL, 0, va);
+                break;
+        }
+        userret();
+        disable_intr();
+        return 1;
 }
 
 /*
@@ -271,8 +310,13 @@ trap(struct trapframe *tf)
 
         if (vector >= NEXCEPTIONS) {
                 intr_dispatch(tf);
-                if ((tf->tf_rflags & PSL_I) != 0)
+                if (user) {
+                        enable_intr();
+                        userret();
+                        disable_intr();
+                } else if ((tf->tf_rflags & PSL_I) != 0) {
                         sched_preempt_check();
+                }
                 return;
         }
 
@@ -301,8 +345,13 @@ trap(struct trapframe *tf)
                 return;
         if (user && vector != NMIFLT && vector != MCEFLT &&
             vector != DBLFLT) {
+                int code, sig = trap_signal(vector, &code);
+
                 enable_intr();
-                proc_fault(trap_signal(vector), tf->tf_rip);
+                trapsignal(sig, code, tf->tf_rip);
+                userret();
+                disable_intr();
+                return;
         }
 
         name = (vector < NEXCEPTIONS) ? trap_names[vector] : "unknown trap";
@@ -338,5 +387,5 @@ syscall(struct trapframe *tf)
         error = syscall_dispatch(tf->tf_rax, args, rv);
         if (error != EJUSTRETURN)
                 md_syscall_return(tf, error, rv[0], rv[1]);
-        sched_preempt_check();
+        userret();
 }

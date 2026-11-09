@@ -11,8 +11,8 @@
  * Each handler gets the six argument registers and two return values,
  * preset to 0 and the caller's %rdx (as in UnixWare), and returns 0, an
  * errno value, or EJUSTRETURN if it has set the registers itself. A
- * number with no handler fails with EINVAL; UnixWare also posts SIGSYS,
- * which comes with signals.
+ * number with no handler posts SIGSYS to the caller and fails with
+ * EINVAL, as in UnixWare; 127, UnixWare's invsys, only fails.
  */
 
 #include <stddef.h>
@@ -21,6 +21,7 @@
 #include <sys/cred.h>
 #include <sys/errno.h>
 #include <sys/proc.h>
+#include <sys/signal.h>
 #include <sys/syscall.h>
 #include <sys/sysent.h>
 #include <sys/systm.h>
@@ -100,8 +101,7 @@ sys_uname(const uint64_t *args, uint64_t *rv __unused)
 static int
 sys_lwpprivate(const uint64_t *args, uint64_t *rv __unused)
 {
-        md_set_private(curlwp, args[0]);
-        return 0;
+        return md_set_private(curlwp, args[0]);
 }
 
 static int
@@ -171,12 +171,28 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_pwrite] = sys_pwrite,
         [SYS_ftruncate] = sys_ftruncate,
         [SYS_fork1] = sys_fork,
+        [SYS_alarm] = sys_alarm,
+        [SYS_pause] = sys_pause,
+        [SYS_kill] = sys_kill,
+        [SYS_pgrpsys] = sys_pgrpsys,
+        [SYS_signal] = sys_signal,
+        [SYS_sigprocmask] = sys_sigprocmask,
+        [SYS_sigsuspend] = sys_sigsuspend,
+        [SYS_sigaltstack] = sys_sigaltstack,
+        [SYS_sigaction] = sys_sigaction,
+        [SYS_sigpending] = sys_sigpending,
+        [SYS_context] = sys_context,
 };
+
+#define SYS_invsys      127
 
 int
 syscall_dispatch(uint64_t code, const uint64_t *args, uint64_t *rv)
 {
-        if (code >= NSYSCALL || sysent[code] == NULL)
+        if (code >= NSYSCALL || sysent[code] == NULL) {
+                if (code != SYS_invsys)
+                        psignal(curproc, SIGSYS);
                 return EINVAL;
+        }
         return sysent[code](args, rv);
 }
