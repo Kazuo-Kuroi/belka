@@ -201,15 +201,17 @@ $(USER_BINS): $(USER_DIR)/%: $(USER_OBJ)/%.o $(USER_LIB) $(LD_DEPS)
 	$(LINK_PROGRAM) $(USER_LIB) $<
 
 # The C library: mlibc, from the contrib/mlibc submodule (the belka
-# branch of github.com/Kazuo-Kuroi/mlibc), built with meson and ninja
-# and installed into a sysroot, with the same compiler as the kernel.
-# The first configure fetches mlibc's own subprojects (frigg and the
-# freestanding headers). Programs that use it are linked statically;
-# the test images get copies stripped of debug information.
-MESON           ?= meson
-NINJA           ?= ninja
+# branch of github.com/Kazuo-Kuroi/mlibc), built with muon and samurai
+# (C implementations of meson and ninja) and installed into a sysroot,
+# with the same compiler as the kernel. The first configure fetches
+# mlibc's own subprojects (frigg and the freestanding headers) with git.
+# Programs that use it are linked statically; the test images get
+# copies stripped of debug information.
+MUON            ?= muon
+SAMU            ?= samu
 MLIBC_SRC       := contrib/mlibc
-MLIBC_BUILD     := build/mlibc-$(TOOLCHAIN)
+MLIBC_BUILD     := build/mlibc-muon-$(TOOLCHAIN)
+MLIBC_A         := $(MLIBC_BUILD)/libc.a
 SYSROOT         := build/sysroot-$(TOOLCHAIN)
 MLIBC           := $(SYSROOT)/usr/lib/libc.a
 LIBC_DIR        := build/user-libc-$(TOOLCHAIN)$(LDSUFFIX)
@@ -230,18 +232,23 @@ $(CRT_DIR)/%.o: usr/lib/crt/%.S
 	@mkdir -p $(CRT_DIR)
 	$(LIBC_CC) -c -o $@ $<
 
-# ninja decides what to rebuild; installing only changed files leaves
-# libc.a's time alone when nothing did.
-$(MLIBC): FORCE
+# samu decides what to rebuild; libc.a's time changes only when it does.
+$(MLIBC_A): FORCE
 	@test -f $(MLIBC_SRC)/meson.build || { echo "$(MLIBC_SRC):" \
 	    "run git submodule update --init" >&2; exit 1; }
-	@test -f $(MLIBC_BUILD)/build.ninja || $(MESON) setup $(MLIBC_BUILD) \
-	    $(MLIBC_SRC) --cross-file tools/mlibc/$(TOOLCHAIN).cross \
-	    --prefix=/usr -Ddefault_library=static -Dbuildtype=debugoptimized \
-	    -Duse_freestnd_hdrs=enabled -Dlibgcc_dependency=false
-	$(NINJA) -C $(MLIBC_BUILD)
-	$(MESON) install -C $(MLIBC_BUILD) --destdir $(abspath $(SYSROOT)) \
-	    --only-changed --quiet
+	@test -f $(MLIBC_BUILD)/build.ninja || $(MUON) -C $(MLIBC_SRC) setup \
+	    -pcross:$(abspath tools/mlibc/$(TOOLCHAIN).cross) \
+	    -Dprefix=/usr -Ddefault_library=static -Dbuildtype=debugoptimized \
+	    -Duse_freestnd_hdrs=enabled -Dlibgcc_dependency=false \
+	    -Dsysdeps=belka $(abspath $(MLIBC_BUILD))
+	$(SAMU) -C $(MLIBC_BUILD)
+
+# muon installs every file again, so the sysroot is made afresh only
+# when libc.a was rebuilt; otherwise every program would be relinked.
+$(MLIBC): $(MLIBC_A)
+	rm -rf $(SYSROOT)
+	$(MUON) -C $(MLIBC_BUILD) install -d $(abspath $(SYSROOT))
+	@touch $@
 
 mlibc: $(MLIBC)
 

@@ -11,9 +11,10 @@ Design decisions are recorded in
 ## Building
 
 Requirements: GNU make, GCC or Clang, GNU binutils, GNU m4, `xorriso`,
-`curl`, QEMU, and OVMF; for the C library, meson and ninja. See
-[doc/qemu-setup.md](doc/qemu-setup.md). Run `git submodule update
---init` first: the link-editor and the C library are submodules.
+`curl`, QEMU, and OVMF; for the C library, muon (0.7 or later) and
+samurai. See [doc/qemu-setup.md](doc/qemu-setup.md). Run `git
+submodule update --init` first: the link-editor and the C library are
+submodules.
 
 ```sh
 make                    # build build/amd64-gcc/belka
@@ -43,9 +44,10 @@ User-mode test programs live in `usr/tests`. Most use a tiny C library
 in `usr/tests/lib` and are built with the host compiler (`USER_CC`,
 default `HOSTCC`) against the kernel's own ABI headers. `libctest` is
 built against mlibc, the C library, which comes from the `contrib/mlibc`
-submodule (`git submodule update --init`); building it needs meson and
-ninja (`MESON` and `NINJA` name them), and its first configure fetches
-mlibc's own subprojects. mlibc is built with the kernel's compiler and
+submodule (`git submodule update --init`); building it needs muon and
+samurai, C implementations of meson and ninja (`MUON` and `SAMU` name
+them), and its first configure fetches mlibc's own subprojects with
+git. mlibc is built with the kernel's compiler and
 installed into `build/sysroot-$(TOOLCHAIN)`; `make mlibc` builds it
 alone. All the programs are installed in `/bin` on both test images,
 and the kernel runs them during `make test`. `make user-progs` builds

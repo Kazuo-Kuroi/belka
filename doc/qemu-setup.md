@@ -16,6 +16,13 @@ sudo apt install ovmf xorriso mtools m4
 - `xorriso` and `mtools`: to build bootable ISO and FAT images.
 - `m4`: GNU m4, which the illumos link-editor's libelf build uses.
 
+The C library is built with muon and samurai, C implementations of
+meson and ninja, which must be on `PATH` as `muon` and `samu` (`MUON` and
+`SAMU` name them otherwise). Debian's `muon-meson` package (0.4) ignores
+cross files and cannot build it: muon 0.7 or later is needed, built from
+source (<https://muon.build>), as is samurai
+(<https://github.com/michaelforney/samurai>).
+
 ## KVM access
 
 The build user must be able to open `/dev/kvm`:

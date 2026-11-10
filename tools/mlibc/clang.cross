@@ -17,8 +17,10 @@ strip = 'strip'
 c_args = ['-fno-pic']
 cpp_args = ['-fno-pic', '-D_GNU_SOURCE']
 
+# muon accepts only the systems it knows here, so the system is
+# 'unknown' and the Makefile picks mlibc's sysdeps with -Dsysdeps=belka.
 [host_machine]
-system = 'belka'
+system = 'unknown'
 cpu_family = 'x86_64'
 cpu = 'x86_64'
 endian = 'little'

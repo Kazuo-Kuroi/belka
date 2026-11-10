@@ -42,8 +42,9 @@ Recorded 2026-11-07.
   (a separate repository like `contrib/mlibc`, or a directory named for
   the licence), keeps its files' licence and notices, and is never mixed
   into MIT files.
-- **Python** is avoided in the main build. Meson, which mlibc needs, is
-  the one exception for now.
+- **Python** is not used in the build (decided 2026-11-09). mlibc's
+  meson build runs under muon and samurai, C implementations of meson
+  and ninja.
 - **Style:** `CODING_STYLE.md`, with **8-space** indentation (the
   examples in that file are authoritative over its section 8 text).
 
@@ -683,9 +684,12 @@ Recorded 2026-11-07.
   so that it can be rebased onto later releases and offered upstream.
   It is mlibc's own code, under its MIT licence and copyright; the
   clean-room rules apply to the SVR4 and IRIX sources, not to it.
-- **Language:** mlibc is C++23 and builds with meson and ninja. That
-  stays inside mlibc; the kernel and Belka's own programs remain C99
-  and GNU make, which drives meson. mlibc builds with GCC and with
+- **Language:** mlibc is C++23 and builds with meson. That stays inside
+  mlibc; the kernel and Belka's own programs remain C99 and GNU make,
+  which runs mlibc's build with muon (0.7 or later: earlier versions
+  ignore cross files) and samurai. muon fetches mlibc's subprojects
+  with git and installs every file each time, so the sysroot is
+  installed afresh only when `libc.a` was rebuilt. mlibc builds with GCC and with
   Clang, each from a cross file in `tools/mlibc`, with the same
   compiler as the kernel (`TOOLCHAIN`). For a bare ELF target Clang does
   not predefine `_GNU_SOURCE` in C++, as it does for Linux, so the Clang
