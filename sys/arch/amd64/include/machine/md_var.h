@@ -49,6 +49,10 @@ void md_setregs(struct lwp *, uint64_t, uint64_t);
 void md_lwp_fork(struct lwp *, struct lwp *);
 void md_set_return(struct lwp *, uint64_t, uint64_t);
 int md_set_private(struct lwp *, uint64_t);
+
+/* The nanosecond clock, if the TSC is invariant (lapic.c). */
+extern int md_hrtime_ok;
+uint64_t md_hrtime(void);
 void md_syscall_return(struct trapframe *, int, uint64_t, uint64_t);
 void user_enter(struct trapframe *) __dead;
 struct siginfo;

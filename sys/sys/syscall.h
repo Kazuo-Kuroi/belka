@@ -45,9 +45,12 @@
 #define SYS_kill        37
 #define SYS_pgrpsys     39
 #define SYS_dup         41
+#define SYS_pipe        42
+#define SYS_times       43
 #define SYS_getgid      47
 #define SYS_signal      48
 #define SYS_ioctl       54
+#define SYS_fsync       58
 #define SYS_execve      59
 #define SYS_umask       60
 #define SYS_fcntl       62
@@ -57,6 +60,7 @@
 #define SYS_lstat       88
 #define SYS_symlink     89
 #define SYS_readlink    90
+#define SYS_fchmod      93
 #define SYS_sigprocmask 95
 #define SYS_sigsuspend  96
 #define SYS_sigaltstack 97
@@ -68,6 +72,8 @@
 #define SYS_mprotect    116
 #define SYS_munmap      117
 #define SYS_fchdir      120
+#define SYS_readv       121
+#define SYS_writev      122
 #define SYS_rename      134
 #define SYS_uname       135
 #define SYS_gettimeofday 171
@@ -92,6 +98,14 @@
 #define SYS_lwp_sema_post 208
 #define SYS_lwp_sema_trywait 209
 
-#define NSYSCALL        210     /* table size, as in UnixWare */
+/*
+ * Belka's own calls, for what UnixWare 2 does not have, from 210 on
+ * (after its last). The i386 personality has its own table.
+ */
+#define SYS_clock_gettime 210
+#define SYS_clock_getres 211
+#define SYS_yield       212
+
+#define NSYSCALL        213     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

@@ -17,6 +17,8 @@
 #include <sys/mman.h>
 #include <sys/signal.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/times.h>
 #include <sys/ucontext.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>

@@ -740,11 +740,11 @@ Recorded 2026-11-07.
   statuses, `execve`, `abort`, handlers, masks and pending signals, a
   fault handled with `longjmp`, the clocks, and `uname`. The process
   self-test runs it.
-- **Not yet:** shared libraries and the dynamic linker, `getcwd`,
-  pipes, terminals and `termios` with the System V values, the `*at`
-  calls relative to a directory descriptor, `chmod` and `chown`, a
-  monotonic clock, `sched_yield`, and the libt test programs moving
-  onto mlibc.
+- **Not yet:** shared libraries and the dynamic linker, terminals and
+  `termios` with the System V values, the `*at` calls relative to a
+  directory descriptor, `chown`, `poll`, named FIFOs, resource limits
+  (mlibc's `resource.h` is still Linux's), and the libt test programs
+  moving onto mlibc.
 
 ## POSIX threads (2026-11-09)
 
@@ -866,6 +866,56 @@ Recorded 2026-11-07.
   target); C++ name demangling in its messages; and a native `ld` on
   Belka itself.
 
+## Time, pipes, and file calls (2026-11-10)
+
+- **The high-resolution clock:** `gethrtime()` gives nanoseconds since
+  the clock started, from the invariant TSC, scaled by a 32-bit
+  multiplier and shift with the product split at 32 bits so that it
+  cannot overflow (plain C99, no 128-bit integers). A processor whose
+  TSC is not invariant falls back to the clock tick. Processors' TSCs
+  may differ slightly, so the latest value any processor read is kept
+  (compare-and-swap), and no read returns an earlier one.
+  `gethrestime()`, the time of day, is boot time plus `gethrtime()`, so
+  it too is fine-grained. QEMU's `-cpu max` leaves the invariant TSC
+  out; the test configuration asks for it (`QEMU_CPU`), and the qemu64
+  model tests the fallback.
+- **Clocks:** `clock_gettime` (210) and `clock_getres` (211), with the
+  POSIX clock numbers the C library uses: the time of day, monotonic
+  time (the raw, coarse, and boot-time ones are the same clock), and
+  the process's and the LWP's processor time. Resolution is 1 ns from
+  the TSC, else a tick; processor time is counted in ticks.
+- **Processor time:** a process's is its exited LWPs' ticks (`p_ticks`,
+  added as each exits) plus its live LWPs'; a reaped child's total is
+  added to its parent's `p_cticks`. `times` (UnixWare's 43) reports
+  them in ticks, all as user time for now, and returns the ticks since
+  boot; the C library's `sysconf(_SC_CLK_TCK)` is `HZ` (100).
+- **Timeouts** are rounded up to ticks and one tick added, since a
+  callout set for n ticks runs at the n-th tick boundary, which can be
+  most of a tick sooner; the nanosecond clock showed `nanosleep`
+  returning early.
+- **`sched_yield`** (212) lets other threads of the same priority run.
+- **Pipes** (`pipe`, UnixWare's 42, returning the two descriptors in
+  `%rax` and `%rdx`): one private `VFIFO` vnode (`sys/fs/fifofs`), opened
+  for reading on the first descriptor and for writing on the second
+  (POSIX pipes, not System V's two-way STREAMS ones). Its data is a
+  16 KB ring buffer; writes of up to `PIPE_BUF` (4096) bytes are atomic;
+  reading with no writer left is end of file; writing with no reader
+  sends `SIGPIPE` to the writing LWP and fails with `EPIPE`.
+  `O_NONBLOCK` makes a call that would wait fail with `EAGAIN`, and
+  `O_NDELAY` return 0, as in System V. Seeking on a pipe fails with
+  `ESPIPE`. Named FIFOs are to share the node.
+- **File calls with UnixWare's numbers:** `fsync` (58), `fchmod` (93),
+  and `readv` and `writev` (121, 122; at most 1024 vectors). The C
+  library also gained `chmod`.
+- **`getcwd`** is the C library's, walking up through `..` as System V's
+  does: each parent's entry with the child's device and inode names it,
+  and across a mount point every entry is examined, since a directory's
+  inode numbers are not those of what is mounted on it.
+- **A signal-return race fixed:** `setcontext` copied the new
+  floating-point state into the LWP's save area before disabling
+  interrupts, so a switch away in between saved the handler's live
+  registers over it. It now copies and loads with interrupts off.
+
 ## File systems
 
 1. **tmpfs**, for testing.
@@ -882,7 +932,9 @@ Recorded 2026-11-07.
   clear with two values in %rax and %rdx, or carry set with the errno in
   %rax (see User processes above).
 - **System call numbers and errno values** follow UnixWare where
-  practical.
+  practical. Belka's own calls, for what UnixWare 2 does not have, are
+  numbered from 210, after its last (2026-11-10); two use numbers it
+  left free (181 and 182, the address waits).
 - **Space is reserved** for a later UnixWare i386 ABI personality: its
   call gate, numbering, and structure layouts must remain implementable
   without renumbering the native table.

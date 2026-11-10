@@ -27,6 +27,7 @@
 #include <sys/errno.h>
 #include <sys/fcntl.h>
 #include <sys/file.h>
+#include <sys/kmem.h>
 #include <sys/proc.h>
 #include <sys/stat.h>
 #include <sys/synch.h>
@@ -59,15 +60,20 @@ uio_prefault(void *ubuf, size_t len, enum uio_rw rw)
         }
 }
 
+/*
+ * Read or write through fd, into or from the user's iovcnt areas iov
+ * (which the kernel holds), at the file's offset or, if positioned, at
+ * off. rv[0] gets the bytes moved; a partial transfer is a success.
+ */
 static int
-rdwr(int fd, void *ubuf, uint64_t len, off_t off, int positioned,
+rdwrv(int fd, struct iovec *iov, int iovcnt, off_t off, int positioned,
     enum uio_rw rw, uint64_t *rv)
 {
         struct proc *p = curproc;
         struct file *fp = fd_get(p, fd);
         struct vnode *vp;
-        struct iovec iov;
         struct uio uio;
+        uint64_t len = 0;
         int ioflag = 0, error;
 
         if (fp == NULL)
@@ -76,27 +82,36 @@ rdwr(int fd, void *ubuf, uint64_t len, off_t off, int positioned,
                 frele(fp);
                 return EBADF;
         }
-        if ((int64_t)len < 0) {
-                frele(fp);
-                return EINVAL;
+        for (int i = 0; i < iovcnt; i++) {
+                if ((int64_t)iov[i].iov_len < 0 ||
+                    len + iov[i].iov_len > (uint64_t)INT64_MAX) {
+                        frele(fp);
+                        return EINVAL;
+                }
+                len += iov[i].iov_len;
         }
         vp = fp->f_vnode;
-        if (positioned && (vp->v_type == VCHR || off < 0)) {
+        if (positioned && (vp->v_type == VCHR || vp->v_type == VFIFO ||
+            off < 0)) {
                 frele(fp);
-                return vp->v_type == VCHR ? ESPIPE : EINVAL;
+                return vp->v_type != VREG && vp->v_type != VDIR ? ESPIPE :
+                    EINVAL;
         }
         if (rw == UIO_WRITE && (fp->f_flag & FAPPEND) != 0 && !positioned)
                 ioflag |= IO_APPEND;
         if ((fp->f_flag & FSYNC) != 0)
                 ioflag |= IO_SYNC;
-        iov.iov_base = ubuf;
-        iov.iov_len = (size_t)len;
-        uio.uio_iov = &iov;
-        uio.uio_iovcnt = 1;
+        if ((fp->f_flag & FNONBLOCK) != 0)
+                ioflag |= IO_NONBLOCK;
+        else if ((fp->f_flag & FNDELAY) != 0)
+                ioflag |= IO_NDELAY;
+        uio.uio_iov = iov;
+        uio.uio_iovcnt = iovcnt;
         uio.uio_resid = (ssize_t)len;
         uio.uio_segflg = UIO_USERSPACE;
         uio.uio_rw = rw;
-        uio_prefault(ubuf, (size_t)len, rw);
+        for (int i = 0; i < iovcnt; i++)
+                uio_prefault(iov[i].iov_base, iov[i].iov_len, rw);
         if (!positioned)
                 mutex_lock(&fp->f_offlock);
         uio.uio_offset = positioned ? off : fp->f_offset;
@@ -111,6 +126,82 @@ rdwr(int fd, void *ubuf, uint64_t len, off_t off, int positioned,
         rv[0] = len - (uint64_t)uio.uio_resid;
         if (rv[0] != 0)
                 error = 0;
+        frele(fp);
+        return error;
+}
+
+static int
+rdwr(int fd, void *ubuf, uint64_t len, off_t off, int positioned,
+    enum uio_rw rw, uint64_t *rv)
+{
+        struct iovec iov;
+
+        iov.iov_base = ubuf;
+        iov.iov_len = (size_t)len;
+        return rdwrv(fd, &iov, 1, off, positioned, rw, rv);
+}
+
+#define IOV_MAX         1024    /* iovecs to readv() and writev() */
+
+/* readv() and writev(): fd, struct iovec *, count. */
+static int
+rdwr_vec(const uint64_t *args, enum uio_rw rw, uint64_t *rv)
+{
+        int iovcnt = (int)args[2], error;
+        struct iovec *iov;
+        size_t size;
+
+        if (iovcnt <= 0 || iovcnt > IOV_MAX)
+                return EINVAL;
+        size = (size_t)iovcnt * sizeof(*iov);
+        iov = kmem_alloc(size, KM_SLEEP);
+        if ((error = copyin((const void *)(uintptr_t)args[1], iov,
+            size)) == 0)
+                error = rdwrv((int)args[0], iov, iovcnt, 0, 0, rw, rv);
+        kmem_free(iov, size);
+        return error;
+}
+
+int
+sys_readv(const uint64_t *args, uint64_t *rv)
+{
+        return rdwr_vec(args, UIO_READ, rv);
+}
+
+int
+sys_writev(const uint64_t *args, uint64_t *rv)
+{
+        return rdwr_vec(args, UIO_WRITE, rv);
+}
+
+/* fsync(fd): write the file's data and attributes out. */
+int
+sys_fsync(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        int error;
+
+        if (fp == NULL)
+                return EBADF;
+        error = VOP_FSYNC(fp->f_vnode, fp->f_cred);
+        frele(fp);
+        return error;
+}
+
+/* fchmod(fd, mode) */
+int
+sys_fchmod(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        struct vattr va;
+        int error;
+
+        if (fp == NULL)
+                return EBADF;
+        memset(&va, 0, sizeof(va));
+        va.va_mask = AT_MODE;
+        va.va_mode = (mode_t)args[1] & 07777;
+        error = VOP_SETATTR(fp->f_vnode, &va, kcred);
         frele(fp);
         return error;
 }
@@ -153,6 +244,10 @@ sys_lseek(const uint64_t *args, uint64_t *rv)
 
         if (fp == NULL)
                 return EBADF;
+        if (fp->f_vnode->v_type == VFIFO) {
+                frele(fp);
+                return ESPIPE;
+        }
         mutex_lock(&fp->f_offlock);
         switch ((int)args[2]) {
         case SEEK_SET:

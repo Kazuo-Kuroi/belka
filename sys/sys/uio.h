@@ -38,6 +38,8 @@ struct uio {
 /* I/O flags to VOP_READ and VOP_WRITE. */
 #define IO_APPEND       0x0001
 #define IO_SYNC         0x0002
+#define IO_NONBLOCK     0x0004  /* O_NONBLOCK: EAGAIN rather than wait */
+#define IO_NDELAY       0x0008  /* O_NDELAY: return 0 rather than wait */
 
 /*
  * Move up to n bytes between the kernel buffer cp and the area uio

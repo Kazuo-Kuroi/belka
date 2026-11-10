@@ -23,12 +23,15 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/time.h>
 
+#include <machine/atomic.h>
 #include <machine/cpu.h>
 #include <machine/cpufunc.h>
 #include <machine/intr.h>
 #include <machine/intrdefs.h>
 #include <machine/lapic.h>
+#include <machine/md_var.h>
 #include <machine/vmparam.h>
 
 #include <vm/hat.h>
@@ -54,6 +57,19 @@
 #define ICR_SPIN_LIMIT  1000000
 
 uint64_t tsc_freq;
+
+/*
+ * The nanosecond clock (md_hrtime): TSC ticks since calibration, times
+ * hrtime_mult, shifted right by hrtime_shift. The multiplication is
+ * split at 32 bits so that it cannot overflow: with d = hi * 2^32 + lo,
+ * d * mult >> shift = (hi * mult << (32 - shift)) + (lo * mult >> shift).
+ * It is used only when the TSC is invariant (md_hrtime_ok); otherwise
+ * the clock tick is the only time source.
+ */
+static uint64_t hrtime_base;
+static uint32_t hrtime_mult;
+static unsigned int hrtime_shift;
+int md_hrtime_ok;
 
 static int x2apic;
 static volatile uint32_t *lapic_mmio;
@@ -323,11 +339,34 @@ clock_calibrate(void)
                 cpuid(0x80000007, 0, regs);
         else
                 regs[3] = 0;
+        if ((regs[3] & CPUID_80000007_EDX_INVTSC) != 0 && tsc_freq != 0) {
+                /* The largest shift (at most 32) whose multiplier fits. */
+                for (hrtime_shift = 32; hrtime_shift > 0; hrtime_shift--) {
+                        if ((NANOSEC << hrtime_shift) / tsc_freq <=
+                            UINT32_MAX)
+                                break;
+                }
+                hrtime_mult = (uint32_t)((NANOSEC << hrtime_shift) / tsc_freq);
+                hrtime_base = rdtsc();
+                membar_producer();
+                md_hrtime_ok = 1;
+        }
         printf("clock: TSC %ju.%03ju MHz%s, APIC timer %ju kHz, HZ %d\n",
             (uintmax_t)(tsc_freq / 1000000),
             (uintmax_t)(tsc_freq / 1000 % 1000),
             (regs[3] & CPUID_80000007_EDX_INVTSC) != 0 ? " invariant" : "",
             (uintmax_t)lapic_timer_count * HZ / 1000, HZ);
+}
+
+/* Nanoseconds since the clock was calibrated, from this processor's TSC. */
+uint64_t
+md_hrtime(void)
+{
+        uint64_t d = rdtsc() - hrtime_base;
+        uint64_t hi = d >> 32, lo = d & UINT32_MAX;
+
+        return ((hi * hrtime_mult) << (32 - hrtime_shift)) +
+            ((lo * hrtime_mult) >> hrtime_shift);
 }
 
 /* Start the calling processor's periodic tick. */

@@ -29,6 +29,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_mutex.c \
                    sys/kern/kern_sched.c \
                    sys/kern/kern_sig.c \
+                   sys/kern/kern_time.c \
                    sys/kern/kern_proc.c \
                    sys/kern/kern_spinlock.c \
                    sys/kern/kern_syscall.c \
@@ -52,6 +53,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/fs/ext2fs/ext2fs_subr.c \
                    sys/fs/ext2fs/ext2fs_vfsops.c \
                    sys/fs/ext2fs/ext2fs_vnops.c \
+                   sys/fs/fifofs/fifo_vnops.c \
                    sys/fs/tmpfs/tmpfs_vfsops.c \
                    sys/fs/tmpfs/tmpfs_vnops.c \
                    sys/kern/subr_prf.c \

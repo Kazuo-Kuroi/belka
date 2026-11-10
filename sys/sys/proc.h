@@ -130,6 +130,15 @@ struct proc {
         struct as       *p_as;
         struct cred     *p_cred;
 
+        /*
+         * Processor time in clock ticks, all counted as user time for
+         * now: of the LWPs that have exited (p_siglock; the live ones
+         * hold theirs in kt_ticks), and of the children reaped
+         * (proctree_lock).
+         */
+        uint64_t        p_ticks;
+        uint64_t        p_cticks;
+
         /* LWPs, under p_siglock. */
         struct lwp      *p_lwps;        /* live */
         int             p_nlwp;
@@ -209,6 +218,8 @@ void lwp_rendezvous_done(void);
 void proc_reap_locked(struct proc *);
 int proc_spawn(const char *, char *const[], char *const[], pid_t *);
 int proc_wait(pid_t, int *, int *);
+/* kern_time.c */
+uint64_t proc_ticks(struct proc *);
 void proc_exit(int, int) __dead;
 unsigned int proc_count(void);
 

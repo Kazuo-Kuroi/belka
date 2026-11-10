@@ -163,8 +163,12 @@ $(MKDISK): tools/mkdisk.c
 $(DISK): $(MKDISK)
 	$(MKDISK) $@
 
+# The guest's processor: everything the host offers, with an invariant
+# TSC, which Belka's nanosecond clock needs (QEMU leaves it out of
+# "max"); QEMU_CPU=qemu64 tests the clock-tick fallback.
 QEMU            ?= qemu-system-x86_64
-QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu max -smp $(SMP) -m $(MEM) \
+QEMU_CPU        ?= max,+invtsc
+QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu $(QEMU_CPU) -smp $(SMP) -m $(MEM) \
                    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
                    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
                    -drive file=$(DISK),if=none,id=vd0,format=raw \

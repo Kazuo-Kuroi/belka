@@ -953,7 +953,10 @@ lwp_timeout_fire(void *arg)
 
 /*
  * Copy in a relative timeout (a timespec of two int64_t) and convert
- * it to clock ticks, rounding up.
+ * it to clock ticks: rounded up, and one more, since a callout set for
+ * n ticks runs at the n-th tick boundary, which may be all but a tick
+ * sooner, and the wait must last at least the time given. A zero
+ * timeout stays zero: no wait.
  */
 int
 lwp_timeout_ticks(uint64_t uts, long *ticks)
@@ -969,6 +972,8 @@ lwp_timeout_ticks(uint64_t uts, long *ticks)
         if (ts[0] > INT32_MAX)
                 ts[0] = INT32_MAX;
         *ticks = (long)(ts[0] * HZ + (ts[1] * HZ + 999999999) / 1000000000);
+        if (*ticks > 0)
+                (*ticks)++;
         return 0;
 }
 

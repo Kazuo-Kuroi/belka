@@ -225,6 +225,7 @@ lwp_exit(void)
         *link = l->l_next;
         p->p_nlwp--;
         p->p_lwpleaving++;
+        p->p_ticks += curthread->kt_ticks;
         zombie = (l->l_flags & (LW_DETACHED | LW_DESTROY)) == 0 &&
             (p->p_lwpflags & PL_SINGLE) == 0;
         /*

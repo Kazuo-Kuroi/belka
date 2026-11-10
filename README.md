@@ -56,7 +56,9 @@ Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU
 ld instead, with its outputs kept apart.
-`SMP=n` and `MEM=size` set the guest's processors and memory.
+`SMP=n` and `MEM=size` set the guest's processors and memory, and
+`QEMU_CPU` its processor model (default `max,+invtsc`: Belka's
+nanosecond clock needs an invariant TSC).
 `make INLINE_ASM=no` builds the out-of-line fallbacks for every inline
 assembly primitive, which is what a compiler without GNU extensions
 would use. `WERROR=yes` turns warnings into errors. The first ISO build

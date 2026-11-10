@@ -8,8 +8,9 @@
  * The C library test: a program built against mlibc, checking that
  * the library's view of the system matches the kernel's: start-up and
  * the environment, the heap, stdio on files and directories, errno,
- * processes and wait statuses, signals and handlers, time, and the
- * thread pointer.
+ * processes and wait statuses, signals and handlers, time, the thread
+ * pointer, the clocks and processor time, pipes, vectored I/O, and
+ * getcwd().
  *
  * usage: libctest dir, where dir holds bin/ and is writable. Exits with
  * the number of failed checks.
@@ -20,6 +21,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <sched.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdint.h>
@@ -29,6 +32,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/times.h>
+#include <sys/uio.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -354,6 +359,312 @@ test_misc(void)
         CHECK(&errno != NULL);
 }
 
+static long
+mono_ms(void)
+{
+        struct timespec ts;
+
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static long
+cpu_ms(void)
+{
+        struct timespec ts;
+
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+        return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Spin until this process has used ms more of processor time. */
+static void
+burn_cpu(long ms)
+{
+        long t0 = mono_ms(), c0 = cpu_ms();
+
+        do {
+                for (volatile int i = 0; i < 100000; i++)
+                        continue;
+        } while (cpu_ms() - c0 < ms && mono_ms() - t0 < 20000);
+}
+
+/* The clocks, sleeping, processor time, and sched_yield(). */
+static void
+test_clocks(void)
+{
+        struct timespec res, a, b, req = { 0, 30000000 };
+        struct timeval tv;
+        struct tms t0, t1;
+        clock_t e0, e1, c0;
+        int ok = 1, status = -1;
+        pid_t pid;
+        long t;
+
+        /* 1 ns from an invariant TSC, else a clock tick. */
+        CHECK(clock_getres(CLOCK_MONOTONIC, &res) == 0);
+        CHECK(res.tv_sec == 0 &&
+            (res.tv_nsec == 1 || res.tv_nsec == 10000000));
+        /* At 1 ns, reads a few microseconds apart differ. */
+        if (res.tv_nsec == 1) {
+                int distinct = 0;
+
+                clock_gettime(CLOCK_MONOTONIC, &a);
+                for (int i = 0; i < 1000; i++) {
+                        clock_gettime(CLOCK_MONOTONIC, &b);
+                        if (b.tv_nsec != a.tv_nsec || b.tv_sec != a.tv_sec)
+                                distinct++;
+                        a = b;
+                }
+                CHECK(distinct > 100);
+        }
+        CHECK(clock_getres(CLOCK_PROCESS_CPUTIME_ID, &res) == 0 &&
+            res.tv_sec == 0 && res.tv_nsec == 10000000);
+        CHECK(clock_gettime(99, &a) == -1 && errno == EINVAL);
+
+        /* Monotonic: never earlier than the read before. */
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        for (int i = 0; i < 10000; i++) {
+                clock_gettime(CLOCK_MONOTONIC, &b);
+                if (b.tv_sec < a.tv_sec ||
+                    (b.tv_sec == a.tv_sec && b.tv_nsec < a.tv_nsec))
+                        ok = 0;
+                a = b;
+        }
+        CHECK(ok);
+        CHECK(clock_gettime(CLOCK_BOOTTIME, &b) == 0 && b.tv_sec >= a.tv_sec);
+
+        /* The time of day agrees with gettimeofday(). */
+        CHECK(clock_gettime(CLOCK_REALTIME, &a) == 0 &&
+            gettimeofday(&tv, NULL) == 0);
+        CHECK(tv.tv_sec - a.tv_sec <= 1 && tv.tv_sec >= a.tv_sec);
+
+        t = mono_ms();
+        CHECK(nanosleep(&req, NULL) == 0);
+        t = mono_ms() - t;
+        CHECK(t >= 30 && t < 2000);
+
+        /* Processor time: this process's, an LWP's, and a child's. */
+        e0 = times(&t0);
+        c0 = clock();
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a);
+        burn_cpu(100);
+        e1 = times(&t1);
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &b);
+        CHECK(e0 != (clock_t)-1 && e1 >= e0);
+        CHECK(t1.tms_utime - t0.tms_utime >= 8);
+        CHECK(clock() - c0 >= 80000);
+        CHECK(b.tv_sec * 1000 + b.tv_nsec / 1000000 -
+            (a.tv_sec * 1000 + a.tv_nsec / 1000000) >= 80);
+        CHECK(sysconf(_SC_CLK_TCK) == 100);
+
+        pid = fork();
+        if (pid == 0) {
+                burn_cpu(100);
+                _exit(0);
+        }
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
+        times(&t1);
+        CHECK(t1.tms_cutime - t0.tms_cutime >= 8);
+
+        CHECK(sched_yield() == 0);
+}
+
+static volatile int got_sigpipe;
+
+static void
+on_sigpipe(int sig)
+{
+        (void)sig;
+        got_sigpipe++;
+}
+
+/* Read exactly n bytes, or fewer at end of file. */
+static ssize_t
+read_full(int fd, void *buf, size_t n)
+{
+        size_t done = 0;
+
+        while (done < n) {
+                ssize_t r = read(fd, (char *)buf + done, n - done);
+
+                if (r <= 0)
+                        return r < 0 ? r : (ssize_t)done;
+                done += (size_t)r;
+        }
+        return (ssize_t)done;
+}
+
+/* Pipes: data, end of file, EPIPE, non-blocking ends, and atomic writes. */
+static void
+test_pipes(void)
+{
+        static char big[100000], rec[PIPE_BUF];
+        char buf[64];
+        struct stat st;
+        struct iovec iov[3];
+        int fds[2], status = -1, ok, flags;
+        ssize_t n, total;
+        pid_t pid, kids[2];
+
+        CHECK(pipe(fds) == 0);
+        CHECK(write(fds[1], "hello", 5) == 5);
+        CHECK(read(fds[0], buf, sizeof(buf)) == 5 &&
+            memcmp(buf, "hello", 5) == 0);
+        CHECK(fstat(fds[0], &st) == 0 && S_ISFIFO(st.st_mode));
+        CHECK(lseek(fds[0], 0, SEEK_SET) == -1 && errno == ESPIPE);
+        CHECK(pread(fds[0], buf, 1, 0) == -1 && errno == ESPIPE);
+        CHECK(write(fds[0], "x", 1) == -1 && errno == EBADF);
+
+        /* Vectored I/O through it. */
+        iov[0].iov_base = "ab";
+        iov[0].iov_len = 2;
+        iov[1].iov_base = "cde";
+        iov[1].iov_len = 3;
+        iov[2].iov_base = "f";
+        iov[2].iov_len = 1;
+        CHECK(writev(fds[1], iov, 3) == 6);
+        memset(buf, 0, sizeof(buf));
+        iov[0].iov_base = buf;
+        iov[0].iov_len = 4;
+        iov[1].iov_base = buf + 10;
+        iov[1].iov_len = 10;
+        CHECK(readv(fds[0], iov, 2) == 6);
+        CHECK(memcmp(buf, "abcd", 4) == 0 && memcmp(buf + 10, "ef", 2) == 0);
+        CHECK(fsync(fds[0]) == -1 && errno == EINVAL);
+
+        CHECK(close(fds[1]) == 0);
+        CHECK(read(fds[0], buf, sizeof(buf)) == 0);
+        close(fds[0]);
+
+        /* No reader: SIGPIPE, then EPIPE. */
+        CHECK(signal(SIGPIPE, on_sigpipe) != SIG_ERR);
+        CHECK(pipe(fds) == 0);
+        close(fds[0]);
+        got_sigpipe = 0;
+        CHECK(write(fds[1], "x", 1) == -1 && errno == EPIPE);
+        CHECK(got_sigpipe == 1);
+        close(fds[1]);
+        signal(SIGPIPE, SIG_DFL);
+
+        /* Non-blocking: EAGAIN on an empty pipe and on a full one. */
+        CHECK(pipe(fds) == 0);
+        flags = fcntl(fds[0], F_GETFL);
+        CHECK(fcntl(fds[0], F_SETFL, flags | O_NONBLOCK) == 0);
+        flags = fcntl(fds[1], F_GETFL);
+        CHECK(fcntl(fds[1], F_SETFL, flags | O_NONBLOCK) == 0);
+        CHECK(read(fds[0], buf, 1) == -1 && errno == EAGAIN);
+        memset(rec, 'r', sizeof(rec));
+        total = 0;
+        while ((n = write(fds[1], rec, sizeof(rec))) > 0)
+                total += n;
+        CHECK(n == -1 && errno == EAGAIN);
+        CHECK(total >= PIPE_BUF && total % PIPE_BUF == 0);
+        close(fds[0]);
+        close(fds[1]);
+
+        /* More than a pipe holds, from a child, read back in order. */
+        for (size_t i = 0; i < sizeof(big); i++)
+                big[i] = (char)(i * 13 + 7);
+        CHECK(pipe(fds) == 0);
+        pid = fork();
+        if (pid == 0) {
+                close(fds[0]);
+                _exit(write(fds[1], big, sizeof(big)) == (ssize_t)sizeof(big) ?
+                    0 : 1);
+        }
+        close(fds[1]);
+        ok = 1;
+        total = 0;
+        for (;;) {
+                n = read(fds[0], rec, sizeof(rec));
+                if (n <= 0)
+                        break;
+                if (total + n > (ssize_t)sizeof(big) ||
+                    memcmp(rec, big + total, (size_t)n) != 0)
+                        ok = 0;
+                total += n;
+        }
+        CHECK(ok && n == 0 && total == (ssize_t)sizeof(big));
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        close(fds[0]);
+
+        /* Two writers of PIPE_BUF records: no record is interleaved. */
+        CHECK(pipe(fds) == 0);
+        for (int k = 0; k < 2; k++) {
+                kids[k] = fork();
+                if (kids[k] == 0) {
+                        close(fds[0]);
+                        memset(rec, 'A' + k, sizeof(rec));
+                        for (int i = 0; i < 100; i++) {
+                                if (write(fds[1], rec, sizeof(rec)) !=
+                                    (ssize_t)sizeof(rec))
+                                        _exit(1);
+                        }
+                        _exit(0);
+                }
+        }
+        close(fds[1]);
+        ok = 1;
+        total = 0;
+        while ((n = read_full(fds[0], rec, sizeof(rec))) == (ssize_t)sizeof(rec)) {
+                for (size_t i = 1; i < sizeof(rec); i++) {
+                        if (rec[i] != rec[0])
+                                ok = 0;
+                }
+                total++;
+        }
+        CHECK(ok && n == 0 && total == 200);
+        for (int k = 0; k < 2; k++)
+                CHECK(kids[k] > 0 && waitpid(kids[k], &status, 0) == kids[k] &&
+                    WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        close(fds[0]);
+}
+
+/* fsync() and the modes of files. */
+static void
+test_file_ops(void)
+{
+        struct stat st;
+        int fd;
+
+        fd = open(path("/libctest.mode"), O_RDWR | O_CREAT | O_TRUNC, 0644);
+        CHECK(fd >= 0);
+        if (fd < 0)
+                return;
+        CHECK(write(fd, "data", 4) == 4);
+        CHECK(fsync(fd) == 0);
+        CHECK(fchmod(fd, 0600) == 0);
+        CHECK(fstat(fd, &st) == 0 && (st.st_mode & 07777) == 0600);
+        CHECK(chmod(path("/libctest.mode"), 0640) == 0);
+        CHECK(stat(path("/libctest.mode"), &st) == 0 &&
+            (st.st_mode & 07777) == 0640);
+        close(fd);
+        CHECK(unlink(path("/libctest.mode")) == 0);
+}
+
+/* getcwd() at the root, in a mounted file system, and below it. */
+static void
+test_cwd(void)
+{
+        char buf[256], want[256], small[4];
+
+        CHECK(chdir("/") == 0);
+        CHECK(getcwd(buf, sizeof(buf)) != NULL && strcmp(buf, "/") == 0);
+        CHECK(chdir(dir) == 0);
+        CHECK(getcwd(buf, sizeof(buf)) != NULL && strcmp(buf, dir) == 0);
+        CHECK(mkdir("libctest.cwd", 0755) == 0);
+        CHECK(mkdir("libctest.cwd/sub", 0755) == 0);
+        CHECK(chdir("libctest.cwd/sub") == 0);
+        snprintf(want, sizeof(want), "%s/libctest.cwd/sub", dir);
+        CHECK(getcwd(buf, sizeof(buf)) != NULL && strcmp(buf, want) == 0);
+        CHECK(getcwd(small, sizeof(small)) == NULL && errno == ERANGE);
+        CHECK(chdir("/") == 0);
+        CHECK(rmdir(path("/libctest.cwd/sub")) == 0);
+        CHECK(rmdir(path("/libctest.cwd")) == 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -365,6 +676,10 @@ main(int argc, char **argv)
         test_procs();
         test_signals();
         test_misc();
+        test_clocks();
+        test_pipes();
+        test_file_ops();
+        test_cwd();
         printf("libctest: %d failures\n", failures);
         return failures;
 }

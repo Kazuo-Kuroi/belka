@@ -317,6 +317,8 @@ proc_wait(pid_t pid, int *codep, int *datap)
 void
 proc_reap_locked(struct proc *c)
 {
+        /* The parent's children's time, as times() reports it. */
+        c->p_parent->p_cticks += c->p_ticks + c->p_cticks;
         proc_unlink(c);
         mutex_unlock(&proctree_lock);
         proc_free(c);
@@ -362,6 +364,7 @@ proc_exit(int code, int data)
          * see p_lwp gone under the signal lock and leave it alone.
          */
         s = spin_lock(&p->p_siglock);
+        p->p_ticks += curthread->kt_ticks;
         p->p_lwps = NULL;
         p->p_nlwp = 0;
         curthread->kt_sigpend = 0;

@@ -18,8 +18,10 @@
 #include <stddef.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/times.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <ucontext.h>
 
 #include "kernel-abi.h"
