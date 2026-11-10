@@ -173,11 +173,21 @@ md_setcontext(struct lwp *l, const ucontext_t *uc)
 
         if ((error = md_context_ok(uc)) != 0)
                 return error;
+        /*
+         * The image is cleaned in a buffer first: while this LWP can be
+         * switched out, l_fpu is where its live state is saved, so the
+         * new state goes in only with interrupts off, together with
+         * loading it.
+         */
         if ((uc->uc_flags & UC_FP) != 0) {
-                load_fpregs(l->l_fpu, &uc->uc_mcontext.fpregs);
+                char *img = fpu_area_alloc();
+
+                load_fpregs(img, &uc->uc_mcontext.fpregs);
                 s = splhi();
+                memcpy(l->l_fpu, img, fpu_area_size());
                 fpu_restore(l->l_fpu);
                 splx(s);
+                fpu_area_free(img);
         }
         if ((uc->uc_flags & UC_CPU) != 0) {
                 load_gregs(l->l_tf, g);

@@ -439,26 +439,38 @@ clobber_fp(int sig)
         hits++;
 }
 
+/*
+ * Many times over, since the state a handler's return restores can be
+ * lost only if the LWP is switched out at the wrong moment.
+ */
 static void
 test_fpu(void)
 {
         uint64_t before[2] = { 0x0123456789abcdefULL, 0xfedcba9876543210ULL };
-        uint64_t after[2] = { 0, 0 };
+        uint64_t after[2];
+        int lost = 0;
 
         reset_counts();
-        CHECK(signal(SIGUSR2, clobber_fp) != SIG_ERR);
-        __asm__ __volatile__(
-            "movdqu %1, %%xmm7\n\t"
-            "movq $37, %%rax\n\t"                       /* SYS_kill */
-            "movq %2, %%rdi\n\t"
-            "movq $17, %%rsi\n\t"                       /* SIGUSR2 */
-            "syscall\n\t"
-            "movdqu %%xmm7, %0"
-            : "=m"(after) : "m"(before), "r"((long)getpid())
-            : "rax", "rcx", "rdx", "rdi", "rsi", "r8", "r9", "r10", "r11",
-              "memory", "xmm7", "cc");
-        CHECK(hits == 1);
-        CHECK(after[0] == before[0] && after[1] == before[1]);
+        for (int i = 0; i < 500; i++) {
+                /* signal() resets the handler at each delivery. */
+                if (signal(SIGUSR2, clobber_fp) == SIG_ERR)
+                        lost++;
+                after[0] = after[1] = 0;
+                __asm__ __volatile__(
+                    "movdqu %1, %%xmm7\n\t"
+                    "movq $37, %%rax\n\t"               /* SYS_kill */
+                    "movq %2, %%rdi\n\t"
+                    "movq $17, %%rsi\n\t"               /* SIGUSR2 */
+                    "syscall\n\t"
+                    "movdqu %%xmm7, %0"
+                    : "=m"(after) : "m"(before), "r"((long)getpid())
+                    : "rax", "rcx", "rdx", "rdi", "rsi", "r8", "r9", "r10",
+                      "r11", "memory", "xmm7", "cc");
+                if (after[0] != before[0] || after[1] != before[1])
+                        lost++;
+        }
+        CHECK(hits == 500);
+        CHECK(lost == 0);
 }
 
 /* Process groups: a child in a group of its own, killed as a group. */
