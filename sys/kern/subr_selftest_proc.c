@@ -211,6 +211,7 @@ selftest_proc(void)
         char *lwptest[] = { "lwptest", "/p/bin/argtest", NULL };
         char *libctest[] = { "libctest", "/p", NULL };
         char *threadtest[] = { "threadtest", NULL };
+        char *dyntest[] = { "dyntest", NULL };
         size_t used1, used2, zone0[NPROCZONES];
         int zones_ok = 1;
 
@@ -229,6 +230,7 @@ selftest_proc(void)
         CHECK(run("/p/bin/lwptest", lwptest, CLD_EXITED, 0));
         CHECK(run("/p/bin/libctest", libctest, CLD_EXITED, 0));
         CHECK(run("/p/bin/threadtest", threadtest, CLD_EXITED, 0));
+        CHECK(run("/p/bin/dyntest", dyntest, CLD_EXITED, 0));
         test_kernel_signal();
         CHECK(proc_wait(12345, &(int){ 0 }, &(int){ 0 }) == ECHILD);
 

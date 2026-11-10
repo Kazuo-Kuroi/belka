@@ -1,0 +1,245 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-10
+# SPDX-License-Identifier: MIT
+#
+# A compiler front end that links with the illumos link-editor, for
+# builds (mlibc's) that link through the compiler driver with GNU ld's
+# options.
+#
+#   illumos-cc ld compiler [compiler-args...] args...
+#
+# Compiling, preprocessing, and queries of the compiler (--version,
+# -dumpmachine, -print-*) run the compiler unchanged. Anything else is a
+# link: the driver's options are translated for the illumos ld, which
+# is run directly, with no start files or libraries of its own:
+#
+#   -shared -> -G                    -Wl,-soname,X -> -h X
+#   -Wl,-rpath,X -> -R X             -Wl,--no-undefined -> -z defs
+#   -Wl,--as-needed -> -z ignore     -Wl,--no-as-needed -> -z record
+#   -Wl,-Bsymbolic -> -B symbolic    -Wl,-z,now -> -z now
+#   -Wl,--version-script,F -> -M a mapfile: F's patterns, expanded
+#       against the global symbols the inputs define (illumos mapfiles
+#       have no wildcards)
+#   -Wl,--whole-archive -> -z allextract (--no-: -z defaultextract)
+#   -Wl,--start-group -> -z rescan-start (--end-group: -z rescan-end)
+#   -L, -l, -e, and other -Wl, options: as they are; of several -o,
+#       the last counts
+#
+# Compiler-only options (-f*, -m*, -O*, -g*, -W*, -std=, -nostdlib,
+# -pthread) are dropped, and so are GNU ld options with no meaning here
+# (--build-id, --hash-style, --eh-frame-hdr, -z relro, -z noexecstack).
+# A shared object that defines _start gets it as its entry point, as GNU
+# ld does: the kernel starts a program interpreter there. A program
+# linked here is dynamic and may leave symbols undefined (-z nodefs):
+# only a build system's checks link one.
+#
+# Needs a POSIX shell and awk, and nm from binutils.
+#
+
+set -eu
+
+if [ $# -lt 2 ]; then
+        echo "usage: $0 ld compiler [args...]" >&2
+        exit 1
+fi
+LD=$1
+shift
+
+# The compiler and its own leading --target= arguments.
+cc=$1
+shift
+ccargs=""
+while [ $# -gt 0 ]; do
+        case $1 in
+        --target=*)     ccargs="$ccargs $1" ;;
+        *)                      break ;;
+        esac
+        shift
+done
+
+link=1
+for a in "$@"; do
+        case $a in
+        -c|-S|-E|-M|-MM|--version|-v|-dumpmachine|-dumpversion|-print-*|\
+        -###|--help)
+                link=0 ;;
+        esac
+done
+if [ $link -eq 0 ] || [ $# -eq 0 ]; then
+        # shellcheck disable=SC2086
+        exec "$cc" $ccargs "$@"
+fi
+
+# A build system's question of which linker this is (meson: cc -Wl,-v):
+# it takes GNU ld's options, which is what the answer is used for.
+case "$*" in
+-Wl,-v|-Wl,--version|-Wl,-V)
+        echo "illumos link-editor, taking GNU ld options (illumos-cc)"
+        exec "$LD" -V ;;
+esac
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+out=""
+shared=0
+vscript=""
+set -- "$@" "--end-of-args--"
+ldargs=""
+inputs=""
+
+# Append to the ld command line (no word in it contains spaces).
+add() {
+        ldargs="$ldargs $*"
+}
+
+# One GNU ld option (from -Wl,): $1, with $2 its argument if it takes one.
+# Sets used to the number of words it took.
+gnu_option() {
+        used=1
+        case $1 in
+        -soname|--soname|-h)    add -h "$2"; used=2 ;;
+        -soname=*|--soname=*)   add -h "${1#*=}" ;;
+        -rpath|--rpath|-R)      add -R "$2"; used=2 ;;
+        -rpath=*|--rpath=*)     add -R "${1#*=}" ;;
+        --version-script)       vscript=$2; used=2 ;;
+        --version-script=*)     vscript=${1#*=} ;;
+        --no-undefined|-zdefs)  add -z defs ;;
+        --as-needed)            add -z ignore ;;
+        --no-as-needed)         add -z record ;;
+        -Bsymbolic)             add -B symbolic ;;
+        --whole-archive)        add -z allextract ;;
+        --no-whole-archive)     add -z defaultextract ;;
+        --start-group)          add -z rescan-start ;;
+        --end-group)            add -z rescan-end ;;
+        -Bstatic)               add -B static ;;
+        -Bdynamic)              add -B dynamic ;;
+        -e|--entry)             add -e "$2"; used=2 ;;
+        -z)
+                case $2 in
+                defs|now|text|nodefs)   add -z "$2" ;;
+                *)                      ;;      # relro, noexecstack, ...
+                esac
+                used=2 ;;
+        --build-id*|--hash-style=*|--eh-frame-hdr|--export-dynamic|-E|\
+        --gc-sections|--no-gc-sections|-O*|--sort-common|--gdb-index)
+                ;;
+        *)
+                add "$1" ;;
+        esac
+}
+
+while [ "$1" != "--end-of-args--" ]; do
+        a=$1
+        shift
+        case $a in
+        -o)             out=$1; shift ;;
+        -o*)            out=${a#-o} ;;
+        -shared)        shared=1 ;;
+        -L)             add "-L$1"; shift ;;
+        -L*|-l*)        add "$a" ;;
+        -Wl,*)
+                # Split at commas; an option's argument is the next word.
+                # shellcheck disable=SC2046
+                set -- $(echo "${a#-Wl,}" | tr ',' ' ') --end-of-wl-- "$@"
+                while [ "$1" != "--end-of-wl--" ]; do
+                        gnu_option "$1" "${2:-}"
+                        shift
+                        if [ $used -eq 2 ]; then
+                                shift
+                        fi
+                done
+                shift ;;
+        -nostdlib|-nostartfiles|-nodefaultlibs|-pthread|-static-libgcc|\
+        -f*|-m*|-O*|-g*|-W*|-std=*|-D*|-U*|-I*|-pie|-no-pie|-rdynamic|\
+        --target=*)
+                ;;
+        -*)
+                echo "illumos-cc: unknown option $a" >&2
+                exit 1 ;;
+        *)
+                add "$a"
+                case $a in
+                *.so|*.so.[0-9]*) ;;
+                *)              inputs="$inputs $a" ;;
+                esac ;;
+        esac
+done
+
+if [ -z "$out" ]; then
+        out=a.out
+fi
+
+# The global symbols the objects and archives define, for patterns and
+# _start (not those of shared objects linked against).
+defined="$tmp/defined"
+# shellcheck disable=SC2086
+nm -g --defined-only $inputs 2>/dev/null | awk 'NF == 3 { print $3 }' |
+    sort -u > "$defined"
+
+if [ -n "$vscript" ]; then
+        # GNU version script -> illumos mapfile: the patterns of the global
+        # and local sections, expanded against the defined symbols. A
+        # version name is not kept: the node is anonymous.
+        awk -v defined="$defined" '
+        function glob2re(g,    r, i, c) {
+                r = "^"
+                for (i = 1; i <= length(g); i++) {
+                        c = substr(g, i, 1)
+                        if (c == "*") r = r ".*"
+                        else if (c == "?") r = r "."
+                        else if (index(".^$+()[]{}|\\", c)) r = r "\\" c
+                        else r = r c
+                }
+                return r "$"
+        }
+        {
+                gsub(/\/\*[^*]*\*\//, "")
+                text = text " " $0
+        }
+        END {
+                gsub(/[{};]/, " & ", text)
+                n = split(text, w, /[ \t\n]+/)
+                scope = "global"
+                for (i = 1; i <= n; i++) {
+                        if (w[i] == "global:") { scope = "global"; continue }
+                        if (w[i] == "local:") { scope = "local"; continue }
+                        if (w[i] == "" || w[i] == "{" || w[i] == "}" ||
+                            w[i] == ";")
+                                continue
+                        if (w[i] ~ /^extern/) continue
+                        if (scope == "local" && w[i] == "*") { autored = 1; continue }
+                        pat[++np] = w[i]; psc[np] = scope
+                }
+                while ((getline s < defined) > 0) {
+                        for (j = 1; j <= np; j++) {
+                                if (s ~ glob2re(pat[j])) {
+                                        if (psc[j] == "local") loc[s] = 1
+                                        else glo[s] = 1
+                                        break
+                                }
+                        }
+                }
+                print "$mapfile_version 2"
+                print "SYMBOL_SCOPE {"
+                print "\tglobal:"
+                for (s in glo) print "\t\t" s ";"
+                print "\tlocal:"
+                for (s in loc) print "\t\t" s ";"
+                if (autored) print "\t\t*;"
+                print "};"
+        }' "$vscript" > "$tmp/version.map"
+        add -M "$tmp/version.map"
+fi
+
+if [ $shared -eq 1 ]; then
+        if grep -qx _start "$defined"; then
+                add -e _start
+        fi
+        # shellcheck disable=SC2086
+        exec "$LD" -G -dy -o "$out" $ldargs
+fi
+# shellcheck disable=SC2086
+exec "$LD" -dy -z nodefs -o "$out" $ldargs

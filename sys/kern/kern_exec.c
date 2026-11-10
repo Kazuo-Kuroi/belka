@@ -7,10 +7,15 @@
 /*
  * exec: replace the calling process's image with a program.
  *
- * Only statically linked ELF-64 executables for amd64 are run so far.
- * Each PT_LOAD is mapped privately from the file through seg_vn, so the
- * text is the page cache's own pages; the part of a page past p_filesz
- * is zeroed, and the rest of p_memsz is demand-zero. The stack is
+ * ELF-64 executables for amd64 are run, statically linked or naming a
+ * program interpreter (PT_INTERP, the dynamic linker). Each PT_LOAD is
+ * mapped privately from the file through seg_vn, so the text is the page
+ * cache's own pages; the part of a page past p_filesz is zeroed, and the
+ * rest of p_memsz is demand-zero. A position-independent program
+ * (ET_DYN) is loaded at VM_PIE_BASE; the interpreter, which must be
+ * ET_DYN and name none itself, at VM_INTERP_BASE. It starts first, and
+ * finds the program through the auxiliary vector: AT_PHDR and AT_ENTRY
+ * are the program's, AT_BASE the interpreter's load address. The stack is
  * VM_STACK_SIZE of demand-zero memory below USRSTACK, all mapped at once
  * as UnixWare does.
  *
@@ -148,8 +153,13 @@ elf_prot(uint32_t flags)
 }
 
 /* Read and check the ELF header and program headers of vp. */
+/*
+ * Read and check an ELF file's headers. An interpreter (interp) must be
+ * ET_DYN and must not name an interpreter itself.
+ */
 static int
-elf_read_headers(struct vnode *vp, Elf64_Ehdr *eh, Elf64_Phdr *ph)
+elf_read_headers(struct vnode *vp, Elf64_Ehdr *eh, Elf64_Phdr *ph,
+    int interp)
 {
         size_t resid;
         int error;
@@ -161,31 +171,84 @@ elf_read_headers(struct vnode *vp, Elf64_Ehdr *eh, Elf64_Phdr *ph)
             eh->e_ident[2] != 'L' || eh->e_ident[3] != 'F' ||
             eh->e_ident[EI_CLASS] != ELFCLASS64 ||
             eh->e_ident[EI_DATA] != ELFDATA2LSB ||
-            eh->e_machine != EM_X86_64 || eh->e_type != ET_EXEC ||
+            eh->e_machine != EM_X86_64 ||
+            (eh->e_type != ET_EXEC && eh->e_type != ET_DYN) ||
+            (interp && eh->e_type != ET_DYN) ||
             eh->e_phentsize != sizeof(Elf64_Phdr) || eh->e_phnum == 0 ||
-            eh->e_phnum > EXEC_MAXPHDR ||
-            eh->e_entry < VM_USER_MIN || eh->e_entry >= VM_USER_MAX)
+            eh->e_phnum > EXEC_MAXPHDR || eh->e_entry >= VM_USER_MAX ||
+            (eh->e_type == ET_EXEC && eh->e_entry < VM_USER_MIN))
                 return ENOEXEC;
         if ((error = vn_rdwr(UIO_READ, vp, ph, (size_t)eh->e_phnum *
             sizeof(*ph), (off_t)eh->e_phoff, 0, &resid)) != 0)
                 return error;
         if (resid != 0)
                 return ENOEXEC;
-        for (int i = 0; i < eh->e_phnum; i++) {
+        for (int i = 0; interp && i < eh->e_phnum; i++) {
                 if (ph[i].p_type == PT_INTERP)
-                        return ENOEXEC;         /* no dynamic linking yet */
+                        return ENOEXEC;
         }
         return 0;
 }
 
 /*
- * Build the new address space: the program's segments and the stack.
- * *brkp gets the end of the highest segment, *phdrp the address of the
- * program headers in the image, or 0.
+ * The program interpreter ph names, held in *vpp, or NULL in *vpp if it
+ * names none; its headers go in eh and iph.
+ */
+static int
+elf_interp(struct vnode *vp, const Elf64_Ehdr *peh, const Elf64_Phdr *ph,
+    struct vnode **vpp, Elf64_Ehdr *eh, Elf64_Phdr *iph)
+{
+        char *path = NULL;
+        size_t resid, len = 0;
+        int error;
+
+        *vpp = NULL;
+        for (int i = 0; i < peh->e_phnum; i++) {
+                if (ph[i].p_type != PT_INTERP)
+                        continue;
+                if (path != NULL || ph[i].p_filesz < 2 ||
+                    ph[i].p_filesz > MAXPATHLEN) {
+                        error = ENOEXEC;
+                        goto out;
+                }
+                len = (size_t)ph[i].p_filesz;
+                path = kmem_alloc(len, KM_SLEEP);
+                if ((error = vn_rdwr(UIO_READ, vp, path, len,
+                    (off_t)ph[i].p_offset, 0, &resid)) != 0)
+                        goto out;
+                if (resid != 0 || path[len - 1] != '\0' ||
+                    strlen(path) != len - 1) {
+                        error = ENOEXEC;
+                        goto out;
+                }
+        }
+        if (path == NULL)
+                return 0;
+        if ((error = lookupname(path, FOLLOW, vpp)) != 0)
+                goto out;
+        if ((*vpp)->v_type != VREG)
+                error = EACCES;
+        else if ((error = VOP_ACCESS(*vpp, VEXEC, kcred)) == 0)
+                error = elf_read_headers(*vpp, eh, iph, 1);
+        if (error != 0) {
+                VN_RELE(*vpp);
+                *vpp = NULL;
+        }
+out:
+        if (path != NULL)
+                kmem_free(path, len);
+        return error;
+}
+
+/*
+ * Map an ELF file's segments into the new address space, each at its
+ * address plus bias (an ET_DYN file's load address, else 0). *brkp gets
+ * the end of the highest segment, *phdrp the address of the program
+ * headers in the image, or 0.
  */
 static int
 elf_map(struct as *as, struct vnode *vp, const Elf64_Ehdr *eh,
-    const Elf64_Phdr *ph, vaddr_t *brkp, vaddr_t *phdrp)
+    const Elf64_Phdr *ph, vaddr_t bias, vaddr_t *brkp, vaddr_t *phdrp)
 {
         struct segvn_crargs a;
         vaddr_t brk = 0;
@@ -194,20 +257,21 @@ elf_map(struct as *as, struct vnode *vp, const Elf64_Ehdr *eh,
         *phdrp = 0;
         for (int i = 0; i < eh->e_phnum; i++) {
                 const Elf64_Phdr *p = &ph[i];
-                vaddr_t vbase, fend, mend;
+                vaddr_t va = p->p_vaddr + bias, vbase, fend, mend;
                 off_t off;
 
                 if (p->p_type != PT_LOAD || p->p_memsz == 0)
                         continue;
                 if (p->p_filesz > p->p_memsz ||
                     (p->p_vaddr & PAGEOFFSET) != (p->p_offset & PAGEOFFSET) ||
-                    p->p_vaddr < VM_USER_MIN ||
-                    p->p_memsz > USRSTACK - VM_STACK_SIZE - p->p_vaddr)
+                    va < bias || va < VM_USER_MIN ||
+                    va >= USRSTACK - VM_STACK_SIZE ||
+                    p->p_memsz > USRSTACK - VM_STACK_SIZE - va)
                         return ENOEXEC;
-                vbase = ptrunc(p->p_vaddr);
-                off = (off_t)(p->p_offset - (p->p_vaddr - vbase));
-                fend = p->p_vaddr + p->p_filesz;
-                mend = p->p_vaddr + p->p_memsz;
+                vbase = ptrunc(va);
+                off = (off_t)(p->p_offset - (va - vbase));
+                fend = va + p->p_filesz;
+                mend = va + p->p_memsz;
                 a.prot = elf_prot(p->p_flags);
                 a.maxprot = PROT_ALL;
                 a.type = MAP_PRIVATE;
@@ -235,33 +299,40 @@ elf_map(struct as *as, struct vnode *vp, const Elf64_Ehdr *eh,
                 if (p->p_offset <= eh->e_phoff && eh->e_phoff +
                     (uint64_t)eh->e_phnum * sizeof(Elf64_Phdr) <=
                     p->p_offset + p->p_filesz)
-                        *phdrp = p->p_vaddr + (eh->e_phoff - p->p_offset);
+                        *phdrp = va + (eh->e_phoff - p->p_offset);
                 if (pround(mend) > brk)
                         brk = pround(mend);
         }
         if (brk == 0)
                 return ENOEXEC;
+        *brkp = brk;
+        return 0;
+}
+
+/* The stack: VM_STACK_SIZE of demand-zero memory below USRSTACK. */
+static int
+exec_map_stack(struct as *as)
+{
+        struct segvn_crargs a;
+
         a.vp = NULL;
         a.offset = 0;
         a.type = MAP_PRIVATE;
         a.prot = PROT_READ | PROT_WRITE;
         a.maxprot = PROT_ALL;
-        if ((error = as_map(as, USRSTACK - VM_STACK_SIZE, VM_STACK_SIZE,
-            segvn_create, &a)) != 0)
-                return error;
-        *brkp = brk;
-        return 0;
+        return as_map(as, USRSTACK - VM_STACK_SIZE, VM_STACK_SIZE,
+            segvn_create, &a);
 }
 
 /* Zero the parts of partial last pages past p_filesz, in the new image. */
 static int
-elf_zero_tails(const Elf64_Ehdr *eh, const Elf64_Phdr *ph)
+elf_zero_tails(const Elf64_Ehdr *eh, const Elf64_Phdr *ph, vaddr_t bias)
 {
         static const char zeros[PAGESIZE];
 
         for (int i = 0; i < eh->e_phnum; i++) {
                 const Elf64_Phdr *p = &ph[i];
-                vaddr_t fend = p->p_vaddr + p->p_filesz;
+                vaddr_t fend = p->p_vaddr + bias + p->p_filesz;
                 int error;
 
                 if (p->p_type != PT_LOAD || p->p_filesz == 0 ||
@@ -276,7 +347,8 @@ elf_zero_tails(const Elf64_Ehdr *eh, const Elf64_Phdr *ph)
 
 /* Lay out and copy the initial stack. Returns the user %rsp, or 0. */
 static uint64_t
-exec_stack(const struct execargs *ea, const Elf64_Ehdr *eh, vaddr_t phdr)
+exec_stack(const struct execargs *ea, const Elf64_Ehdr *eh, vaddr_t phdr,
+    vaddr_t entry, vaddr_t base)
 {
         size_t nptr = 1 + (size_t)ea->ea_argc + 1 + (size_t)ea->ea_envc + 1;
         size_t vecsize = nptr * 8 + NAUXV * sizeof(Elf64_auxv_t);
@@ -307,9 +379,9 @@ exec_stack(const struct execargs *ea, const Elf64_Ehdr *eh, vaddr_t phdr)
         aux[3].a_type = AT_PAGESZ;
         aux[3].a_val = PAGESIZE;
         aux[4].a_type = AT_ENTRY;
-        aux[4].a_val = eh->e_entry;
+        aux[4].a_val = entry;
         aux[5].a_type = AT_BASE;
-        aux[5].a_val = 0;
+        aux[5].a_val = base;
         aux[6].a_type = AT_FLAGS;
         aux[6].a_val = 0;
         aux[7].a_type = AT_NULL;
@@ -333,11 +405,12 @@ exec_common(const char *path, struct execargs *ea)
 {
         struct lwp *l = curlwp;
         struct proc *p = l->l_proc;
-        Elf64_Ehdr eh;
-        Elf64_Phdr *ph = kmem_alloc(EXEC_MAXPHDR * sizeof(*ph), KM_SLEEP);
-        struct vnode *vp;
+        Elf64_Ehdr eh, ieh;
+        Elf64_Phdr *ph = kmem_alloc(2 * EXEC_MAXPHDR * sizeof(*ph), KM_SLEEP);
+        Elf64_Phdr *iph = ph + EXEC_MAXPHDR;
+        struct vnode *vp, *ivp = NULL;
         struct as *nas, *oas;
-        vaddr_t brk, phdr;
+        vaddr_t brk, phdr, ibrk, iphdr, bias, ibias = 0, entry;
         uint64_t sp;
         const char *base = path;
         int error, s;
@@ -349,20 +422,30 @@ exec_common(const char *path, struct execargs *ea)
                 goto fail_vp;
         }
         if ((error = VOP_ACCESS(vp, VEXEC, kcred)) != 0 ||
-            (error = elf_read_headers(vp, &eh, ph)) != 0)
+            (error = elf_read_headers(vp, &eh, ph, 0)) != 0 ||
+            (error = elf_interp(vp, &eh, ph, &ivp, &ieh, iph)) != 0)
                 goto fail_vp;
+        bias = eh.e_type == ET_DYN ? VM_PIE_BASE : 0;
+        entry = eh.e_entry + bias;
+        if (ivp != NULL)
+                ibias = VM_INTERP_BASE;
         /*
          * The new image gets the calling LWP only: the others exit now.
          * If another LWP is already ending the process, so do we.
          */
         if (proc_single(0) != 0) {
                 VN_RELE(vp);
-                kmem_free(ph, EXEC_MAXPHDR * sizeof(*ph));
+                if (ivp != NULL)
+                        VN_RELE(ivp);
+                kmem_free(ph, 2 * EXEC_MAXPHDR * sizeof(*ph));
                 execargs_free(ea);
                 lwp_exit();
         }
         nas = as_alloc();
-        if ((error = elf_map(nas, vp, &eh, ph, &brk, &phdr)) != 0) {
+        if ((error = elf_map(nas, vp, &eh, ph, bias, &brk, &phdr)) != 0 ||
+            (ivp != NULL && (error = elf_map(nas, ivp, &ieh, iph, ibias,
+            &ibrk, &iphdr)) != 0) ||
+            (error = exec_map_stack(nas)) != 0) {
                 as_free(nas);
                 goto fail_vp;
         }
@@ -376,10 +459,13 @@ exec_common(const char *path, struct execargs *ea)
         if (oas != NULL)
                 as_free(oas);
         VN_RELE(vp);            /* the mappings hold it */
+        if (ivp != NULL)
+                VN_RELE(ivp);
 
-        if (elf_zero_tails(&eh, ph) != 0 ||
-            (sp = exec_stack(ea, &eh, phdr)) == 0) {
-                kmem_free(ph, EXEC_MAXPHDR * sizeof(*ph));
+        if (elf_zero_tails(&eh, ph, bias) != 0 ||
+            (ivp != NULL && elf_zero_tails(&ieh, iph, ibias) != 0) ||
+            (sp = exec_stack(ea, &eh, phdr, entry, ibias)) == 0) {
+                kmem_free(ph, 2 * EXEC_MAXPHDR * sizeof(*ph));
                 execargs_free(ea);
                 proc_exit(CLD_KILLED, SIGKILL);
         }
@@ -396,15 +482,17 @@ exec_common(const char *path, struct execargs *ea)
         mutex_unlock(&p->p_lock);
         fd_close_exec(p);
         sig_exec(p);
-        md_setregs(l, eh.e_entry, sp);
-        kmem_free(ph, EXEC_MAXPHDR * sizeof(*ph));
+        md_setregs(l, ivp != NULL ? ieh.e_entry + ibias : entry, sp);
+        kmem_free(ph, 2 * EXEC_MAXPHDR * sizeof(*ph));
         execargs_free(ea);
         return 0;
 
 fail_vp:
         VN_RELE(vp);
+        if (ivp != NULL)
+                VN_RELE(ivp);
 fail:
-        kmem_free(ph, EXEC_MAXPHDR * sizeof(*ph));
+        kmem_free(ph, 2 * EXEC_MAXPHDR * sizeof(*ph));
         execargs_free(ea);
         return error;
 }

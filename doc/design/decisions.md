@@ -36,7 +36,8 @@ Recorded 2026-11-07.
   `libld`, from the SVR4 lineage UnixWare's linker shares) links the
   kernel and every user program, whichever compiler built them; see The
   link-editor below. GNU ld remains available (`LINKER=gnu`); lld is
-  not used. mlibc's runtime linker remains the `ld.so`.
+  not used. It also links mlibc's shared `ld.so` (the runtime linker)
+  and `libc.so`; see Shared libraries below.
 - **Other licences:** code under a licence other than MIT, such as
   illumos's CDDL, may be used. It stays in its own clearly marked place
   (a separate repository like `contrib/mlibc`, or a directory named for
@@ -456,9 +457,8 @@ Recorded 2026-11-07.
     proceeds under it, so one busy file system can reuse its own vnodes.
 - **tmpfs** keeps file data in its private vnodes' page caches, ready
   for mapping later.
-- **Not yet:** `VOP_GETPAGE` and mapped files (with the fault path),
-  clustering and read-ahead, vnode shaking, and a pager to clean pages
-  under memory pressure.
+- **Not yet:** clustering and read-ahead, vnode shaking, and a pager to
+  clean pages under memory pressure.
 
 ## User processes (2026-11-08)
 
@@ -558,9 +558,9 @@ Recorded 2026-11-07.
     copy-on-write.
   - `test-fault` and `test-apfault` now require the panic they provoke,
     so an unrelated panic can no longer pass as the expected one.
-- **Not yet:** dynamic linking, init and
-  sessions, device special files (the console is a private vnode),
-  pipes, credentials beyond the kernel's, and resource limits.
+- **Not yet:** init and sessions, device special files (the console is
+  a private vnode), credentials beyond the kernel's, and resource
+  limits.
 
 ## Signals (2026-11-08)
 
@@ -740,11 +740,10 @@ Recorded 2026-11-07.
   statuses, `execve`, `abort`, handlers, masks and pending signals, a
   fault handled with `longjmp`, the clocks, and `uname`. The process
   self-test runs it.
-- **Not yet:** shared libraries and the dynamic linker, terminals and
-  `termios` with the System V values, the `*at` calls relative to a
-  directory descriptor, `chown`, `poll`, named FIFOs, resource limits
-  (mlibc's `resource.h` is still Linux's), and the libt test programs
-  moving onto mlibc.
+- **Not yet:** terminals and `termios` with the System V values, the
+  `*at` calls relative to a directory descriptor, `chown`, `poll`, named
+  FIFOs, resource limits (mlibc's `resource.h` is still Linux's), and
+  the libt test programs moving onto mlibc.
 
 ## POSIX threads (2026-11-09)
 
@@ -823,8 +822,8 @@ Recorded 2026-11-07.
   macros, Solaris threads over POSIX threads, `sysinfo` and
   `resolvepath`, and illumos's ELF headers, linked in so that they
   shadow only the host's matching ones. No Perl or Python is needed.
-- **Changes to libld**, each needed by a static, Limine-booted system
-  that illumos is not:
+- **Changes to libld**, each needed by a system that illumos is not
+  (static, Limine-booted, with mlibc's runtime linker):
   1. the debug stream is not initialized with `stderr`, which need not
      be a constant;
   2. TLS is allowed in static executables (illumos has none): every
@@ -841,6 +840,8 @@ Recorded 2026-11-07.
   7. initialization and finalization arrays are ordered by priority
      (`.init_array.N`), as GNU ld does, which mlibc's start-up relies
      on.
+  8. local-exec TLS offsets follow the AMD64 psABI (see Shared
+     libraries below).
 - **The kernel** is linked with a mapfile (`kernel.map`, beside the GNU
   `kernel.ld`). `kernel_begin.S` and `kernel_end.S`, linked first and
   last with either linker, mark the segments' bounds (`kernel_start`,
@@ -861,10 +862,9 @@ Recorded 2026-11-07.
   not support them (the generic string functions are used); and GCC
   builds it with `-fno-gnu-unique`, since libld does not know the
   `STB_GNU_UNIQUE` binding.
-- **Not yet:** shared objects and a runtime linker for them; driving
-  the link-editor through the compiler drivers (an `x86_64-belka`
-  target); C++ name demangling in its messages; and a native `ld` on
-  Belka itself.
+- **Not yet:** driving the link-editor through the compiler drivers (an
+  `x86_64-belka` target); C++ name demangling in its messages; and a
+  native `ld` on Belka itself.
 
 ## Time, pipes, and file calls (2026-11-10)
 
@@ -915,6 +915,73 @@ Recorded 2026-11-07.
   floating-point state into the LWP's save area before disabling
   interrupts, so a switch away in between saved the handler's live
   registers over it. It now copies and loads with interrupts off.
+
+## Shared libraries (2026-11-10)
+
+- **Exec and the program interpreter:** a program may name an
+  interpreter (`PT_INTERP`, a path of at most `MAXPATHLEN`). Exec maps it
+  at `VM_INTERP_BASE` and starts there, with `AT_BASE` its load address
+  and `AT_ENTRY` the program's entry. The interpreter must be executable,
+  `ET_DYN`, and name no interpreter of its own. A position-independent
+  program (`ET_DYN`) is loaded at `VM_PIE_BASE`.
+- **The shared C library** is mlibc built a second time, as its runtime
+  linker `ld.so` and `libc.so`, in `build/mlibc-shared-$(TOOLCHAIN)`.
+  - The illumos link-editor links both, whatever `LINKER` says.
+  - mlibc links through the compiler driver with GNU ld's options, so
+    the cross file (`tools/mlibc/*-shared.cross`) names
+    `tools/ld/illumos-cc` as the compiler. It compiles with the real
+    compiler and links with the illumos options (`-G`, `-h`, `-R`,
+    `-z defs`, `-z allextract`, `-z rescan-start`, and so on).
+  - A GNU version script becomes a mapfile, its patterns expanded
+    against the symbols the objects define, since mapfiles have no
+    wildcards. That is how `libc.so` hides its C++ symbols.
+  - Asked which linker it is (meson's `cc -Wl,-v`), the wrapper says it
+    takes GNU ld's options.
+  - `libc.so` takes its runtime helpers from libgcc or compiler-rt.
+- **The test images** (now 12 MB) get `ld.so` and `libc.so` in `/lib`.
+  - The copies are linked a second time with the link-editor's `-s`,
+    not stripped. GNU strip rewrites the illumos link-editor's dynamic
+    objects wrongly: it moved `ld.so`'s data segment and emptied a
+    program's `PT_INTERP`.
+  - Dynamic programs are copied unstripped.
+- **mlibc changes**, for the illumos link-editor's output:
+  - OS-specific dynamic tags, and those of the value range such as
+    `DT_CHECKSUM`, are ignored, in `ld.so`'s check of itself too.
+  - `DF_ORIGIN` and `DF_1_ORIGIN` are accepted.
+  - The `PT_SUNW_UNWIND` and `PT_SUNWSTACK` segments are ignored.
+  - A relocation against a local symbol uses that symbol in its own
+    object, with no lookup. libld gives TLS module relocations the TLS
+    section's symbol, where GNU ld uses symbol 0.
+  - `ld.so` finds its own ELF header at its base address when
+    `__ehdr_start` is undefined.
+- **A libld change:** an executable's local-exec TLS offsets are its TLS
+  size rounded to the segment's own alignment. That is the AMD64 psABI
+  rule, which GNU ld and mlibc's runtime linker follow. libld rounded to
+  16 bytes, as Solaris's runtime linker expects. Static programs had
+  matched only because their TLS size was a multiple of 16.
+- **Tests:** `usr/tests/dyntest.c` is linked dynamically, with
+  interpreter `/p/lib/ld.so` and run path `/p/lib` (the test images
+  mount at `/p`). It checks:
+  - that the interpreter ran;
+  - calls and data into `libc.so`: stdio, the heap, errno, and the
+    environment;
+  - the program's and the library's TLS across threads;
+  - `dlopen` and `dlsym`;
+  - `fork`, constructors, and exit handlers.
+
+  With `LINKER=gnu`, GNU ld links it against the same `libc.so`.
+- **Not yet:**
+  - `AT_EXECFN`, and so `$ORIGIN` in a program's own run path;
+  - mapping objects' segments, rather than reading them into anonymous
+    memory (`MLIBC_MAP_DSO_SEGMENTS`);
+  - position-independent executables from the illumos link-editor
+    (this one has no `-z type=pie`), so exec's `VM_PIE_BASE` path is
+    untested;
+  - finding `.eh_frame_hdr` for unwinding: libld writes
+    `PT_SUNW_UNWIND`, not `PT_GNU_EH_FRAME`;
+  - a sysroot with the shared library, and programs linked against it
+    by default;
+  - shared libraries of Belka's own.
 
 ## File systems
 

@@ -52,6 +52,10 @@
 #define VM_USER_MAX     UINT64_C(0x00007ffffffff000)
 #define USRSTACK        VM_USER_MAX
 #define VM_STACK_SIZE   UINT64_C(0x0000000000800000)    /* 8 MB */
+
+/* Where exec loads a position-independent program and its interpreter. */
+#define VM_PIE_BASE     UINT64_C(0x0000000000400000)
+#define VM_INTERP_BASE  UINT64_C(0x00007f0000000000)
 #define VM_MMAP_BASE    UINT64_C(0x0000100000000000)
 
 extern vaddr_t dmap_base;

@@ -49,13 +49,16 @@ samurai, C implementations of meson and ninja (`MUON` and `SAMU` name
 them), and its first configure fetches mlibc's own subprojects with
 git. mlibc is built with the kernel's compiler and
 installed into `build/sysroot-$(TOOLCHAIN)`; `make mlibc` builds it
-alone. All the programs are installed in `/bin` on both test images,
-and the kernel runs them during `make test`. `make user-progs` builds
-them alone.
+alone. It is also built as shared objects, the runtime linker `ld.so`
+and `libc.so` (`make mlibc-shared`), which `dyntest` is linked against.
+All the programs are installed in `/bin` on both test images, the shared
+objects in `/lib`, and the kernel runs them during `make test`.
+`make user-progs` builds them alone.
 Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU
-ld instead, with its outputs kept apart.
+ld instead, with its outputs kept apart. The shared objects are linked
+by the illumos link-editor either way, through `tools/ld/illumos-cc`.
 `SMP=n` and `MEM=size` set the guest's processors and memory, and
 `QEMU_CPU` its processor model (default `max,+invtsc`: Belka's
 nanosecond clock needs an invariant TSC).

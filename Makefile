@@ -44,6 +44,7 @@ BUILD           := $(BUILD)$(LDSUFFIX)
 
 include mk/toolchain-$(TOOLCHAIN).mk
 include sys/arch/$(ARCH)/conf/files.mk
+include mk/illumos-ld.mk
 include mk/linker-$(LINKER).mk
 
 LIMINE_VERSION  := 11.2.1
@@ -103,7 +104,7 @@ KERNEL_BEGIN    := $(BUILD)/$(basename $(KERNEL_BEGIN_SRC)).o
 KERNEL_END      := $(BUILD)/$(basename $(KERNEL_END_SRC)).o
 KERNEL_OBJS     := $(KERNEL_BEGIN) $(OBJS) $(KERNEL_END)
 
-.PHONY: FORCE mlibc ext2-images user-progs all iso run test test-fault test-apfault test-stack test-uaf \
+.PHONY: FORCE mlibc mlibc-shared ext2-images user-progs all iso run test test-fault test-apfault test-stack test-uaf \
 	test-reboot test-all limine clean distclean
 
 all: $(KERNEL)
@@ -209,7 +210,7 @@ $(USER_BINS): $(USER_DIR)/%: $(USER_OBJ)/%.o $(USER_LIB) $(LD_DEPS)
 # (C implementations of meson and ninja) and installed into a sysroot,
 # with the same compiler as the kernel. The first configure fetches
 # mlibc's own subprojects (frigg and the freestanding headers) with git.
-# Programs that use it are linked statically; the test images get
+# Most programs that use it are linked statically; the test images get
 # copies stripped of debug information.
 MUON            ?= muon
 SAMU            ?= samu
@@ -220,9 +221,12 @@ SYSROOT         := build/sysroot-$(TOOLCHAIN)
 MLIBC           := $(SYSROOT)/usr/lib/libc.a
 LIBC_DIR        := build/user-libc-$(TOOLCHAIN)$(LDSUFFIX)
 LIBC_PROGS      := libctest threadtest
-LIBC_BINS       := $(addprefix $(LIBC_DIR)/,$(LIBC_PROGS))
+LIBC_SBINS      := $(addprefix $(LIBC_DIR)/,$(LIBC_PROGS))
 LIBC_DBGDIR     := $(LIBC_DIR)-debug
 LIBC_DBGBINS    := $(addprefix $(LIBC_DBGDIR)/,$(LIBC_PROGS))
+LIBC_DYNPROGS   := dyntest
+LIBC_DBINS      := $(addprefix $(LIBC_DIR)/,$(LIBC_DYNPROGS))
+LIBC_BINS       := $(LIBC_SBINS) $(LIBC_DBINS)
 LIBC_CFLAGS     := -std=c99 -O2 -g -Wall -Wextra -Werror -nostdinc \
                    -isystem $(SYSROOT)/usr/include -isystem $(CC_INCLUDE) \
                    -fno-pic -fno-pie -fno-stack-protector
@@ -256,6 +260,57 @@ $(MLIBC): $(MLIBC_A)
 
 mlibc: $(MLIBC)
 
+# The shared C library: mlibc built again, as its program interpreter
+# ld.so and libc.so, in a build directory of its own. Whatever LINKER
+# says, the illumos link-editor links it, through tools/ld/illumos-cc:
+# mlibc links through the compiler driver, with GNU ld's options. The
+# cross file is made from tools/mlibc/$(TOOLCHAIN)-shared.cross, and the
+# build configured afresh when it changes.
+MLIBC_SO_BUILD  := build/mlibc-shared-$(TOOLCHAIN)
+MLIBC_SO_CROSS  := $(MLIBC_SO_BUILD).cross
+MLIBC_SO        := $(MLIBC_SO_BUILD)/libc.so
+MLIBC_LDSO      := $(MLIBC_SO_BUILD)/ld.so
+# The test images mount at /p, with the shared objects in /p/lib.
+LIBC_SODIR      := build/lib-$(TOOLCHAIN)
+LIBC_SOS        := $(LIBC_SODIR)/ld.so $(LIBC_SODIR)/libc.so
+DYN_INTERP      := /p/lib/ld.so
+DYN_RUNPATH     := /p/lib
+
+$(MLIBC_SO_CROSS): tools/mlibc/$(TOOLCHAIN)-shared.cross
+	@mkdir -p build
+	sed -e 's|@CC@|$(abspath tools/ld/illumos-cc)|' \
+	    -e 's|@LD@|$(abspath $(ILLUMOS_LD))|' \
+	    -e 's|@RTLIB@|$(LIBC_RTLIB)|' $< > $@
+
+# samu decides what to rebuild; libc.so's time changes only when it does.
+$(MLIBC_SO): $(MLIBC_SO_CROSS) $(ILLUMOS_LD) FORCE
+	@test -f $(MLIBC_SRC)/meson.build || { echo "$(MLIBC_SRC):" \
+	    "run git submodule update --init" >&2; exit 1; }
+	@if [ ! -f $(MLIBC_SO_BUILD)/build.ninja ] || \
+	    [ $(MLIBC_SO_CROSS) -nt $(MLIBC_SO_BUILD)/build.ninja ]; then \
+		rm -rf $(MLIBC_SO_BUILD) && \
+		$(MUON) -C $(MLIBC_SRC) setup -pcross:$(abspath $(MLIBC_SO_CROSS)) \
+		    -Dprefix=/usr -Ddefault_library=shared \
+		    -Dbuildtype=debugoptimized -Duse_freestnd_hdrs=enabled \
+		    -Dlibgcc_dependency=false -Dsysdeps=belka \
+		    $(abspath $(MLIBC_SO_BUILD)); \
+	fi
+	$(SAMU) -C $(MLIBC_SO_BUILD)
+
+# samu links ld.so before libc.so. (An empty recipe, or make would try
+# its built-in rules: there is a directory ld.so.p.)
+$(MLIBC_LDSO): $(MLIBC_SO) ;
+
+# The images get copies without debug information or symbol tables:
+# samu's command for each is run again, with the link-editor's -s. (GNU
+# strip would rewrite them wrongly.)
+$(LIBC_SODIR)/%.so: $(MLIBC_SO_BUILD)/%.so
+	@mkdir -p $(LIBC_SODIR)
+	cd $(MLIBC_SO_BUILD) && eval "$$($(SAMU) -t commands $*.so | tail -1)" \
+	    -Wl,-s -o $(abspath $@)
+
+mlibc-shared: $(LIBC_SOS)
+
 # The kernel's ABI as mlibc's headers describe it must match the
 # kernel's own headers (tools/abicheck).
 ABICHECK        := build/abicheck-$(TOOLCHAIN)
@@ -279,17 +334,36 @@ $(LIBC_DBGBINS): $(LIBC_DBGDIR)/%: usr/tests/%.c $(MLIBC) $(ABICHECK)/ok \
 	$(LINK_PROGRAM) $(LIBC_CRT0) $(PROGRAM_BEGIN) $@.o $(MLIBC) \
 	    $(LIBC_RTLIB) $(PROGRAM_END) $(LIBC_CRTN)
 
-$(LIBC_BINS): $(LIBC_DIR)/%: $(LIBC_DBGDIR)/%
+# Dynamic programs: the same, against libc.so, started by ld.so.
+$(addprefix $(LIBC_DBGDIR)/,$(LIBC_DYNPROGS)): $(LIBC_DBGDIR)/%: usr/tests/%.c \
+                $(MLIBC) $(MLIBC_SO) $(ABICHECK)/ok $(PROGRAM_BEGIN) \
+                $(PROGRAM_END) $(LD_DEPS)
+	@mkdir -p $(LIBC_DBGDIR)
+	$(LIBC_CC) $(LIBC_CFLAGS) -c -o $@.o $<
+	$(call LINK_DYNAMIC,$(DYN_INTERP),$(DYN_RUNPATH)) $(LIBC_CRT0) \
+	    $(PROGRAM_BEGIN) $@.o $(MLIBC_SO) $(LIBC_RTLIB) $(PROGRAM_END) \
+	    $(LIBC_CRTN)
+
+$(LIBC_SBINS): $(LIBC_DIR)/%: $(LIBC_DBGDIR)/%
 	@mkdir -p $(LIBC_DIR)
 	strip --strip-debug -o $@ $<
+
+# GNU strip rewrites the illumos link-editor's dynamic objects wrongly
+# (moving segments), so dynamic programs are copied as they are. The
+# images get their shared objects with them.
+$(LIBC_DBINS): $(LIBC_DIR)/%: $(LIBC_DBGDIR)/% $(LIBC_SOS)
+	@mkdir -p $(LIBC_DIR)
+	cp $< $@
 
 user-progs: $(USER_BINS) $(LIBC_BINS)
 
 # Every recipe that boots the kernel rebuilds the images first, since a
 # prerequisite would run only once for all the boots of one make run.
 MKEXT2          = @mkdir -p build && \
-                  sh tools/mkext2.sh $(EXT2_1K) 1024 $(USER_DIR) $(LIBC_DIR) && \
-                  sh tools/mkext2.sh $(EXT2_4K) 4096 $(USER_DIR) $(LIBC_DIR)
+                  sh tools/mkext2.sh $(EXT2_1K) 1024 $(USER_DIR) $(LIBC_DIR) \
+                      lib:$(LIBC_SODIR) && \
+                  sh tools/mkext2.sh $(EXT2_4K) 4096 $(USER_DIR) $(LIBC_DIR) \
+                      lib:$(LIBC_SODIR)
 
 ext2-images: $(USER_BINS) $(LIBC_BINS)
 	$(MKEXT2)

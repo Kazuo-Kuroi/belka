@@ -22,6 +22,7 @@
 #define ELFDATA2LSB     1
 #define EV_CURRENT      1
 #define ET_EXEC         2
+#define ET_DYN          3
 #define EM_X86_64       62
 
 #define PT_NULL         0
