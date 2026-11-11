@@ -45,6 +45,8 @@
 #define AT_BASE         7
 #define AT_FLAGS        8
 #define AT_ENTRY        9
+/* The program's path as exec was given it: the C library's (Linux's) number. */
+#define AT_EXECFN       31
 
 typedef struct {
         unsigned char   e_ident[EI_NIDENT];

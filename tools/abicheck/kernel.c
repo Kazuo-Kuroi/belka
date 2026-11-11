@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#include <sys/elf.h>
 #include <sys/errno.h>
 #include <sys/fcntl.h>
 #include <sys/mman.h>

@@ -15,9 +15,10 @@
  * (ET_DYN) is loaded at VM_PIE_BASE; the interpreter, which must be
  * ET_DYN and name none itself, at VM_INTERP_BASE. It starts first, and
  * finds the program through the auxiliary vector: AT_PHDR and AT_ENTRY
- * are the program's, AT_BASE the interpreter's load address. The stack is
- * VM_STACK_SIZE of demand-zero memory below USRSTACK, all mapped at once
- * as UnixWare does.
+ * are the program's, AT_BASE the interpreter's load address, and
+ * AT_EXECFN the program's path as exec was given it (for $ORIGIN). The
+ * stack is VM_STACK_SIZE of demand-zero memory below USRSTACK, all mapped
+ * at once as UnixWare does.
  *
  * The initial stack follows the AMD64 psABI, which UnixWare's own
  * layout matches: argc, the argv pointers and a NULL, the environment
@@ -59,7 +60,7 @@
 
 #define ARG_MAX         (64 * 1024)     /* argument and environment bytes */
 #define EXEC_MAXPHDR    32
-#define NAUXV           8
+#define NAUXV           9
 
 struct execargs {
         char            *ea_buf;        /* argv strings, then env strings */
@@ -345,15 +346,20 @@ elf_zero_tails(const Elf64_Ehdr *eh, const Elf64_Phdr *ph, vaddr_t bias)
         return 0;
 }
 
-/* Lay out and copy the initial stack. Returns the user %rsp, or 0. */
+/*
+ * Lay out and copy the initial stack, with path (the program's, as exec
+ * was given it) for AT_EXECFN. Returns the user %rsp, or 0.
+ */
 static uint64_t
-exec_stack(const struct execargs *ea, const Elf64_Ehdr *eh, vaddr_t phdr,
-    vaddr_t entry, vaddr_t base)
+exec_stack(const struct execargs *ea, const char *path,
+    const Elf64_Ehdr *eh, vaddr_t phdr, vaddr_t entry, vaddr_t base)
 {
         size_t nptr = 1 + (size_t)ea->ea_argc + 1 + (size_t)ea->ea_envc + 1;
         size_t vecsize = nptr * 8 + NAUXV * sizeof(Elf64_auxv_t);
         vaddr_t strbase = (USRSTACK - ea->ea_len) & ~(vaddr_t)15;
-        vaddr_t sp = (strbase - vecsize) & ~(vaddr_t)15;
+        size_t pathlen = strlen(path) + 1;
+        vaddr_t fnbase = strbase - pathlen;
+        vaddr_t sp = (fnbase - vecsize) & ~(vaddr_t)15;
         uint64_t *vec = kmem_zalloc(vecsize, KM_SLEEP);
         Elf64_auxv_t *aux;
         size_t n = 0, off = 0;
@@ -384,10 +390,14 @@ exec_stack(const struct execargs *ea, const Elf64_Ehdr *eh, vaddr_t phdr,
         aux[5].a_val = base;
         aux[6].a_type = AT_FLAGS;
         aux[6].a_val = 0;
-        aux[7].a_type = AT_NULL;
-        aux[7].a_val = 0;
+        aux[7].a_type = AT_EXECFN;
+        aux[7].a_val = fnbase;
+        aux[8].a_type = AT_NULL;
+        aux[8].a_val = 0;
 
         error = copyout(ea->ea_buf, (void *)(uintptr_t)strbase, ea->ea_len);
+        if (error == 0)
+                error = copyout(path, (void *)(uintptr_t)fnbase, pathlen);
         if (error == 0)
                 error = copyout(vec, (void *)(uintptr_t)sp, vecsize);
         kmem_free(vec, vecsize);
@@ -464,7 +474,7 @@ exec_common(const char *path, struct execargs *ea)
 
         if (elf_zero_tails(&eh, ph, bias) != 0 ||
             (ivp != NULL && elf_zero_tails(&ieh, iph, ibias) != 0) ||
-            (sp = exec_stack(ea, &eh, phdr, entry, ibias)) == 0) {
+            (sp = exec_stack(ea, path, &eh, phdr, entry, ibias)) == 0) {
                 kmem_free(ph, 2 * EXEC_MAXPHDR * sizeof(*ph));
                 execargs_free(ea);
                 proc_exit(CLD_KILLED, SIGKILL);
