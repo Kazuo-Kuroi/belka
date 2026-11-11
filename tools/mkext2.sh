@@ -14,15 +14,15 @@
 #   /longlink           -> a 100-byte target    (slow symlink)
 #   /many/f000..f199    each holding its own name, hash-indexed
 #   /bin/*              the files of each bindir given (user test programs)
-#   /lib/*              the files of each lib:dir given (shared objects)
+#   /dest/*             the files of each dest=dir given (shared objects)
 #
-# usage: mkext2.sh image blocksize [bindir | lib:dir...]
+# usage: mkext2.sh image blocksize [bindir | dest=dir...]
 #
 
 set -eu
 
 if [ $# -lt 2 ]; then
-        echo "usage: $0 image blocksize [bindir | lib:dir...]" >&2
+        echo "usage: $0 image blocksize [bindir | dest=dir...]" >&2
         exit 1
 fi
 img=$1
@@ -43,7 +43,7 @@ ln -s hello.txt "$src/link"
 ln -s "$(printf '%0100d' 0 | tr 0 x)" "$src/longlink"
 for dir in "$@"; do
         case $dir in
-        lib:*) mkdir -p "$src/lib"; cp "${dir#lib:}"/* "$src/lib/" ;;
+        *=*)   mkdir -p "$src/${dir%%=*}"; cp "${dir#*=}"/* "$src/${dir%%=*}/" ;;
         *)     mkdir -p "$src/bin"; cp "$dir"/* "$src/bin/" ;;
         esac
 done

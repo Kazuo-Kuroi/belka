@@ -4,17 +4,18 @@
 #
 # Meson cross file: the shared mlibc (ld.so and libc.so) for Belka on
 # amd64, built with gcc and linked by the illumos link-editor. The
-# Makefile fills in @CC@ (tools/ld/illumos-cc, which links through the
-# link-editor @LD@ and compiles with gcc) and @RTLIB@ (the compiler's
-# runtime library, which libc.so takes its helpers from).
+# Makefile fills in @ILLUMOS_CC@ (tools/ld/illumos-cc, which links
+# through the link-editor @LD@ and compiles with @CC@ and @CXX@, the
+# toolchain's CC and CXX) and @RTLIB@ (the compiler's runtime library,
+# which libc.so takes its helpers from).
 #
 # The objects are position-independent, as meson compiles them for a
 # shared library; the static build's -fno-pic is not given here.
 # -fno-gnu-unique: see gcc.cross.
 
 [binaries]
-c = ['@CC@', '@LD@', 'gcc']
-cpp = ['@CC@', '@LD@', 'g++']
+c = ['@ILLUMOS_CC@', '@LD@', '@CC@']
+cpp = ['@ILLUMOS_CC@', '@LD@', '@CXX@']
 ar = 'ar'
 strip = 'strip'
 

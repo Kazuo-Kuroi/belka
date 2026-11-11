@@ -3,14 +3,15 @@
 # SPDX-License-Identifier: MIT
 #
 # Meson cross file: mlibc for Belka on amd64, built with gcc.
+# The Makefile fills in @CC@ and @CXX@, the toolchain's CC and CXX.
 #
 # g++ for a Linux host predefines _GNU_SOURCE in C++, which mlibc needs.
 # -fno-gnu-unique: the illumos link-editor does not know the
 # STB_GNU_UNIQUE binding g++ otherwise gives some template statics.
 
 [binaries]
-c = 'gcc'
-cpp = 'g++'
+c = '@CC@'
+cpp = '@CXX@'
 ar = 'ar'
 strip = 'strip'
 

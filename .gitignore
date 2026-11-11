@@ -65,3 +65,6 @@ uw2-docs/
 
 # Build output
 /build/
+
+# Settings for one host (see the Makefile)
+/config.mk

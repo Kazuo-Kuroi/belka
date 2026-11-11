@@ -42,23 +42,28 @@ with `debugfs` the files the kernel left. This needs e2fsprogs
 
 User-mode test programs live in `usr/tests`. Most use a tiny C library
 in `usr/tests/lib` and are built with the host compiler (`USER_CC`,
-default `HOSTCC`) against the kernel's own ABI headers. `libctest` is
-built against mlibc, the C library, which comes from the `contrib/mlibc`
-submodule (`git submodule update --init`); building it needs muon and
-samurai, C implementations of meson and ninja (`MUON` and `SAMU` name
-them), and its first configure fetches mlibc's own subprojects with
-git. mlibc is built with the kernel's compiler and
-installed into `build/sysroot-$(TOOLCHAIN)`; `make mlibc` builds it
-alone. It is also built as shared objects, the runtime linker `ld.so`
-and `libc.so` (`make mlibc-shared`), which `dyntest` is linked against.
-All the programs are installed in `/bin` on both test images, the shared
-objects in `/lib`, and the kernel runs them during `make test`.
-`make user-progs` builds them alone.
+default `HOSTCC`) against the kernel's own ABI headers. `libctest`,
+`threadtest` and `dyntest` are built against mlibc, the C library,
+which comes from the `contrib/mlibc` submodule (`git submodule update
+--init`); building it needs muon and samurai, C implementations of meson
+and ninja (`MUON` and `SAMU` name them), and its first configure
+fetches mlibc's own subprojects with git. mlibc is built with the
+kernel's compiler (GCC 14 or later, or Clang), as `libc.a` and as the
+runtime linker `ld.so.1` and `libc.so.1`, and installed into
+`build/sysroot-$(TOOLCHAIN)/usr/lib64`; `make mlibc` builds it alone.
+Programs are linked against `libc.so.1` and name `/usr/lib64/ld.so.1`
+as their interpreter (`libctest-static` is linked statically,
+`dyntest-pie` is position-independent). All the programs are installed
+in `/bin` on both test images, the shared C library in `/usr/lib64` and
+the tests' own `libdt.so.1` in `/lib`, and the kernel runs them during
+`make test`. `make user-progs` builds them alone.
 Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU
 ld instead, with its outputs kept apart. The shared objects are linked
 by the illumos link-editor either way, through `tools/ld/illumos-cc`.
+Settings for one host, such as `GCC_VERSION=14` for `gcc-14` and
+`g++-14` or `TOOLCHAIN=clang`, may go in an untracked `config.mk`.
 `SMP=n` and `MEM=size` set the guest's processors and memory, and
 `QEMU_CPU` its processor model (default `max,+invtsc`: Belka's
 nanosecond clock needs an invariant TSC).

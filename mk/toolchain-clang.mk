@@ -7,6 +7,7 @@
 #
 
 CC              := clang
+CXX             := clang++
 CC_INCLUDE      := $(shell $(CC) -print-file-name=include)
 TC_CFLAGS       := --target=x86_64-unknown-none-elf
 
@@ -17,3 +18,8 @@ LIBC_CC         := $(CC) --target=x86_64-unknown-elf
 LIBC_RTLIB      := $(shell $(CC) --target=x86_64-linux-gnu --rtlib=compiler-rt -print-libgcc-file-name)
 LIBC_CRTBEGIN   := $(dir $(LIBC_RTLIB))clang_rt.crtbegin-x86_64.o
 LIBC_CRTEND     := $(dir $(LIBC_RTLIB))clang_rt.crtend-x86_64.o
+LIBC_PIE_CRTBEGIN := $(LIBC_CRTBEGIN)
+LIBC_PIE_CRTEND := $(LIBC_CRTEND)
+# clang's position-independent code reaches other objects' data through
+# the GOT already.
+LIBC_PIE_CFLAGS := -fPIE

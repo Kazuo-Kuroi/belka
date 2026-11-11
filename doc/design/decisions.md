@@ -689,19 +689,24 @@ Recorded 2026-11-07.
   which runs mlibc's build with muon (0.7 or later: earlier versions
   ignore cross files) and samurai. muon fetches mlibc's subprojects
   with git and installs every file each time, so the sysroot is
-  installed afresh only when `libc.a` was rebuilt. mlibc builds with GCC and with
-  Clang, each from a cross file in `tools/mlibc`, with the same
-  compiler as the kernel (`TOOLCHAIN`). For a bare ELF target Clang does
+  installed afresh only when `libc.a` was rebuilt. mlibc builds with GCC
+  and with Clang, each from a cross file in `tools/mlibc`, with the same
+  compiler as the kernel (`TOOLCHAIN`). It needs GCC 14 or later in
+  practice (C++23 explicit object parameters), though its build checks
+  only for 13; `GCC_VERSION` picks a version, and a host's settings may
+  go in an untracked `config.mk`. For a bare ELF target Clang does
   not predefine `_GNU_SOURCE` in C++, as it does for Linux, so the Clang
   cross file passes it.
-- **Linking:** static only for now, with the link-editor run directly
-  rather than through the compiler driver. Programs link mlibc's
-  `crt1.o` and `crti.o`, a start object, `libc.a`, the compiler's
-  run-time library (libgcc, or compiler-rt's builtins), an end object,
-  and `crtn.o`. With the illumos link-editor the start and end objects
-  are Belka's own (`usr/lib/crt`); with GNU ld they are the compiler's
-  (GCC's `crtbeginT.o` or compiler-rt's `crtbegin`). Test images get
-  copies stripped of debug information.
+- **Linking:** with the link-editor run directly rather than through
+  the compiler driver, dynamically by default (see Shared libraries
+  below). Programs link mlibc's `crt1.o` and `crti.o`, a start object,
+  `libc.so` (or `libc.a`), the compiler's run-time library (libgcc, or
+  compiler-rt's builtins), an end object, and `crtn.o`. With the illumos
+  link-editor the start and end objects are Belka's own (`usr/lib/crt`);
+  with GNU ld they are the compiler's (GCC's `crtbeginT.o`, or
+  `crtbeginS.o` for a position-independent program, or compiler-rt's
+  `crtbegin`). Test images get static programs stripped of debug
+  information.
 - **ABI headers** (`abis/belka`) give the kernel's values and layouts:
   UnixWare error numbers, signal numbers and flags, `open` flags and
   `fcntl` commands, `waitsys` options, mapping flags, and the native
@@ -925,7 +930,7 @@ Recorded 2026-11-07.
   `ET_DYN`, and name no interpreter of its own. A position-independent
   program (`ET_DYN`) is loaded at `VM_PIE_BASE`.
 - **The shared C library** is mlibc built a second time, as its runtime
-  linker `ld.so` and `libc.so`, in `build/mlibc-shared-$(TOOLCHAIN)`.
+  linker and C library, in `build/mlibc-shared-$(TOOLCHAIN)`.
   - The illumos link-editor links both, whatever `LINKER` says.
   - mlibc links through the compiler driver with GNU ld's options, so
     the cross file (`tools/mlibc/*-shared.cross`) names
@@ -937,51 +942,90 @@ Recorded 2026-11-07.
     wildcards. That is how `libc.so` hides its C++ symbols.
   - Asked which linker it is (meson's `cc -Wl,-v`), the wrapper says it
     takes GNU ld's options.
-  - `libc.so` takes its runtime helpers from libgcc or compiler-rt.
-- **The test images** (now 12 MB) get `ld.so` and `libc.so` in `/lib`.
+  - The C library takes its runtime helpers from libgcc or compiler-rt.
+- **Names and places** (decided 2026-11-10): SVR4's versioned names in
+  `/usr/lib64`. The runtime linker is `/usr/lib64/ld.so.1`, which every
+  dynamic program names as its interpreter; the C library is
+  `libc.so.1`, with `libc.so` for the link-editor. mlibc's fork gained a
+  `soversion` option for this, and its search path is `/usr/lib64`.
+  `libc.a` and the start-up objects live there too.
+- **The sysroot** holds both builds: the static one installed first,
+  the shared one over it. A build is configured afresh when its options
+  or its cross file change; the cross files are made from
+  `tools/mlibc/*.cross` with the toolchain's `CC` and `CXX` filled in.
+- **Programs built against mlibc are dynamic by default.** `libctest`,
+  `threadtest` and `dyntest` are dynamic; `libctest-static` is
+  `libctest` linked statically, so the static start-up stays tested.
+  - The link-editor finds a shared object's own dependencies
+    (`libc.so.1` needs `ld.so.1`) in the sysroot: illumos ld's `-Y P`
+    makes it the default directory, GNU ld's `-rpath-link` the same.
+    The installed `libc.so.1` has no run path of its own.
+- **The test images** (12 MB) carry `ld.so.1` and `libc.so.1` in
+  `/usr/lib64`, and the process self-test links the root's `/usr/lib64`
+  to the image's, so programs use their real interpreter path.
   - The copies are linked a second time with the link-editor's `-s`,
     not stripped. GNU strip rewrites the illumos link-editor's dynamic
     objects wrongly: it moved `ld.so`'s data segment and emptied a
     program's `PT_INTERP`.
   - Dynamic programs are copied unstripped.
+- **`AT_EXECFN`** (31, the number the C library's headers use): exec
+  copies the program's path, as it was given, onto the new stack. The
+  runtime linker expands `$ORIGIN` in the program's own run path from it.
+- **Mapped objects:** the runtime linker reserves an object's range
+  with an inaccessible anonymous mapping, at an address the kernel
+  chooses, and maps each segment from the file over it with
+  `MAP_FIXED`, private and copy-on-write, so text is the page cache's.
+  It no longer reads objects into anonymous memory at fixed addresses.
 - **mlibc changes**, for the illumos link-editor's output:
   - OS-specific dynamic tags, and those of the value range such as
     `DT_CHECKSUM`, are ignored, in `ld.so`'s check of itself too.
   - `DF_ORIGIN` and `DF_1_ORIGIN` are accepted.
-  - The `PT_SUNW_UNWIND` and `PT_SUNWSTACK` segments are ignored.
+  - The `PT_SUNW_UNWIND` (older illumos output) and `PT_SUNWSTACK`
+    segments are ignored.
   - A relocation against a local symbol uses that symbol in its own
     object, with no lookup. libld gives TLS module relocations the TLS
     section's symbol, where GNU ld uses symbol 0.
   - `ld.so` finds its own ELF header at its base address when
     `__ehdr_start` is undefined.
-- **A libld change:** an executable's local-exec TLS offsets are its TLS
-  size rounded to the segment's own alignment. That is the AMD64 psABI
-  rule, which GNU ld and mlibc's runtime linker follow. libld rounded to
-  16 bytes, as Solaris's runtime linker expects. Static programs had
-  matched only because their TLS size was a multiple of 16.
-- **Tests:** `usr/tests/dyntest.c` is linked dynamically, with
-  interpreter `/p/lib/ld.so` and run path `/p/lib` (the test images
-  mount at `/p`). It checks:
-  - that the interpreter ran;
-  - calls and data into `libc.so`: stdio, the heap, errno, and the
+- **libld changes:**
+  - An executable's local-exec TLS offsets are its TLS size rounded to
+    the segment's own alignment. That is the AMD64 psABI rule, which GNU
+    ld and mlibc's runtime linker follow. libld rounded to 16 bytes, as
+    Solaris's runtime linker expects. Static programs had matched only
+    because their TLS size was a multiple of 16.
+  - The `.eh_frame_hdr` segment is `PT_SUNW_EH_FRAME`, the value the
+    AMD64 psABI requires (`PT_GNU_EH_FRAME`), which unwinders other than
+    illumos's look for, rather than the older `PT_SUNW_UNWIND`.
+  - **Position-independent executables** (`-z type=pie`, after Oracle
+    Solaris's option; illumos has none). One is a shared object that
+    names an interpreter (the default one if `-I` is not given), marked
+    `DF_1_PIE`. Its own references bind to its own definitions, as with
+    `-B symbolic`, since nothing can interpose on a program's symbols;
+    like an executable it may leave nothing undefined, and its TLS is
+    the first static block, so the executable's TLS models and
+    relaxations apply. It asserts `-z text`, and takes no soname.
+  - It makes no copy relocations, so position-independent code must
+    reach other objects' data through the GOT: clang's does, and GCC
+    needs `-mno-direct-extern-access` (`LIBC_PIE_CFLAGS`).
+- **Tests:** `usr/tests/dyntest.c` checks:
+  - that the interpreter ran, and `AT_EXECFN`;
+  - calls and data into `libc.so.1`: stdio, the heap, errno, and the
     environment;
-  - the program's and the library's TLS across threads;
-  - `dlopen` and `dlsym`;
+  - `libdt.so.1` (`usr/tests/libdt.c`, a library of the tests' own, in
+    the images' `/lib`), found through the run path `$ORIGIN/../lib`:
+    its functions, its data (which the program copies into its own),
+    its constructor, and calls from it into `libc.so.1`;
+  - the program's, libc's and libdt's TLS across threads;
+  - `dlopen` and `dlsym`, of `libc.so.1` and `libdt.so.1`;
   - `fork`, constructors, and exit handlers.
 
-  With `LINKER=gnu`, GNU ld links it against the same `libc.so`.
-- **Not yet:**
-  - `AT_EXECFN`, and so `$ORIGIN` in a program's own run path;
-  - mapping objects' segments, rather than reading them into anonymous
-    memory (`MLIBC_MAP_DSO_SEGMENTS`);
-  - position-independent executables from the illumos link-editor
-    (this one has no `-z type=pie`), so exec's `VM_PIE_BASE` path is
-    untested;
-  - finding `.eh_frame_hdr` for unwinding: libld writes
-    `PT_SUNW_UNWIND`, not `PT_GNU_EH_FRAME`;
-  - a sysroot with the shared library, and programs linked against it
-    by default;
-  - shared libraries of Belka's own.
+  `dyntest-pie` is the same program, position-independent, loaded at
+  `VM_PIE_BASE`. With `LINKER=gnu`, GNU ld links them, and `libdt.so.1`,
+  against the same `libc.so.1`.
+- **Not yet:** shared libraries of Belka's own beyond the test one,
+  `libc.so.1`'s versioning of its symbols (mapfile versions), lazy
+  binding (mlibc binds everything at load), and `LD_LIBRARY_PATH` and
+  friends for set-user-ID programs once there are credentials.
 
 ## File systems
 

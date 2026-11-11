@@ -3,13 +3,14 @@
 # SPDX-License-Identifier: MIT
 #
 # Meson cross file: mlibc for Belka on amd64, built with clang.
+# The Makefile fills in @CC@ and @CXX@, the toolchain's CC and CXX.
 #
 # clang for a bare ELF target does not predefine _GNU_SOURCE in C++, as it
 # does for Linux, so it is given here: mlibc builds itself with it.
 
 [binaries]
-c = ['clang', '--target=x86_64-unknown-elf']
-cpp = ['clang++', '--target=x86_64-unknown-elf']
+c = ['@CC@', '--target=x86_64-unknown-elf']
+cpp = ['@CXX@', '--target=x86_64-unknown-elf']
 ar = 'ar'
 strip = 'strip'
 

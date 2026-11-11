@@ -4,17 +4,18 @@
 #
 # Meson cross file: the shared mlibc (ld.so and libc.so) for Belka on
 # amd64, built with clang and linked by the illumos link-editor. The
-# Makefile fills in @CC@ (tools/ld/illumos-cc, which links through the
-# link-editor @LD@ and compiles with clang) and @RTLIB@ (the compiler's
-# runtime library, which libc.so takes its helpers from).
+# Makefile fills in @ILLUMOS_CC@ (tools/ld/illumos-cc, which links
+# through the link-editor @LD@ and compiles with @CC@ and @CXX@, the
+# toolchain's CC and CXX) and @RTLIB@ (the compiler's runtime library,
+# which libc.so takes its helpers from).
 #
 # The objects are position-independent, as meson compiles them for a
 # shared library; the static build's -fno-pic is not given here.
 # -D_GNU_SOURCE: see clang.cross.
 
 [binaries]
-c = ['@CC@', '@LD@', 'clang', '--target=x86_64-unknown-elf']
-cpp = ['@CC@', '@LD@', 'clang++', '--target=x86_64-unknown-elf']
+c = ['@ILLUMOS_CC@', '@LD@', '@CC@', '--target=x86_64-unknown-elf']
+cpp = ['@ILLUMOS_CC@', '@LD@', '@CXX@', '--target=x86_64-unknown-elf']
 ar = 'ar'
 strip = 'strip'
 

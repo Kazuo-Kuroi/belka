@@ -212,6 +212,7 @@ selftest_proc(void)
         char *libctest[] = { "libctest", "/p", NULL };
         char *threadtest[] = { "threadtest", NULL };
         char *dyntest[] = { "dyntest", NULL };
+        char *dyntest_pie[] = { "dyntest-pie", NULL };
         size_t used1, used2, zone0[NPROCZONES];
         int zones_ok = 1;
 
@@ -221,6 +222,9 @@ selftest_proc(void)
                 zone0[i] = kmem_zone_inuse_named(proc_zones[i]);
         CHECK(vn_mkdir("/p", 0755) == 0);
         CHECK(vfs_mount("ext2fs", "/p", &args) == 0);
+        /* Dynamic programs find the shared C library in /usr/lib64. */
+        CHECK(vn_mkdir("/usr", 0755) == 0);
+        CHECK(vn_symlink("/p/usr/lib64", "/usr/lib64") == 0);
 
         CHECK(run("/p/bin/hello", hello, CLD_EXITED, 0));
         CHECK(run("/p/bin/segv", segv, CLD_KILLED, SIGSEGV));
@@ -229,8 +233,10 @@ selftest_proc(void)
         CHECK(run("/p/bin/sigtest", sigtest, CLD_EXITED, 0));
         CHECK(run("/p/bin/lwptest", lwptest, CLD_EXITED, 0));
         CHECK(run("/p/bin/libctest", libctest, CLD_EXITED, 0));
+        CHECK(run("/p/bin/libctest-static", libctest, CLD_EXITED, 0));
         CHECK(run("/p/bin/threadtest", threadtest, CLD_EXITED, 0));
         CHECK(run("/p/bin/dyntest", dyntest, CLD_EXITED, 0));
+        CHECK(run("/p/bin/dyntest-pie", dyntest_pie, CLD_EXITED, 0));
         test_kernel_signal();
         CHECK(proc_wait(12345, &(int){ 0 }, &(int){ 0 }) == ECHILD);
 
@@ -254,6 +260,8 @@ selftest_proc(void)
         }
         CHECK(zones_ok);
 
+        CHECK(vn_remove("/usr/lib64") == 0);
+        CHECK(vn_rmdir("/usr") == 0);
         CHECK(vfs_unmount("/p") == 0);
         CHECK(vn_rmdir("/p") == 0);
         return failures;

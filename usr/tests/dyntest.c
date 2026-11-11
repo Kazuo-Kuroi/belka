@@ -6,12 +6,14 @@
 
 /*
  * A dynamically linked program: started by the program interpreter
- * (mlibc's ld.so) with mlibc's libc.so, both linked by the illumos
- * link-editor. Checks that the interpreter ran, that calls and data
- * reach the shared C library (stdio, malloc, errno, environ), that
- * thread-local storage works in the program and in the library across
- * threads, that dlopen and dlsym find symbols, that fork and exit
- * handlers work, and that the program's own constructors ran.
+ * (mlibc's ld.so.1) with mlibc's libc.so.1, both linked by the illumos
+ * link-editor, and with libdt.so.1, found through the run path
+ * $ORIGIN/../lib. Checks that the interpreter ran, that calls and data
+ * reach the shared libraries (stdio, malloc, errno, environ, and
+ * libdt's functions, data, and constructor), that thread-local storage
+ * works in the program and in both libraries across threads, that
+ * dlopen and dlsym find symbols, that fork and exit handlers work, and
+ * that the program's own constructors ran.
  *
  * Exits with the number of failed checks.
  */
@@ -29,6 +31,16 @@
 #include <sys/auxv.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+/* libdt.so.1 (usr/tests/libdt.c). */
+extern int dt_counter;
+extern __thread int dt_tls;
+int dt_constructed(void);
+int dt_add(int, int);
+int dt_get_counter(void);
+int dt_get_tls(void);
+void dt_set_tls(int);
+int dt_format(char *, size_t, int);
 
 static int failures;
 
@@ -56,6 +68,10 @@ test_interp(void)
         CHECK(getauxval(AT_BASE) != 0);
         CHECK(getauxval(AT_ENTRY) != 0);
         CHECK(getauxval(AT_PHDR) != 0);
+        /* The process self-test runs it as /p/bin/dyntest or dyntest-pie. */
+        CHECK(getauxval(AT_EXECFN) != 0 &&
+            strncmp((const char *)getauxval(AT_EXECFN), "/p/bin/dyntest",
+            14) == 0);
 }
 
 static void
@@ -94,11 +110,14 @@ tls_thread(void *arg)
         errno = n;
         sched_yield();
         CHECK(tls_counter == n);
+        CHECK(dt_tls == 3 && dt_get_tls() == 3);
+        dt_set_tls(n + 1);
         CHECK(errno == n);
+        CHECK(dt_tls == n + 1);
         return (void *)(intptr_t)(tls_counter * 2);
 }
 
-/* The program's and libc's (errno) thread-local storage, per thread. */
+/* The program's, libc's (errno), and libdt's thread-local storage. */
 static void
 test_tls(void)
 {
@@ -116,10 +135,34 @@ test_tls(void)
         CHECK(tls_counter == 1);
 }
 
+/* A library of the program's own, found through $ORIGIN. */
+static void
+test_libdt(void)
+{
+        char buf[32];
+        void *h;
+        int (*add)(int, int);
+
+        CHECK(dt_constructed());
+        CHECK(dt_add(40, 2) == 42);
+        CHECK(dt_format(buf, sizeof(buf), 9) == 7 &&
+            strcmp(buf, "libdt 9") == 0);
+        /* The program and the library see one dt_counter. */
+        CHECK(dt_counter == 7);
+        dt_counter = 11;
+        CHECK(dt_get_counter() == 11);
+        h = dlopen("libdt.so.1", RTLD_NOW);
+        CHECK(h != NULL);
+        if (h == NULL)
+                return;
+        add = (int (*)(int, int))dlsym(h, "dt_add");
+        CHECK(add != NULL && add(1, 2) == 3);
+}
+
 static void
 test_dl(void)
 {
-        void *h = dlopen("libc.so", RTLD_NOW);
+        void *h = dlopen("libc.so.1", RTLD_NOW);
         size_t (*len)(const char *);
 
         CHECK(h != NULL);
@@ -160,6 +203,7 @@ main(int argc, char **argv)
         test_interp();
         test_libc();
         test_tls();
+        test_libdt();
         test_dl();
         test_fork();
         CHECK(atexit(at_exit) == 0);
