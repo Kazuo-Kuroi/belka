@@ -895,6 +895,19 @@ on_xcpu(int sig)
         got_xcpu = 1;
 }
 
+/* The CPU-limit child waited too long: say how long, by both clocks. */
+static int
+cpu_gave_up(int code, const struct timespec *t0)
+{
+        struct tms tms;
+
+        times(&tms);
+        printf("libctest: cpu limit child: gave up (%d) after %ld ms, "
+            "%ld ticks of processor time\n", code, ms_since(t0),
+            (long)tms.tms_utime);
+        return code;
+}
+
 /* Spin past one second of processor time (SIGXCPU) and two (SIGKILL). */
 static int
 child_cpu(void)
@@ -908,10 +921,10 @@ child_cpu(void)
         clock_gettime(CLOCK_MONOTONIC, &t0);
         while (!got_xcpu)
                 if (ms_since(&t0) > 60000)
-                        return 2;
+                        return cpu_gave_up(2, &t0);
         for (;;)
                 if (ms_since(&t0) > 120000)
-                        return 3;
+                        return cpu_gave_up(3, &t0);
 }
 
 /* getrlimit and setrlimit, and each limit enforced. */

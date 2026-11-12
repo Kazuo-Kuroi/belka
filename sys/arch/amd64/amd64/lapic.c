@@ -358,11 +358,18 @@ clock_calibrate(void)
             (uintmax_t)lapic_timer_count * HZ / 1000, HZ);
 }
 
-/* Nanoseconds since the clock was calibrated, from this processor's TSC. */
+/*
+ * Nanoseconds since the clock was calibrated, from this processor's TSC.
+ * A TSC a little behind the one calibrated against reads as the start:
+ * the difference must not wrap, since gethrtime() keeps the latest value
+ * any processor has read, and one wrapped read would jump the clock
+ * ahead for good.
+ */
 uint64_t
 md_hrtime(void)
 {
-        uint64_t d = rdtsc() - hrtime_base;
+        uint64_t tsc = rdtsc();
+        uint64_t d = tsc > hrtime_base ? tsc - hrtime_base : 0;
         uint64_t hi = d >> 32, lo = d & UINT32_MAX;
 
         return ((hi * hrtime_mult) << (32 - hrtime_shift)) +
