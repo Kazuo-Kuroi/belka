@@ -41,6 +41,7 @@ struct as *as_dup(struct as *);
 int as_map(struct as *, vaddr_t, size_t, int (*)(struct seg *, void *),
     void *);
 int as_unmap(struct as *, vaddr_t, size_t);
+size_t as_size(struct as *);
 int as_setprot(struct as *, vaddr_t, size_t, unsigned int);
 int as_fault(struct as *, vaddr_t, enum seg_rw);
 int as_gap(struct as *, size_t, vaddr_t, vaddr_t *);

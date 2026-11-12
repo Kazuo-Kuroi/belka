@@ -83,6 +83,7 @@ proc_init(void)
         proc0.p_flags = P_SYSTEM;
         proc0.p_cred = kcred;
         proc0.p_cmask = 022;
+        rlimit_init(&proc0);
         memcpy(proc0.p_comm, "sched", 6);
         sig_proc_init(&proc0, NULL);
         proc0.p_sigflags = PS_JCTL;
@@ -146,6 +147,8 @@ proc_alloc(struct proc *parent)
         p->p_stat = SIDL;
         p->p_cred = parent->p_cred;
         p->p_cmask = parent->p_cmask;
+        memcpy(p->p_rlimit, parent->p_rlimit, sizeof(p->p_rlimit));
+        p->p_cpucheck = parent->p_cpucheck != 0 ? lbolt + 1 : 0;
         memcpy(p->p_comm, parent->p_comm, PSCOMSIZ);
         sig_proc_init(p, parent);
 

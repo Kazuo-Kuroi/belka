@@ -691,6 +691,12 @@ tmpfs_write(struct vnode *vp, struct uio *uio, int ioflag,
 
                 if ((ssize_t)n > uio->uio_resid)
                         n = (size_t)uio->uio_resid;
+                if (uio->uio_offset >= uio->uio_limit) {
+                        error = EFBIG;
+                        break;
+                }
+                if ((off_t)n > uio->uio_limit - uio->uio_offset)
+                        n = (size_t)(uio->uio_limit - uio->uio_offset);
                 if (pg >= TMPFS_MAXFILEPAGES) {
                         error = EFBIG;
                         break;

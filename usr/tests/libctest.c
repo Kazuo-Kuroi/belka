@@ -9,8 +9,8 @@
  * the library's view of the system matches the kernel's: start-up and
  * the environment, the heap, stdio on files and directories, errno,
  * processes and wait statuses, signals and handlers, time, the thread
- * pointer, the clocks and processor time, pipes and named FIFOs,
- * vectored I/O, and getcwd().
+ * pointer, the clocks and processor time, pipes and named FIFOs, poll
+ * and select, resource limits, vectored I/O, and getcwd().
  *
  * usage: libctest dir, where dir holds bin/ and is writable. Exits with
  * the number of failed checks.
@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -809,6 +810,140 @@ test_poll(void)
         CHECK(unlink(path("/libctest.poll")) == 0);
 }
 
+/* Run fn in a child; its wait status. */
+static int
+in_child(int (*fn)(void))
+{
+        int status = -1;
+        pid_t kid = fork();
+
+        if (kid == 0)
+                _exit(fn());
+        if (kid < 0)
+                return -1;
+        while (waitpid(kid, &status, 0) != kid)
+                if (errno != EINTR)
+                        return -1;
+        return status;
+}
+
+static int
+child_nofile(void)
+{
+        struct rlimit rl = { 8, 8 };
+        int fd, last = -1;
+
+        if (setrlimit(RLIMIT_NOFILE, &rl) != 0)
+                return 1;
+        while ((fd = dup(0)) >= 0)
+                last = fd;
+        if (errno != EMFILE || last != 7)
+                return 2;
+        if (dup2(0, 8) != -1 || errno != EBADF)
+                return 3;
+        if (fcntl(0, F_DUPFD, 8) != -1 || errno != EINVAL)
+                return 4;
+        return 0;
+}
+
+static int
+child_fsize(void)
+{
+        struct rlimit rl = { 10, RLIM_INFINITY };
+        int fd = open(path("/libctest.fsize"), O_RDWR | O_CREAT | O_TRUNC,
+            0644);
+
+        if (fd < 0 || signal(SIGXFSZ, SIG_IGN) == SIG_ERR ||
+            setrlimit(RLIMIT_FSIZE, &rl) != 0)
+                return 1;
+        if (write(fd, "0123456789abcdefghij", 20) != 10)
+                return 2;
+        if (write(fd, "x", 1) != -1 || errno != EFBIG)
+                return 3;
+        if (ftruncate(fd, 100) != -1 || errno != EFBIG)
+                return 4;
+        if (ftruncate(fd, 5) != 0)
+                return 5;
+        signal(SIGXFSZ, SIG_DFL);
+        (void)pwrite(fd, "y", 1, 10);   /* SIGXFSZ ends the process */
+        return 6;
+}
+
+static int
+child_vmem(void)
+{
+        struct rlimit rl = { 64UL << 20, RLIM_INFINITY };
+        void *p;
+
+        if (setrlimit(RLIMIT_AS, &rl) != 0)
+                return 1;
+        if (mmap(NULL, 256UL << 20, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) != MAP_FAILED ||
+            errno != ENOMEM)
+                return 2;
+        p = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        return p == MAP_FAILED ? 3 : 0;
+}
+
+static volatile sig_atomic_t got_xcpu;
+
+static void
+on_xcpu(int sig)
+{
+        (void)sig;
+        got_xcpu = 1;
+}
+
+/* Spin past one second of processor time (SIGXCPU) and two (SIGKILL). */
+static int
+child_cpu(void)
+{
+        struct rlimit rl = { 1, 2 };
+        struct timespec t0;
+
+        if (signal(SIGXCPU, on_xcpu) == SIG_ERR ||
+            setrlimit(RLIMIT_CPU, &rl) != 0)
+                return 1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        while (!got_xcpu)
+                if (ms_since(&t0) > 60000)
+                        return 2;
+        for (;;)
+                if (ms_since(&t0) > 120000)
+                        return 3;
+}
+
+/* getrlimit and setrlimit, and each limit enforced. */
+static void
+test_rlimits(void)
+{
+        struct rlimit rl;
+        int status;
+
+        CHECK(getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur == 1024 &&
+            rl.rlim_max == 1024);
+        CHECK(getrlimit(RLIMIT_STACK, &rl) == 0 &&
+            rl.rlim_cur == 8UL << 20 && rl.rlim_max == RLIM_INFINITY);
+        CHECK(getrlimit(RLIMIT_CPU, &rl) == 0 &&
+            rl.rlim_cur == RLIM_INFINITY);
+        CHECK(getrlimit(99, &rl) == -1 && errno == EINVAL);
+        rl = (struct rlimit){ 2, 1 };
+        CHECK(setrlimit(RLIMIT_CORE, &rl) == -1 && errno == EINVAL);
+
+        status = in_child(child_nofile);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        status = in_child(child_fsize);
+        CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGXFSZ);
+        CHECK(unlink(path("/libctest.fsize")) == 0);
+        status = in_child(child_vmem);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        status = in_child(child_cpu);
+        if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGKILL)
+                printf("libctest: cpu limit child: status %#x\n", status);
+        CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+}
+
 /* Named FIFOs on ext2 (dir) and on tmpfs (the root). */
 static void
 test_fifos(void)
@@ -897,6 +1032,7 @@ main(int argc, char **argv)
         test_pipes();
         test_fifos();
         test_poll();
+        test_rlimits();
         test_file_ops();
         test_cwd();
         printf("libctest: %d failures\n", failures);

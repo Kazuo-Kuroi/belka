@@ -68,6 +68,15 @@ frele(struct file *fp)
         kmem_zone_free(file_zone, fp);
 }
 
+/* The descriptors p may have: below RLIMIT_NOFILE. p_lock is held. */
+static int
+fd_limit(struct proc *p)
+{
+        rlim_t r = p->p_rlimit[RLIMIT_NOFILE].rlim_cur;
+
+        return r < NOFILE_MAX ? (int)r : NOFILE_MAX;
+}
+
 /* Grow p's table to at least n slots. p_lock is held. */
 static int
 fd_grow(struct proc *p, int n)
@@ -107,10 +116,16 @@ fd_alloc(struct proc *p, struct file *fp, int minfd, int *fdp)
 {
         int fd, error;
 
-        if (minfd < 0 || minfd >= NOFILE_MAX)
-                return EINVAL;
         mutex_lock(&p->p_lock);
+        if (minfd < 0 || minfd >= fd_limit(p)) {
+                mutex_unlock(&p->p_lock);
+                return EINVAL;
+        }
         for (fd = minfd;; fd++) {
+                if (fd >= fd_limit(p)) {
+                        mutex_unlock(&p->p_lock);
+                        return EMFILE;
+                }
                 if (fd >= p->p_nofile && (error = fd_grow(p, fd + 1)) != 0) {
                         mutex_unlock(&p->p_lock);
                         return error;
@@ -135,9 +150,11 @@ fd_install(struct proc *p, struct file *fp, int fd)
         struct file *old;
         int error;
 
-        if (fd < 0 || fd >= NOFILE_MAX)
-                return EBADF;
         mutex_lock(&p->p_lock);
+        if (fd < 0 || fd >= fd_limit(p)) {
+                mutex_unlock(&p->p_lock);
+                return EBADF;
+        }
         if (fd >= p->p_nofile && (error = fd_grow(p, fd + 1)) != 0) {
                 mutex_unlock(&p->p_lock);
                 return error;

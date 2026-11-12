@@ -74,6 +74,7 @@ lookup_readlink(struct vnode *vp, char *buf, size_t *lenp)
         uio.uio_offset = 0;
         uio.uio_resid = MAXPATHLEN - 1;
         uio.uio_segflg = UIO_SYSSPACE;
+        uio.uio_limit = UIO_NOLIMIT;
         uio.uio_rw = UIO_READ;
         if ((error = VOP_READLINK(vp, &uio, kcred)) != 0)
                 return error;

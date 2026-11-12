@@ -327,6 +327,7 @@ test_readdir(void)
                 uio.uio_iovcnt = 1;
                 uio.uio_resid = 48;
                 uio.uio_segflg = UIO_SYSSPACE;
+                uio.uio_limit = UIO_NOLIMIT;
                 uio.uio_rw = UIO_READ;
                 CHECK(VOP_READDIR(vp, &uio, &eof, kcred) == 0);
                 used = 48 - (size_t)uio.uio_resid;

@@ -31,6 +31,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_sig.c \
                    sys/kern/kern_time.c \
                    sys/kern/kern_proc.c \
+                   sys/kern/kern_resource.c \
                    sys/kern/kern_spinlock.c \
                    sys/kern/kern_syscall.c \
                    sys/kern/kern_synch.c \

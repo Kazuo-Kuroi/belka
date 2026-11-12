@@ -29,6 +29,9 @@
 #include <sys/file.h>
 #include <sys/kmem.h>
 #include <sys/proc.h>
+#include <sys/resource.h>
+#include <sys/signal.h>
+#include <sys/spinlock.h>
 #include <sys/stat.h>
 #include <sys/synch.h>
 #include <sys/sysent.h>
@@ -58,6 +61,23 @@ uio_prefault(void *ubuf, size_t len, enum uio_rw rw)
                     FC_OK)
                         return;
         }
+}
+
+/* A write met RLIMIT_FSIZE: SIGXFSZ to the writing LWP. */
+static void
+fsize_exceeded(void)
+{
+        struct proc *p = curproc;
+        siginfo_t si;
+        int s;
+
+        memset(&si, 0, sizeof(si));
+        si.si_signo = SIGXFSZ;
+        si.si_code = SI_USER;
+        si.si_pid = p->p_pid;
+        s = spin_lock(&p->p_siglock);
+        sigtolwp_locked(p, curlwp, SIGXFSZ, &si);
+        spin_unlock(&p->p_siglock, s);
 }
 
 /*
@@ -109,6 +129,13 @@ rdwrv(int fd, struct iovec *iov, int iovcnt, off_t off, int positioned,
         uio.uio_iovcnt = iovcnt;
         uio.uio_resid = (ssize_t)len;
         uio.uio_segflg = UIO_USERSPACE;
+        uio.uio_limit = UIO_NOLIMIT;
+        if (rw == UIO_WRITE && vp->v_type == VREG) {
+                rlim_t fsize = rlimit_cur(p, RLIMIT_FSIZE);
+
+                if (fsize < (rlim_t)UIO_NOLIMIT)
+                        uio.uio_limit = (off_t)fsize;
+        }
         uio.uio_rw = rw;
         for (int i = 0; i < iovcnt; i++)
                 uio_prefault(iov[i].iov_base, iov[i].iov_len, rw);
@@ -119,6 +146,9 @@ rdwrv(int fd, struct iovec *iov, int iovcnt, off_t off, int positioned,
                 error = VOP_READ(vp, &uio, ioflag, fp->f_cred);
         else
                 error = VOP_WRITE(vp, &uio, ioflag, fp->f_cred);
+        if (rw == UIO_WRITE && error == EFBIG && uio.uio_limit != UIO_NOLIMIT &&
+            uio.uio_offset >= uio.uio_limit)
+                fsize_exceeded();
         if (!positioned) {
                 fp->f_offset = uio.uio_offset;
                 mutex_unlock(&fp->f_offlock);
@@ -402,6 +432,7 @@ sys_getdents(const uint64_t *args, uint64_t *rv)
         uio.uio_iovcnt = 1;
         uio.uio_resid = (ssize_t)args[2];
         uio.uio_segflg = UIO_USERSPACE;
+        uio.uio_limit = UIO_NOLIMIT;
         uio.uio_rw = UIO_READ;
         mutex_lock(&fp->f_offlock);
         uio.uio_offset = fp->f_offset;
@@ -475,6 +506,11 @@ sys_ftruncate(const uint64_t *args, uint64_t *rv __unused)
         if ((fp->f_flag & FWRITE) == 0 || (off_t)args[1] < 0) {
                 frele(fp);
                 return EINVAL;
+        }
+        if (args[1] > rlimit_cur(curproc, RLIMIT_FSIZE)) {
+                frele(fp);
+                fsize_exceeded();
+                return EFBIG;
         }
         memset(&va, 0, sizeof(va));
         va.va_mask = AT_SIZE;

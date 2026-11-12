@@ -17,8 +17,9 @@
  * finds the program through the auxiliary vector: AT_PHDR and AT_ENTRY
  * are the program's, AT_BASE the interpreter's load address, and
  * AT_EXECFN the program's path as exec was given it (for $ORIGIN). The
- * stack is VM_STACK_SIZE of demand-zero memory below USRSTACK, all mapped
- * at once as UnixWare does.
+ * stack is RLIMIT_STACK of demand-zero memory below USRSTACK (at least
+ * EXEC_MINSTACK, at most VM_STACK_SIZE, the space set aside for it),
+ * all mapped at once as UnixWare does.
  *
  * The initial stack follows the AMD64 psABI, which UnixWare's own
  * layout matches: argc, the argv pointers and a NULL, the environment
@@ -59,6 +60,7 @@
 #include <vm/seg_vn.h>
 
 #define ARG_MAX         (64 * 1024)     /* argument and environment bytes */
+#define EXEC_MINSTACK   (1024 * 1024)   /* holds ARG_MAX, its pointers, auxv */
 #define EXEC_MAXPHDR    32
 #define NAUXV           9
 
@@ -310,18 +312,29 @@ elf_map(struct as *as, struct vnode *vp, const Elf64_Ehdr *eh,
         return 0;
 }
 
-/* The stack: VM_STACK_SIZE of demand-zero memory below USRSTACK. */
+/*
+ * The stack: RLIMIT_STACK of demand-zero memory below USRSTACK, kept
+ * between EXEC_MINSTACK, which always holds the arguments, and
+ * VM_STACK_SIZE.
+ */
 static int
 exec_map_stack(struct as *as)
 {
+        rlim_t size = rlimit_cur(curproc, RLIMIT_STACK);
         struct segvn_crargs a;
+
+        if (size > VM_STACK_SIZE)
+                size = VM_STACK_SIZE;
+        if (size < EXEC_MINSTACK)
+                size = EXEC_MINSTACK;
+        size &= ~(rlim_t)PAGEOFFSET;
 
         a.vp = NULL;
         a.offset = 0;
         a.type = MAP_PRIVATE;
         a.prot = PROT_READ | PROT_WRITE;
         a.maxprot = PROT_ALL;
-        return as_map(as, USRSTACK - VM_STACK_SIZE, VM_STACK_SIZE,
+        return as_map(as, USRSTACK - (vaddr_t)size, (size_t)size,
             segvn_create, &a);
 }
 

@@ -33,6 +33,7 @@
 #include <stdint.h>
 
 #include <sys/compiler.h>
+#include <sys/resource.h>
 #include <sys/signal.h>
 #include <sys/spinlock.h>
 #include <sys/synch.h>
@@ -161,6 +162,9 @@ struct proc {
         mode_t          p_cmask;
         vaddr_t         p_brkbase;
         size_t          p_brksize;
+        struct rlimit   p_rlimit[RLIM_NLIMITS];
+        /* lbolt of the next processor time check, 0 for none; racy reads. */
+        volatile uint64_t p_cpucheck;
 
         /* Process groups and sessions, under proctree_lock. */
         pid_t           p_pgid;

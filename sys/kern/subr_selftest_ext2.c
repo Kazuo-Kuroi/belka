@@ -138,6 +138,7 @@ count_entries(const char *path)
                 uio.uio_iovcnt = 1;
                 uio.uio_resid = 2048;
                 uio.uio_segflg = UIO_SYSSPACE;
+                uio.uio_limit = UIO_NOLIMIT;
                 uio.uio_rw = UIO_READ;
                 if (VOP_READDIR(vp, &uio, &eof, kcred) != 0) {
                         n = -1;

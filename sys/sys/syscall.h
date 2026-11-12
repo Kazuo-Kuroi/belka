@@ -78,6 +78,8 @@
 #define SYS_fchdir      120
 #define SYS_readv       121
 #define SYS_writev      122
+#define SYS_setrlimit   128
+#define SYS_getrlimit   129
 #define SYS_lchown      130
 #define SYS_rename      134
 #define SYS_uname       135

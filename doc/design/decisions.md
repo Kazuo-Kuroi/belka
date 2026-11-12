@@ -559,8 +559,8 @@ Recorded 2026-11-07.
   - `test-fault` and `test-apfault` now require the panic they provoke,
     so an unrelated panic can no longer pass as the expected one.
 - **Not yet:** init and sessions, device special files (the console is
-  a private vnode), credentials beyond the kernel's, and resource
-  limits.
+  a private vnode), and credentials beyond the kernel's. (Resource
+  limits came on 2026-11-12, below.)
 
 ## Signals (2026-11-08)
 
@@ -1082,6 +1082,37 @@ Recorded 2026-11-07.
   hang-up or error, writable `POLLOUT` or an error, exceptional
   `POLLPRI`. `pselect` with a signal mask fails with `ENOSYS` until the
   kernel can swap the mask atomically.
+
+## Resource limits (2026-11-12)
+
+- **`getrlimit` (129) and `setrlimit` (128)**, UnixWare's numbers, with
+  System V's resources: CPU 0, FSIZE 1, DATA 2, STACK 3, CORE 4, NOFILE
+  5, VMEM 6 (`RLIMIT_AS`). Limits are 64-bit and `RLIM_INFINITY` is all
+  ones, as mlibc has it; mlibc's Belka ABI gained `resource.h` with these
+  numbers. A soft limit above its hard one is `EINVAL`; every process is
+  the superuser, so hard limits may be raised. fork copies the limits.
+- **Defaults:** everything unlimited but the stack (soft 8 MB, the
+  space set aside for it) and open files (1024, `NOFILE_MAX`, which also
+  caps whatever is set).
+- **Enforcement:**
+  - NOFILE: no descriptor at or above the soft limit: `EMFILE` when none
+    is free, `EINVAL` for `F_DUPFD`, `EBADF` for `dup2`.
+  - FSIZE: System V's idea of a write limit in the `uio` (`uio_limit`):
+    tmpfs and ext2 stop a write there, a write that can do nothing
+    fails with `EFBIG` and sends `SIGXFSZ` to the writing LWP, and so
+    does `ftruncate` past it.
+  - DATA: the break may not grow past it.
+  - VMEM: `mmap` and the break may not take the mapped total past it
+    (`as_size()`, the sum of the segments; a `MAP_FIXED` mapping over
+    existing ones is counted in full).
+  - STACK: exec maps the soft limit, kept between 1 MB (room for the
+    arguments, so exec never fails after the old image is gone) and
+    `VM_STACK_SIZE`.
+  - CPU: `userret()` compares `lbolt` with the process's next check
+    time, set only while a limit is finite, and about once a second
+    then sums the process's ticks: `SIGXCPU` past the soft limit (each
+    second), `SIGKILL` past the hard one.
+  - CORE is kept for when there are core files.
 
 ## File systems
 

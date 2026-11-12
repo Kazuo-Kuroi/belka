@@ -227,12 +227,16 @@ trap_signal(uint64_t vector, int *codep)
 
 /*
  * On the way back to user mode, with interrupts enabled: switch if a
- * reschedule is due, then act on a pending signal.
+ * reschedule is due, check the processor time limit when one is due,
+ * then act on a pending signal.
  */
 static void
 userret(void)
 {
         sched_preempt_check();
+        if (curlwp != NULL && curproc->p_cpucheck != 0 &&
+            lbolt >= curproc->p_cpucheck)
+                rlimit_cpu_check();
         if (curthread->kt_sigpend && curlwp != NULL)
                 sig_userret();
 }

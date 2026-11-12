@@ -104,6 +104,19 @@ as_free(struct as *as)
         kmem_zone_free(as_zone, as);
 }
 
+/* The bytes as maps, all its segments together. */
+size_t
+as_size(struct as *as)
+{
+        size_t n = 0;
+
+        mraccess(&as->a_lock);
+        for (struct seg *s = as->a_segs; s != NULL; s = s->s_next)
+                n += s->s_size;
+        mrunlock(&as->a_lock);
+        return n;
+}
+
 /* fork's copy of as. */
 struct as *
 as_dup(struct as *as)

@@ -142,6 +142,7 @@ vn_rdwr(enum uio_rw rw, struct vnode *vp, void *buf, size_t len, off_t off,
         uio.uio_offset = off;
         uio.uio_resid = (ssize_t)len;
         uio.uio_segflg = UIO_SYSSPACE;
+        uio.uio_limit = UIO_NOLIMIT;
         uio.uio_rw = rw;
         if (rw == UIO_READ)
                 error = VOP_READ(vp, &uio, ioflag, kcred);
@@ -383,6 +384,7 @@ vn_readlink(const char *path, char *buf, size_t size, size_t *lenp)
         uio.uio_offset = 0;
         uio.uio_resid = (ssize_t)(size - 1);
         uio.uio_segflg = UIO_SYSSPACE;
+        uio.uio_limit = UIO_NOLIMIT;
         uio.uio_rw = UIO_READ;
         error = VOP_READLINK(vp, &uio, kcred);
         VN_RELE(vp);

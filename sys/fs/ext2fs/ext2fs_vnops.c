@@ -683,6 +683,12 @@ ext2fs_write(struct vnode *vp, struct uio *uio, int ioflag,
 
                 if ((ssize_t)n > uio->uio_resid)
                         n = (size_t)uio->uio_resid;
+                if ((off_t)off >= uio->uio_limit) {
+                        error = EFBIG;
+                        break;
+                }
+                if (n > (uint64_t)uio->uio_limit - off)
+                        n = (size_t)((uint64_t)uio->uio_limit - off);
                 if (off + n > EXT2_MAXSMALLFILE && !em->em_largefile) {
                         error = EFBIG;
                         break;

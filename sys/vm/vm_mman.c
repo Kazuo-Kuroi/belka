@@ -31,7 +31,8 @@
 
 /*
  * brk(addr): set the break. Below the start of the heap (the end of the
- * program's data) is ENOMEM, as in UnixWare.
+ * program's data) is ENOMEM, as in UnixWare. So is growing past
+ * RLIMIT_DATA, or past RLIMIT_VMEM in all.
  */
 int
 sys_brk(const uint64_t *args, uint64_t *rv __unused)
@@ -47,6 +48,14 @@ sys_brk(const uint64_t *args, uint64_t *rv __unused)
                 return ENOMEM;
         }
         newsize = pround(addr) - p->p_brkbase;
+        if ((rlim_t)newsize > p->p_rlimit[RLIMIT_DATA].rlim_cur ||
+            (newsize > p->p_brksize &&
+            p->p_rlimit[RLIMIT_VMEM].rlim_cur != RLIM_INFINITY &&
+            (rlim_t)(as_size(p->p_as) + newsize - p->p_brksize) >
+            p->p_rlimit[RLIMIT_VMEM].rlim_cur)) {
+                mutex_unlock(&p->p_lock);
+                return ENOMEM;
+        }
         error = as_brk(p->p_as, p->p_brkbase, p->p_brksize, newsize);
         if (error == 0)
                 p->p_brksize = newsize;
@@ -67,6 +76,7 @@ sys_mmap(const uint64_t *args, uint64_t *rv)
         int type = flags & MAP_TYPE;
         struct segvn_crargs a;
         struct file *fp = NULL;
+        rlim_t vmem;
         int error;
 
         if (len == 0 || (prot & ~PROT_ALL) != 0 ||
@@ -75,6 +85,9 @@ sys_mmap(const uint64_t *args, uint64_t *rv)
             (off & PAGEOFFSET) != 0 || len > VM_USER_MAX)
                 return EINVAL;
         len = pround(len);
+        vmem = rlimit_cur(p, RLIMIT_VMEM);
+        if (vmem != RLIM_INFINITY && (rlim_t)(as_size(p->p_as) + len) > vmem)
+                return ENOMEM;
         a.type = type;
         a.prot = prot;
         a.maxprot = PROT_ALL;
