@@ -24,7 +24,7 @@ sy_call_t sys_exec;
 /* sys_generic.c */
 sy_call_t sys_read, sys_write, sys_pread, sys_pwrite, sys_lseek, sys_close;
 sy_call_t sys_dup, sys_fcntl, sys_ioctl, sys_getdents, sys_ftruncate;
-sy_call_t sys_readv, sys_writev, sys_fsync, sys_fchmod;
+sy_call_t sys_readv, sys_writev, sys_fsync, sys_fchmod, sys_fchown;
 sy_call_t sys_fstat;
 /* vfs_syscalls.c */
 sy_call_t sys_open, sys_creat, sys_link, sys_unlink, sys_chdir, sys_fchdir;
@@ -42,7 +42,7 @@ sy_call_t sys_lwpkill, sys_lwpsuspend, sys_lwpcontinue;
 sy_call_t sys_lwp_sema_wait, sys_lwp_sema_post, sys_lwp_sema_trywait;
 sy_call_t sys_lwp_addr_wait, sys_lwp_addr_wake;
 /* fs/fifofs/fifo_vnops.c */
-sy_call_t sys_pipe, sys_mknod;
+sy_call_t sys_pipe, sys_mknod, sys_chown, sys_lchown;
 /* kern_time.c */
 sy_call_t sys_clock_gettime, sys_clock_getres, sys_times, sys_yield;
 

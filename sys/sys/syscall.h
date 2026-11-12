@@ -33,6 +33,7 @@
 #define SYS_time        13
 #define SYS_mknod       14
 #define SYS_chmod       15
+#define SYS_chown       16
 #define SYS_brk         17
 #define SYS_stat        18
 #define SYS_lseek       19
@@ -62,6 +63,7 @@
 #define SYS_symlink     89
 #define SYS_readlink    90
 #define SYS_fchmod      93
+#define SYS_fchown      94
 #define SYS_sigprocmask 95
 #define SYS_sigsuspend  96
 #define SYS_sigaltstack 97
@@ -75,6 +77,7 @@
 #define SYS_fchdir      120
 #define SYS_readv       121
 #define SYS_writev      122
+#define SYS_lchown      130
 #define SYS_rename      134
 #define SYS_uname       135
 #define SYS_gettimeofday 171

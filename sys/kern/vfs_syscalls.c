@@ -289,6 +289,37 @@ sys_chmod(const uint64_t *args, uint64_t *rv __unused)
         return error;
 }
 
+/* chown(path, uid, gid) and lchown, which does not follow a last symlink. */
+static int
+do_chown(const uint64_t *args, int follow)
+{
+        struct vnode *vp;
+        char *path;
+        int error;
+
+        if ((error = path_in(args[0], &path)) != 0)
+                return error;
+        error = lookupname(path, follow, &vp);
+        path_free(path);
+        if (error != 0)
+                return error;
+        error = vn_chown(vp, (uid_t)args[1], (gid_t)args[2]);
+        VN_RELE(vp);
+        return error;
+}
+
+int
+sys_chown(const uint64_t *args, uint64_t *rv __unused)
+{
+        return do_chown(args, FOLLOW);
+}
+
+int
+sys_lchown(const uint64_t *args, uint64_t *rv __unused)
+{
+        return do_chown(args, NO_FOLLOW);
+}
+
 /* Make vp, which the caller holds, the current directory. */
 static int
 set_cdir(struct vnode *vp)

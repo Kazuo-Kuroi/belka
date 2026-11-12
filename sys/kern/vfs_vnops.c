@@ -429,3 +429,25 @@ vn_truncate(const char *path, off_t size)
         VN_RELE(vp);
         return error;
 }
+
+/*
+ * Give vp a new owner and group; (uid_t)-1 or (gid_t)-1 leaves that
+ * one as it is. Every process is the superuser so far, so there is no
+ * permission check and the set-ID bits stay.
+ */
+int
+vn_chown(struct vnode *vp, uid_t uid, gid_t gid)
+{
+        struct vattr va;
+
+        memset(&va, 0, sizeof(va));
+        if (uid != (uid_t)-1) {
+                va.va_mask |= AT_UID;
+                va.va_uid = uid;
+        }
+        if (gid != (gid_t)-1) {
+                va.va_mask |= AT_GID;
+                va.va_gid = gid;
+        }
+        return VOP_SETATTR(vp, &va, kcred);
+}

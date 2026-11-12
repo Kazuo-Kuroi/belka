@@ -259,6 +259,7 @@ int vn_readlink(const char *, char *, size_t, size_t *);
 int vn_stat(const char *, int, struct vattr *);
 int vn_truncate(const char *, off_t);
 int vn_mknod(const char *, enum vtype, mode_t);
+int vn_chown(struct vnode *, uid_t, gid_t);
 
 /* fifofs: the FIFO node standing for a file system's VFIFO vnode. */
 int fifo_vp(struct vnode *, struct vnode **);

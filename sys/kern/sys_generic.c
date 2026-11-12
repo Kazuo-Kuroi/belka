@@ -206,6 +206,20 @@ sys_fchmod(const uint64_t *args, uint64_t *rv __unused)
         return error;
 }
 
+/* fchown(fd, uid, gid) */
+int
+sys_fchown(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        int error;
+
+        if (fp == NULL)
+                return EBADF;
+        error = vn_chown(fp->f_vnode, (uid_t)args[1], (gid_t)args[2]);
+        frele(fp);
+        return error;
+}
+
 int
 sys_read(const uint64_t *args, uint64_t *rv)
 {

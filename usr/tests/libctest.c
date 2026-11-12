@@ -709,7 +709,7 @@ test_fifos(void)
         test_fifo_at("/libctest.fifo");
 }
 
-/* fsync() and the modes of files. */
+/* fsync(), and the modes and owners of files. */
 static void
 test_file_ops(void)
 {
@@ -727,6 +727,28 @@ test_file_ops(void)
         CHECK(chmod(path("/libctest.mode"), 0640) == 0);
         CHECK(stat(path("/libctest.mode"), &st) == 0 &&
             (st.st_mode & 07777) == 0640);
+
+        /* Owners: -1 keeps an id; ids past 16 bits; lchown on the link. */
+        CHECK(chown(path("/libctest.mode"), 100, 200) == 0);
+        CHECK(stat(path("/libctest.mode"), &st) == 0 && st.st_uid == 100 &&
+            st.st_gid == 200);
+        CHECK(chown(path("/libctest.mode"), (uid_t)-1, 70000) == 0);
+        CHECK(stat(path("/libctest.mode"), &st) == 0 && st.st_uid == 100 &&
+            st.st_gid == 70000);
+        CHECK(fchown(fd, 70001, (gid_t)-1) == 0);
+        CHECK(fstat(fd, &st) == 0 && st.st_uid == 70001 &&
+            st.st_gid == 70000);
+        CHECK(symlink("libctest.mode", path("/libctest.link")) == 0);
+        CHECK(lchown(path("/libctest.link"), 5, 6) == 0);
+        CHECK(lstat(path("/libctest.link"), &st) == 0 && st.st_uid == 5 &&
+            st.st_gid == 6);
+        CHECK(stat(path("/libctest.link"), &st) == 0 && st.st_uid == 70001);
+        CHECK(chown(path("/libctest.link"), 0, 0) == 0);
+        CHECK(stat(path("/libctest.mode"), &st) == 0 && st.st_uid == 0 &&
+            st.st_gid == 0);
+        CHECK(lstat(path("/libctest.link"), &st) == 0 && st.st_uid == 5);
+        CHECK(unlink(path("/libctest.link")) == 0);
+        CHECK(chown(path("/libctest.none"), 0, 0) == -1 && errno == ENOENT);
         close(fd);
         CHECK(unlink(path("/libctest.mode")) == 0);
 }

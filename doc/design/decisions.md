@@ -1049,6 +1049,15 @@ Recorded 2026-11-07.
 - **Data** is discarded once neither end is open; the node goes with
   the last reference.
 
+## Owners (2026-11-12)
+
+- **`chown` (16), `fchown` (94) and `lchown` (130)**, UnixWare's
+  numbers, set a file's owner and group through `VOP_SETATTR`; an id of
+  `(uid_t)-1` keeps that one. ext2 stores ids past 16 bits in the high
+  halves. Every process is the superuser for now, so there is no
+  permission check and the set-ID bits are kept; both come with
+  credentials. The C library's `Fchownat` maps onto the three calls.
+
 ## File systems
 
 1. **tmpfs**, for testing.
