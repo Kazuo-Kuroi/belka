@@ -42,6 +42,7 @@
 #include <sys/errno.h>
 #include <sys/file.h>
 #include <sys/kmem.h>
+#include <sys/poll.h>
 #include <sys/proc.h>
 #include <sys/signal.h>
 #include <sys/spinlock.h>
@@ -60,6 +61,7 @@ struct fifonode {
         struct mutex    fn_lock;
         struct sv       fn_rsv;         /* readers wait for data */
         struct sv       fn_wsv;         /* writers wait for room */
+        struct pollhead fn_ph;          /* pollers */
         int             fn_readers;     /* open read ends, fn_lock */
         int             fn_writers;     /* open write ends, fn_lock */
         size_t          fn_head;        /* first byte of data, fn_lock */
@@ -169,6 +171,7 @@ fifo_open(struct vnode **vpp, int flags, struct cred *cr __unused)
         mutex_unlock(&fn->fn_lock);
         sv_broadcast(&fn->fn_rsv);
         sv_broadcast(&fn->fn_wsv);
+        pollwakeup(&fn->fn_ph);
         if (nowait || (flags & (FREAD | FWRITE)) == (FREAD | FWRITE))
                 return 0;
 
@@ -195,6 +198,7 @@ fifo_open(struct vnode **vpp, int flags, struct cred *cr __unused)
         if (error != 0) {
                 sv_broadcast(&fn->fn_rsv);
                 sv_broadcast(&fn->fn_wsv);
+                pollwakeup(&fn->fn_ph);
         }
         return error;
 }
@@ -210,6 +214,7 @@ fifo_close(struct vnode *vp, int flags, struct cred *cr __unused)
         mutex_unlock(&fn->fn_lock);
         sv_broadcast(&fn->fn_rsv);
         sv_broadcast(&fn->fn_wsv);
+        pollwakeup(&fn->fn_ph);
         return 0;
 }
 
@@ -252,8 +257,10 @@ fifo_read(struct vnode *vp, struct uio *uio, int ioflag,
                 gethrestime(&fn->fn_atime);
 out:
         mutex_unlock(&fn->fn_lock);
-        if (moved != 0)
+        if (moved != 0) {
                 sv_broadcast(&fn->fn_wsv);
+                pollwakeup(&fn->fn_ph);
+        }
         return error;
 }
 
@@ -287,6 +294,7 @@ fifo_write(struct vnode *vp, struct uio *uio, int ioflag,
                         }
                         mutex_unlock(&fn->fn_lock);
                         sv_broadcast(&fn->fn_rsv);
+                        pollwakeup(&fn->fn_ph);
                         mutex_lock(&fn->fn_lock);
                         if ((error = fifo_sleep(fn, &fn->fn_wsv)) != 0)
                                 break;
@@ -309,8 +317,10 @@ fifo_write(struct vnode *vp, struct uio *uio, int ioflag,
                 fn->fn_ctime = fn->fn_mtime;
         }
         mutex_unlock(&fn->fn_lock);
-        if (moved != 0)
+        if (moved != 0) {
                 sv_broadcast(&fn->fn_rsv);
+                pollwakeup(&fn->fn_ph);
+        }
         return error;
 }
 
@@ -482,12 +492,41 @@ fifo_getpage(struct vnode *vp __unused, off_t off __unused,
         return ENODEV;
 }
 
+/*
+ * Readable with data held; hung up once no writer is left (for a named
+ * FIFO, once some writer has come and gone); writable with room for an
+ * atomic write; an error to write with no reader. poll() keeps only the
+ * events of the ends a descriptor has open.
+ */
+static int
+fifo_poll(struct vnode *vp, short events __unused, short *reventsp,
+    struct pollhead **phpp, struct cred *cr __unused)
+{
+        struct fifonode *fn = VTOFN(vp);
+        short rev = 0;
+
+        mutex_lock(&fn->fn_lock);
+        if (fn->fn_count != 0)
+                rev |= POLLIN | POLLRDNORM;
+        if (fn->fn_writers == 0 &&
+            (fn->fn_realvp == NULL || fn->fn_wopens != 0))
+                rev |= POLLHUP;
+        if (PIPE_SIZE - fn->fn_count >= PIPE_BUF)
+                rev |= POLLOUT;
+        if (fn->fn_readers == 0)
+                rev |= POLLERR;
+        mutex_unlock(&fn->fn_lock);
+        *reventsp = rev;
+        *phpp = &fn->fn_ph;
+        return 0;
+}
+
 static const struct vnodeops fifo_vnodeops = {
         fifo_open, fifo_close, fifo_read, fifo_write, fifo_getattr,
         fifo_setattr, fifo_access, fifo_lookup, fifo_create, fifo_name1,
         fifo_link, fifo_rename, fifo_mkdir, fifo_name1, fifo_readdir,
         fifo_symlink, fifo_readlink, fifo_fsync, fifo_inactive,
-        fifo_putpage, fifo_reclaim, fifo_getpage
+        fifo_putpage, fifo_reclaim, fifo_getpage, fifo_poll
 };
 
 /* A new fifonode with no ends open, its vnode unreferenced. */
@@ -501,6 +540,7 @@ fifo_alloc(void)
         mutex_init(&fn->fn_lock, "pipe");
         sv_init(&fn->fn_rsv, "piperd");
         sv_init(&fn->fn_wsv, "pipewr");
+        pollhead_init(&fn->fn_ph);
         fn->fn_uid = p->p_cred->cr_uid;
         fn->fn_gid = p->p_cred->cr_gid;
         gethrestime(&fn->fn_ctime);

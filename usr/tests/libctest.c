@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -30,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/times.h>
@@ -701,6 +703,112 @@ test_fifo_at(const char *name)
         CHECK(stat(name, &st) == -1 && errno == ENOENT);
 }
 
+static long
+ms_since(const struct timespec *t0)
+{
+        struct timespec t;
+
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        return (t.tv_sec - t0->tv_sec) * 1000 +
+            (t.tv_nsec - t0->tv_nsec) / 1000000;
+}
+
+/*
+ * poll() and select(): the events of pipe ends and files, hang-up and
+ * error, bad descriptors, the timeout, a wakeup by another process, and
+ * a signal ending the wait.
+ */
+static void
+test_poll(void)
+{
+        struct pollfd pfd[3];
+        struct sigaction sa, old;
+        struct timespec t0;
+        struct timeval tv;
+        fd_set rset, wset;
+        int fds[2], fd, status;
+        char c;
+        pid_t kid;
+
+        CHECK(pipe(fds) == 0);
+        pfd[0] = (struct pollfd){ fds[0], POLLIN, 0 };
+        pfd[1] = (struct pollfd){ fds[1], POLLOUT | POLLIN, 0 };
+        pfd[2] = (struct pollfd){ -1, POLLIN, 0 };     /* ignored */
+        CHECK(poll(pfd, 3, 0) == 1 && pfd[0].revents == 0 &&
+            pfd[1].revents == POLLOUT && pfd[2].revents == 0);
+        CHECK(write(fds[1], "x", 1) == 1);
+        CHECK(poll(pfd, 1, 0) == 1 && pfd[0].revents == POLLIN);
+
+        /* The timeout, with nothing to read. */
+        CHECK(read(fds[0], &c, 1) == 1);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        CHECK(poll(pfd, 1, 100) == 0 && pfd[0].revents == 0);
+        CHECK(ms_since(&t0) >= 100);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        CHECK(poll(NULL, 0, 30) == 0 && ms_since(&t0) >= 30);
+
+        /* select() on the same pipe. */
+        FD_ZERO(&rset);
+        FD_ZERO(&wset);
+        FD_SET(fds[0], &rset);
+        FD_SET(fds[1], &wset);
+        tv = (struct timeval){ 0, 0 };
+        CHECK(select(fds[1] + 1, &rset, &wset, NULL, &tv) == 1 &&
+            !FD_ISSET(fds[0], &rset) && FD_ISSET(fds[1], &wset));
+
+        /* Another process writes while we wait without a timeout. */
+        kid = fork();
+        if (kid == 0) {
+                usleep(50000);
+                _exit(write(fds[1], "y", 1) == 1 ? 0 : 1);
+        }
+        CHECK(poll(pfd, 1, -1) == 1 && pfd[0].revents == POLLIN);
+        CHECK(kid > 0 && waitpid(kid, &status, 0) == kid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        FD_ZERO(&rset);
+        FD_SET(fds[0], &rset);
+        CHECK(select(fds[0] + 1, &rset, NULL, NULL, NULL) == 1 &&
+            FD_ISSET(fds[0], &rset));
+        CHECK(read(fds[0], &c, 1) == 1 && c == 'y');
+
+        /* A signal ends the wait with EINTR, SA_RESTART or not. */
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = on_usr1;
+        sa.sa_flags = SA_RESTART;
+        CHECK(sigaction(SIGUSR1, &sa, &old) == 0);
+        got_sig = 0;
+        kid = fork();
+        if (kid == 0) {
+                usleep(50000);
+                kill(getppid(), SIGUSR1);
+                _exit(0);
+        }
+        CHECK(poll(pfd, 1, 5000) == -1 && errno == EINTR &&
+            got_sig == SIGUSR1);
+        CHECK(kid > 0 && waitpid(kid, &status, 0) == kid);
+        CHECK(sigaction(SIGUSR1, &old, NULL) == 0);
+
+        /* No writer left: hang-up; no reader left: an error. */
+        close(fds[1]);
+        CHECK(poll(pfd, 1, 0) == 1 && pfd[0].revents == POLLHUP);
+        CHECK(pipe(fds) == 0);
+        close(fds[0]);
+        pfd[0] = (struct pollfd){ fds[1], POLLOUT, 0 };
+        CHECK(poll(pfd, 1, 0) == 1 && (pfd[0].revents & POLLERR) != 0);
+        close(fds[1]);
+
+        /* A closed descriptor, and a regular file (always ready). */
+        pfd[0] = (struct pollfd){ fds[1], POLLIN, 0 };
+        CHECK(poll(pfd, 1, 0) == 1 && pfd[0].revents == POLLNVAL);
+        fd = open(path("/libctest.poll"), O_RDWR | O_CREAT | O_TRUNC, 0644);
+        CHECK(fd >= 0);
+        pfd[0] = (struct pollfd){ fd, POLLIN | POLLOUT, 0 };
+        CHECK(poll(pfd, 1, -1) == 1 &&
+            pfd[0].revents == (POLLIN | POLLOUT));
+        close(fd);
+        CHECK(unlink(path("/libctest.poll")) == 0);
+}
+
 /* Named FIFOs on ext2 (dir) and on tmpfs (the root). */
 static void
 test_fifos(void)
@@ -788,6 +896,7 @@ main(int argc, char **argv)
         test_clocks();
         test_pipes();
         test_fifos();
+        test_poll();
         test_file_ops();
         test_cwd();
         printf("libctest: %d failures\n", failures);

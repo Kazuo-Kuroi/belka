@@ -39,6 +39,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/sched_ts.c \
                    sys/kern/subr_blkdev.c \
                    sys/kern/sys_generic.c \
+                   sys/kern/sys_poll.c \
                    sys/kern/vfs_bio.c \
                    sys/kern/vfs_dnlc.c \
                    sys/kern/vfs_lookup.c \

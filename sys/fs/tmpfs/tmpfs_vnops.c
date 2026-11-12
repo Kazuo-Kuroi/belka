@@ -825,5 +825,6 @@ const struct vnodeops tmpfs_vnodeops = {
         tmpfs_inactive,
         tmpfs_putpage,
         tmpfs_reclaim,
-        tmpfs_getpage
+        tmpfs_getpage,
+        fs_poll
 };

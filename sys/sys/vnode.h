@@ -54,6 +54,7 @@
 
 struct cred;
 struct page;
+struct pollhead;
 struct uio;
 struct vfs;
 struct vnode;
@@ -170,6 +171,8 @@ struct vnodeops {
         int     (*vop_reclaim)(struct vnode *, int);
         int     (*vop_getpage)(struct vnode *, off_t, struct page **,
                     struct cred *);
+        int     (*vop_poll)(struct vnode *, short, short *,
+                    struct pollhead **, struct cred *);
 };
 
 #define VOP_OPEN(vpp, f, cr)            (*(vpp))->v_op->vop_open(vpp, f, cr)
@@ -197,6 +200,8 @@ struct vnodeops {
 #define VOP_PUTPAGE(vp, fl, cr)         (vp)->v_op->vop_putpage(vp, fl, cr)
 #define VOP_RECLAIM(vp, fl)             (vp)->v_op->vop_reclaim(vp, fl)
 #define VOP_GETPAGE(vp, off, ppp, cr)   (vp)->v_op->vop_getpage(vp, off, ppp, cr)
+#define VOP_POLL(vp, ev, rev, php, cr) \
+        (vp)->v_op->vop_poll(vp, ev, rev, php, cr)
 
 /* Statistics of the global vnode cache. */
 struct vn_stats {
@@ -260,6 +265,9 @@ int vn_stat(const char *, int, struct vattr *);
 int vn_truncate(const char *, off_t);
 int vn_mknod(const char *, enum vtype, mode_t);
 int vn_chown(struct vnode *, uid_t, gid_t);
+
+/* VOP_POLL for objects that are always ready (sys_poll.c). */
+int fs_poll(struct vnode *, short, short *, struct pollhead **, struct cred *);
 
 /* fifofs: the FIFO node standing for a file system's VFIFO vnode. */
 int fifo_vp(struct vnode *, struct vnode **);

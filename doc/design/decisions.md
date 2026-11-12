@@ -1058,6 +1058,31 @@ Recorded 2026-11-07.
   permission check and the set-ID bits are kept; both come with
   credentials. The C library's `Fchownat` maps onto the three calls.
 
+## poll (2026-11-12)
+
+- **`poll`** (UnixWare's 87) with System V's event bits, which mlibc's
+  Belka ABI now carries too (`POLLWRNORM` is `POLLOUT`, `POLLWRBAND`
+  0x100). `VOP_POLL(vp, events, &revents, &head, cr)` reports which
+  events hold now and hands back the object's `struct pollhead`; files,
+  directories and the console are always ready (`fs_poll`).
+- **No lost wakeups:** a pass that finds nothing registers the caller on
+  every head, then looks once more; anything after the registration
+  comes through `pollwakeup()`, which marks each registered poller fired
+  and wakes it. The poller's state is on its stack, reachable only from
+  the heads, and it unregisters before returning; its files stay held,
+  so no head goes away under it. Locks: `ph_lock`, then `ps_lock`.
+- **Results:** a descriptor open one way sees only that way's events;
+  `POLLERR`, `POLLHUP` and `POLLNVAL` come unasked. Pipes and FIFOs are
+  readable with data, hung up with no writer (a named FIFO once a writer
+  has come and gone), writable with room for `PIPE_BUF` bytes, and in
+  error with no reader. A signal ends the wait with `EINTR`, never a
+  restart, as POSIX asks; the timeout is milliseconds, rounded up to
+  ticks plus one.
+- **`select`** is the C library's, on `poll`: readable is `POLLIN` or a
+  hang-up or error, writable `POLLOUT` or an error, exceptional
+  `POLLPRI`. `pselect` with a signal mask fails with `ENOSYS` until the
+  kernel can swap the mask atomically.
+
 ## File systems
 
 1. **tmpfs**, for testing.

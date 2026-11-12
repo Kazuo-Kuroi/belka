@@ -801,5 +801,6 @@ const struct vnodeops ext2fs_vnodeops = {
         ext2fs_inactive,
         ext2fs_putpage,
         ext2fs_reclaim,
-        ext2fs_vop_getpage
+        ext2fs_vop_getpage,
+        fs_poll
 };

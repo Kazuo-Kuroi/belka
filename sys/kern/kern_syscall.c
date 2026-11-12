@@ -193,6 +193,7 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_clock_getres] = sys_clock_getres,
         [SYS_times] = sys_times,
         [SYS_pipe] = sys_pipe,
+        [SYS_poll] = sys_poll,
         [SYS_fsync] = sys_fsync,
         [SYS_fchmod] = sys_fchmod,
         [SYS_fchown] = sys_fchown,

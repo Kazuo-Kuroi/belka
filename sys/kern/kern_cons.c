@@ -231,7 +231,7 @@ static const struct vnodeops cons_vnodeops = {
         cons_setattr, cons_access, cons_lookup, cons_create, cons_name1,
         cons_link, cons_rename, cons_mkdir, cons_name1, cons_readdir,
         cons_symlink, cons_readlink, cons_fsync, cons_inactive,
-        cons_putpage, cons_reclaim, cons_getpage
+        cons_putpage, cons_reclaim, cons_getpage, fs_poll
 };
 
 static struct vnode cons_vn;
