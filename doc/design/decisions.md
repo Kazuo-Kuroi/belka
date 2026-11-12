@@ -908,7 +908,7 @@ Recorded 2026-11-07.
   sends `SIGPIPE` to the writing LWP and fails with `EPIPE`.
   `O_NONBLOCK` makes a call that would wait fail with `EAGAIN`, and
   `O_NDELAY` return 0, as in System V. Seeking on a pipe fails with
-  `ESPIPE`. Named FIFOs are to share the node.
+  `ESPIPE`. Named FIFOs share the node (below).
 - **File calls with UnixWare's numbers:** `fsync` (58), `fchmod` (93),
   and `readv` and `writev` (121, 122; at most 1024 vectors). The C
   library also gained `chmod`.
@@ -1026,6 +1026,28 @@ Recorded 2026-11-07.
   `libc.so.1`'s versioning of its symbols (mapfile versions), lazy
   binding (mlibc binds everything at load), and `LD_LIBRARY_PATH` and
   friends for set-user-ID programs once there are credentials.
+
+## Named FIFOs (2026-11-12)
+
+- **Making one:** `mknod` (UnixWare's 14) with `S_IFIFO` in the mode;
+  other types fail with `EINVAL` until there are device files. tmpfs and
+  ext2 create FIFO nodes (`EXT2_FT_FIFO` in the directory entry). The C
+  library's `mkfifo` is `mknod`, as in System V.
+- **Opening one:** the file system's `VFIFO` vnode holds only the name
+  and attributes. `vn_open` checks access on it, then trades it for a
+  fifofs node with `fifo_vp()`: one node per file system vnode while
+  any process has the FIFO open (a list under a spin lock), holding the
+  file system's vnode. The node is a pipe's, so reading and writing,
+  `PIPE_BUF` atomicity, `SIGPIPE` and the non-blocking behaviour are
+  the same; attributes, `chmod` and access checks go to the file
+  system's vnode, and `st_size` is the bytes held.
+- **Open semantics (POSIX):** a reader waits for a writer, and a writer
+  for a reader; each waits until the other side is open or has been
+  opened since it began waiting. With `O_NONBLOCK` or `O_NDELAY` a
+  reader goes ahead, and a writer with no reader fails with `ENXIO`.
+  Opening for both never waits. An interrupted open undoes its count.
+- **Data** is discarded once neither end is open; the node goes with
+  the last reference.
 
 ## File systems
 

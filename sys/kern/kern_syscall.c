@@ -154,6 +154,7 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_fcntl] = sys_fcntl,
         [SYS_rmdir] = sys_rmdir,
         [SYS_mkdir] = sys_mkdir,
+        [SYS_mknod] = sys_mknod,
         [SYS_getdents] = sys_getdents,
         [SYS_lstat] = sys_lstat,
         [SYS_symlink] = sys_symlink,

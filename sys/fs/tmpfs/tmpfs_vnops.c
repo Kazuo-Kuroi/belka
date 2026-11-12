@@ -288,7 +288,7 @@ tmpfs_create(struct vnode *dvp, const char *nm, struct vattr *va, int excl,
         struct tmpnode *tn;
         int error;
 
-        if (va->va_type != VREG)
+        if (va->va_type != VREG && va->va_type != VFIFO)
                 return EINVAL;
         if (is_dot(nm))
                 return EEXIST;
@@ -311,7 +311,7 @@ tmpfs_create(struct vnode *dvp, const char *nm, struct vattr *va, int excl,
                 mutex_unlock(&tm->tm_lock);
                 return error;
         }
-        tn = tmpnode_alloc(tm, VREG, va->va_mode);
+        tn = tmpnode_alloc(tm, va->va_type, va->va_mode);
         if ((error = tdir_add(dir, nm, tn)) != 0) {
                 tmpnode_free(tm, tn);
                 mutex_unlock(&tm->tm_lock);

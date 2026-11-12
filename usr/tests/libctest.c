@@ -9,8 +9,8 @@
  * the library's view of the system matches the kernel's: start-up and
  * the environment, the heap, stdio on files and directories, errno,
  * processes and wait statuses, signals and handlers, time, the thread
- * pointer, the clocks and processor time, pipes, vectored I/O, and
- * getcwd().
+ * pointer, the clocks and processor time, pipes and named FIFOs,
+ * vectored I/O, and getcwd().
  *
  * usage: libctest dir, where dir holds bin/ and is writable. Exits with
  * the number of failed checks.
@@ -622,6 +622,93 @@ test_pipes(void)
         close(fds[0]);
 }
 
+/*
+ * A named FIFO at name: making it, its attributes, the non-blocking
+ * opens, the rendezvous of a blocking reader and writer either way
+ * round, end of file, and its data going once both ends are closed.
+ */
+static void
+test_fifo_at(const char *name)
+{
+        struct stat st, fst;
+        char buf[8];
+        int rfd, wfd, fd, status;
+        pid_t kid;
+
+        CHECK(mkfifo(name, 0640) == 0);
+        CHECK(mkfifo(name, 0640) == -1 && errno == EEXIST);
+        CHECK(stat(name, &st) == 0 && S_ISFIFO(st.st_mode) &&
+            (st.st_mode & 07777) == 0640 && st.st_size == 0);
+
+        /* No reader: a non-blocking writer fails; a reader goes ahead. */
+        CHECK(open(name, O_WRONLY | O_NONBLOCK) == -1 && errno == ENXIO);
+        rfd = open(name, O_RDONLY | O_NONBLOCK);
+        CHECK(rfd >= 0);
+        CHECK(read(rfd, buf, sizeof(buf)) == 0);        /* no writer: EOF */
+        wfd = open(name, O_WRONLY | O_NONBLOCK);
+        CHECK(wfd >= 0);
+        CHECK(fstat(wfd, &fst) == 0 && S_ISFIFO(fst.st_mode) &&
+            fst.st_ino == st.st_ino && fst.st_dev == st.st_dev);
+        CHECK(lseek(wfd, 0, SEEK_SET) == -1 && errno == ESPIPE);
+        CHECK(write(wfd, "hello", 5) == 5);
+        CHECK(read(rfd, buf, sizeof(buf)) == 5 && memcmp(buf, "hello", 5) == 0);
+        CHECK(read(rfd, buf, sizeof(buf)) == -1 && errno == EAGAIN);
+        close(wfd);
+        CHECK(read(rfd, buf, sizeof(buf)) == 0);
+        close(rfd);
+
+        /* A blocking writer waits for the reader. */
+        kid = fork();
+        if (kid == 0) {
+                fd = open(name, O_WRONLY);
+                _exit(fd >= 0 && write(fd, "ping", 4) == 4 ? 0 : 1);
+        }
+        usleep(50000);
+        rfd = open(name, O_RDONLY);
+        CHECK(rfd >= 0);
+        CHECK(read_full(rfd, buf, 4) == 4 && memcmp(buf, "ping", 4) == 0);
+        CHECK(read(rfd, buf, sizeof(buf)) == 0);
+        close(rfd);
+        CHECK(kid > 0 && waitpid(kid, &status, 0) == kid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+        /* A blocking reader waits for the writer. */
+        kid = fork();
+        if (kid == 0) {
+                fd = open(name, O_RDONLY);
+                _exit(fd >= 0 && read_full(fd, buf, 4) == 4 &&
+                    memcmp(buf, "pong", 4) == 0 ? 0 : 1);
+        }
+        usleep(50000);
+        wfd = open(name, O_WRONLY);
+        CHECK(wfd >= 0);
+        CHECK(write(wfd, "pong", 4) == 4);
+        close(wfd);
+        CHECK(kid > 0 && waitpid(kid, &status, 0) == kid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+        /* Opened for both, it never waits; closing both ends drops data. */
+        fd = open(name, O_RDWR);
+        CHECK(fd >= 0);
+        CHECK(write(fd, "x", 1) == 1);
+        close(fd);
+        fd = open(name, O_RDWR | O_NONBLOCK);
+        CHECK(fd >= 0);
+        CHECK(read(fd, buf, sizeof(buf)) == -1 && errno == EAGAIN);
+        close(fd);
+
+        CHECK(unlink(name) == 0);
+        CHECK(stat(name, &st) == -1 && errno == ENOENT);
+}
+
+/* Named FIFOs on ext2 (dir) and on tmpfs (the root). */
+static void
+test_fifos(void)
+{
+        test_fifo_at(path("/libctest.fifo"));
+        test_fifo_at("/libctest.fifo");
+}
+
 /* fsync() and the modes of files. */
 static void
 test_file_ops(void)
@@ -678,6 +765,7 @@ main(int argc, char **argv)
         test_misc();
         test_clocks();
         test_pipes();
+        test_fifos();
         test_file_ops();
         test_cwd();
         printf("libctest: %d failures\n", failures);

@@ -5,7 +5,7 @@
  */
 
 /*
- * Pipes: pipe() (42) and the FIFO vnodes behind them.
+ * Pipes, pipe() (42), and named FIFOs: the FIFO vnodes behind both.
  *
  * A pipe is one private vnode of type VFIFO, outside any file system,
  * opened twice: the first descriptor for reading, the second for
@@ -18,11 +18,21 @@
  * waits; a longer one may be split among other writers' data.
  *
  * O_NONBLOCK makes a read or write that would wait fail with EAGAIN,
- * O_NDELAY return 0 instead, as in System V. Named FIFOs are to use the
- * same node.
+ * O_NDELAY return 0 instead, as in System V.
+ *
+ * Named FIFOs use the same node. A file system keeps the FIFO's name
+ * and attributes in a vnode of type VFIFO; vn_open() trades that vnode
+ * for a fifonode with fifo_vp(), one per file system vnode while any
+ * process has it open, found on fifo_list. The fifonode holds the file
+ * system's vnode and passes attributes and access checks to it. Opening
+ * follows POSIX: a reader waits for a writer and a writer for a reader,
+ * unless O_NONBLOCK or O_NDELAY is given, when a reader goes ahead and
+ * a writer with no reader fails with ENXIO. Opening for both never
+ * waits. The data is discarded once neither end is open.
  *
  * Data moves with fn_lock held, so a fault on the user's buffer is
  * taken under it: fn_lock ranks above the address space's locks.
+ * fifo_lock, a spin lock, guards only fifo_list.
  */
 
 #include <stddef.h>
@@ -55,6 +65,10 @@ struct fifonode {
         size_t          fn_head;        /* first byte of data, fn_lock */
         size_t          fn_count;       /* bytes held, fn_lock */
         char            *fn_buf;
+        uint64_t        fn_ropens;      /* opens for reading ever, fn_lock */
+        uint64_t        fn_wopens;      /* opens for writing ever, fn_lock */
+        struct vnode    *fn_realvp;     /* a named FIFO's own vnode, held */
+        struct fifonode *fn_next;       /* fifo_list, under fifo_lock */
         uid_t           fn_uid;
         gid_t           fn_gid;
         struct timespec fn_atime;
@@ -63,6 +77,14 @@ struct fifonode {
 };
 
 #define VTOFN(vp)       ((struct fifonode *)(vp)->v_data)
+
+static const struct vnodeops fifo_vnodeops;
+
+static void fifo_free(struct fifonode *);
+
+/* The named FIFOs open now. */
+static struct spinlock fifo_lock = SPINLOCK_INITIALIZER("fifolist");
+static struct fifonode *fifo_list;
 
 /*
  * Wait on sv, dropping fn_lock; it is held again on return. Returns 0
@@ -101,11 +123,80 @@ fifo_epipe(void)
         return EPIPE;
 }
 
-static int
-fifo_open(struct vnode **vpp __unused, int flags __unused,
-    struct cred *cr __unused)
+/* Take away the ends an open added; fn_lock is held. */
+static void
+fifo_drop_ends(struct fifonode *fn, int flags)
 {
-        return 0;
+        if ((flags & FREAD) != 0)
+                fn->fn_readers--;
+        if ((flags & FWRITE) != 0)
+                fn->fn_writers--;
+        if (fn->fn_realvp != NULL && fn->fn_readers == 0 &&
+            fn->fn_writers == 0) {
+                fn->fn_head = 0;
+                fn->fn_count = 0;
+        }
+}
+
+/*
+ * Open a named FIFO (pipes are born open): count the new ends, then
+ * wait for the other side as POSIX asks.
+ */
+static int
+fifo_open(struct vnode **vpp, int flags, struct cred *cr __unused)
+{
+        struct fifonode *fn = VTOFN(*vpp);
+        int nowait = (flags & (FNONBLOCK | FNDELAY)) != 0;
+        uint64_t gen;
+        int error = 0;
+
+        if (fn->fn_realvp == NULL)
+                return 0;
+        mutex_lock(&fn->fn_lock);
+        if ((flags & (FREAD | FWRITE)) == FWRITE && nowait &&
+            fn->fn_readers == 0) {
+                mutex_unlock(&fn->fn_lock);
+                return ENXIO;
+        }
+        if ((flags & FREAD) != 0) {
+                fn->fn_readers++;
+                fn->fn_ropens++;
+        }
+        if ((flags & FWRITE) != 0) {
+                fn->fn_writers++;
+                fn->fn_wopens++;
+        }
+        mutex_unlock(&fn->fn_lock);
+        sv_broadcast(&fn->fn_rsv);
+        sv_broadcast(&fn->fn_wsv);
+        if (nowait || (flags & (FREAD | FWRITE)) == (FREAD | FWRITE))
+                return 0;
+
+        /*
+         * Wait until the other side is open, or has been opened since
+         * (it may have closed again already). Readers wait on fn_rsv,
+         * writers on fn_wsv, alongside reads and writes.
+         */
+        mutex_lock(&fn->fn_lock);
+        if ((flags & FREAD) != 0) {
+                gen = fn->fn_wopens;
+                while (fn->fn_writers == 0 && fn->fn_wopens == gen &&
+                    error == 0)
+                        error = fifo_sleep(fn, &fn->fn_rsv);
+        } else {
+                gen = fn->fn_ropens;
+                while (fn->fn_readers == 0 && fn->fn_ropens == gen &&
+                    error == 0)
+                        error = fifo_sleep(fn, &fn->fn_wsv);
+        }
+        if (error != 0)
+                fifo_drop_ends(fn, flags);
+        mutex_unlock(&fn->fn_lock);
+        if (error != 0) {
+                sv_broadcast(&fn->fn_rsv);
+                sv_broadcast(&fn->fn_wsv);
+        }
+        return error;
 }
 
 /* The last close of a file: one end fewer. */
@@ -115,10 +206,7 @@ fifo_close(struct vnode *vp, int flags, struct cred *cr __unused)
         struct fifonode *fn = VTOFN(vp);
 
         mutex_lock(&fn->fn_lock);
-        if ((flags & FREAD) != 0)
-                fn->fn_readers--;
-        if ((flags & FWRITE) != 0)
-                fn->fn_writers--;
+        fifo_drop_ends(fn, flags);
         mutex_unlock(&fn->fn_lock);
         sv_broadcast(&fn->fn_rsv);
         sv_broadcast(&fn->fn_wsv);
@@ -227,10 +315,20 @@ fifo_write(struct vnode *vp, struct uio *uio, int ioflag,
 }
 
 static int
-fifo_getattr(struct vnode *vp, struct vattr *va, struct cred *cr __unused)
+fifo_getattr(struct vnode *vp, struct vattr *va, struct cred *cr)
 {
         struct fifonode *fn = VTOFN(vp);
+        int error;
 
+        if (fn->fn_realvp != NULL) {
+                /* A named FIFO's attributes are its file's. */
+                if ((error = VOP_GETATTR(fn->fn_realvp, va, cr)) != 0)
+                        return error;
+                mutex_lock(&fn->fn_lock);
+                va->va_size = (off_t)fn->fn_count;
+                mutex_unlock(&fn->fn_lock);
+                return 0;
+        }
         memset(va, 0, sizeof(*va));
         mutex_lock(&fn->fn_lock);
         va->va_type = VFIFO;
@@ -249,17 +347,23 @@ fifo_getattr(struct vnode *vp, struct vattr *va, struct cred *cr __unused)
 }
 
 static int
-fifo_setattr(struct vnode *vp __unused, struct vattr *va __unused,
-    struct cred *cr __unused)
+fifo_setattr(struct vnode *vp, struct vattr *va, struct cred *cr)
 {
-        return EINVAL;
+        struct fifonode *fn = VTOFN(vp);
+
+        if (fn->fn_realvp == NULL || (va->va_mask & AT_SIZE) != 0)
+                return EINVAL;
+        return VOP_SETATTR(fn->fn_realvp, va, cr);
 }
 
 static int
-fifo_access(struct vnode *vp __unused, int mode __unused,
-    struct cred *cr __unused)
+fifo_access(struct vnode *vp, int mode, struct cred *cr)
 {
-        return 0;
+        struct fifonode *fn = VTOFN(vp);
+
+        if (fn->fn_realvp == NULL)
+                return 0;
+        return VOP_ACCESS(fn->fn_realvp, mode, cr);
 }
 
 static int
@@ -330,20 +434,31 @@ fifo_readlink(struct vnode *vp __unused, struct uio *uio __unused,
 }
 
 static int
-fifo_fsync(struct vnode *vp __unused, struct cred *cr __unused)
+fifo_fsync(struct vnode *vp, struct cred *cr __unused)
 {
-        return EINVAL;
+        return VTOFN(vp)->fn_realvp != NULL ? 0 : EINVAL;
 }
 
-/* The last reference: both ends are closed, so the pipe goes. */
+/*
+ * The last reference: every end is closed, so the node goes. A named
+ * FIFO's leaves fifo_list first; an open racing with this finds the
+ * vnode inactive and makes a node of its own.
+ */
 static int
 fifo_inactive(struct vnode *vp, struct cred *cr __unused)
 {
-        struct fifonode *fn = VTOFN(vp);
+        struct fifonode *fn = VTOFN(vp), **link;
+        int s;
 
-        vn_destroy(vp);
-        kmem_free(fn->fn_buf, PIPE_SIZE);
-        kmem_free(fn, sizeof(*fn));
+        if (fn->fn_realvp != NULL) {
+                s = spin_lock(&fifo_lock);
+                for (link = &fifo_list; *link != fn; link = &(*link)->fn_next)
+                        ;
+                *link = fn->fn_next;
+                spin_unlock(&fifo_lock, s);
+                VN_RELE(fn->fn_realvp);
+        }
+        fifo_free(fn);
         return VN_INACTIVE_NOCACHE;
 }
 
@@ -375,6 +490,83 @@ static const struct vnodeops fifo_vnodeops = {
         fifo_putpage, fifo_reclaim, fifo_getpage
 };
 
+/* A new fifonode with no ends open, its vnode unreferenced. */
+static struct fifonode *
+fifo_alloc(void)
+{
+        struct proc *p = curproc;
+        struct fifonode *fn = kmem_zalloc(sizeof(*fn), KM_SLEEP);
+
+        fn->fn_buf = kmem_alloc(PIPE_SIZE, KM_SLEEP);
+        mutex_init(&fn->fn_lock, "pipe");
+        sv_init(&fn->fn_rsv, "piperd");
+        sv_init(&fn->fn_wsv, "pipewr");
+        fn->fn_uid = p->p_cred->cr_uid;
+        fn->fn_gid = p->p_cred->cr_gid;
+        gethrestime(&fn->fn_ctime);
+        fn->fn_atime = fn->fn_mtime = fn->fn_ctime;
+        vn_init(&fn->fn_vnode, NULL, VFIFO, &fifo_vnodeops, fn);
+        return fn;
+}
+
+static void
+fifo_free(struct fifonode *fn)
+{
+        vn_destroy(&fn->fn_vnode);
+        kmem_free(fn->fn_buf, PIPE_SIZE);
+        kmem_free(fn, sizeof(*fn));
+}
+
+/* The open node for realvp on fifo_list, held, or NULL; fifo_lock held. */
+static struct vnode *
+fifo_find(struct vnode *realvp)
+{
+        struct fifonode *fn;
+
+        for (fn = fifo_list; fn != NULL; fn = fn->fn_next)
+                if (fn->fn_realvp == realvp &&
+                    vn_get(&fn->fn_vnode, fn->fn_vnode.v_number))
+                        return &fn->fn_vnode;
+        return NULL;
+}
+
+/*
+ * The FIFO node standing for realvp, a file system's VFIFO vnode, held,
+ * in *vpp; it takes a reference of its own to realvp. vn_open() calls
+ * this before VOP_OPEN.
+ */
+int
+fifo_vp(struct vnode *realvp, struct vnode **vpp)
+{
+        struct fifonode *fn;
+        struct vnode *vp;
+        int s;
+
+        s = spin_lock(&fifo_lock);
+        vp = fifo_find(realvp);
+        spin_unlock(&fifo_lock, s);
+        if (vp != NULL) {
+                *vpp = vp;
+                return 0;
+        }
+        fn = fifo_alloc();
+        s = spin_lock(&fifo_lock);
+        if ((vp = fifo_find(realvp)) == NULL) {
+                fn->fn_realvp = realvp;
+                fn->fn_next = fifo_list;
+                fifo_list = fn;
+                vp = &fn->fn_vnode;
+                VN_HOLD(realvp);
+                VN_HOLD(vp);
+                fn = NULL;
+        }
+        spin_unlock(&fifo_lock, s);
+        if (fn != NULL)
+                fifo_free(fn);
+        *vpp = vp;
+        return 0;
+}
+
 /*
  * pipe(): two descriptors, returned in %rax and %rdx as in System V,
  * the first open for reading the pipe and the second for writing it.
@@ -383,22 +575,13 @@ int
 sys_pipe(const uint64_t *args __unused, uint64_t *rv)
 {
         struct proc *p = curproc;
-        struct fifonode *fn = kmem_zalloc(sizeof(*fn), KM_SLEEP);
+        struct fifonode *fn = fifo_alloc();
         struct vnode *vp = &fn->fn_vnode;
         struct file *rfp, *wfp;
         int rfd, wfd, error;
 
-        fn->fn_buf = kmem_alloc(PIPE_SIZE, KM_SLEEP);
-        mutex_init(&fn->fn_lock, "pipe");
-        sv_init(&fn->fn_rsv, "piperd");
-        sv_init(&fn->fn_wsv, "pipewr");
         fn->fn_readers = 1;
         fn->fn_writers = 1;
-        fn->fn_uid = p->p_cred->cr_uid;
-        fn->fn_gid = p->p_cred->cr_gid;
-        gethrestime(&fn->fn_ctime);
-        fn->fn_atime = fn->fn_mtime = fn->fn_ctime;
-        vn_init(vp, NULL, VFIFO, &fifo_vnodeops, fn);
         VN_HOLD(vp);                    /* the read end's */
         VN_HOLD(vp);                    /* the write end's */
         rfp = falloc(vp, FREAD);

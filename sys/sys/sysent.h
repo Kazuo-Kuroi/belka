@@ -42,7 +42,7 @@ sy_call_t sys_lwpkill, sys_lwpsuspend, sys_lwpcontinue;
 sy_call_t sys_lwp_sema_wait, sys_lwp_sema_post, sys_lwp_sema_trywait;
 sy_call_t sys_lwp_addr_wait, sys_lwp_addr_wake;
 /* fs/fifofs/fifo_vnops.c */
-sy_call_t sys_pipe;
+sy_call_t sys_pipe, sys_mknod;
 /* kern_time.c */
 sy_call_t sys_clock_gettime, sys_clock_getres, sys_times, sys_yield;
 

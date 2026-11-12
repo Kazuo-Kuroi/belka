@@ -168,6 +168,26 @@ sys_mkdir(const uint64_t *args, uint64_t *rv __unused)
         return error;
 }
 
+/*
+ * mknod(path, mode, dev): mode's type bits say what to make. Only
+ * FIFOs (S_IFIFO) can be made so far; dev is for device files.
+ */
+int
+sys_mknod(const uint64_t *args, uint64_t *rv __unused)
+{
+        mode_t mode = (mode_t)args[1];
+        char *path;
+        int error;
+
+        if ((mode & S_IFMT) != S_IFIFO)
+                return EINVAL;
+        if ((error = path_in(args[0], &path)) != 0)
+                return error;
+        error = vn_mknod(path, VFIFO, mode & ~curproc->p_cmask & 07777);
+        path_free(path);
+        return error;
+}
+
 /* readlink(path, buf, size): the bytes of the link, not terminated. */
 int
 sys_readlink(const uint64_t *args, uint64_t *rv)

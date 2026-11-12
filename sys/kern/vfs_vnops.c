@@ -79,8 +79,21 @@ vn_open(const char *path, int flags, mode_t mode, struct vnode **vpp)
                 return EISDIR;
         }
         if ((error = VOP_ACCESS(vp, ((flags & FREAD) != 0 ? VREAD : 0) |
-            ((flags & FWRITE) != 0 ? VWRITE : 0), kcred)) != 0 ||
-            (error = VOP_OPEN(&vp, flags, kcred)) != 0) {
+            ((flags & FWRITE) != 0 ? VWRITE : 0), kcred)) != 0) {
+                VN_RELE(vp);
+                return error;
+        }
+        if (vp->v_type == VFIFO) {
+                /* A named FIFO: open the FIFO node that stands for it. */
+                struct vnode *fvp;
+
+                error = fifo_vp(vp, &fvp);
+                VN_RELE(vp);
+                if (error != 0)
+                        return error;
+                vp = fvp;
+        }
+        if ((error = VOP_OPEN(&vp, flags, kcred)) != 0) {
                 VN_RELE(vp);
                 return error;
         }
@@ -255,6 +268,38 @@ vn_mkdir(const char *path, mode_t mode)
         va.va_type = VDIR;
         va.va_mode = mode & 07777;
         error = VOP_MKDIR(dvp, name, &va, &vp, kcred);
+        if (error == 0)
+                VN_RELE(vp);
+        VN_RELE(dvp);
+        return error;
+}
+
+/*
+ * Make a node of type type (only VFIFO so far; there are no device
+ * files yet) through VOP_CREATE, failing with EEXIST if path exists.
+ */
+int
+vn_mknod(const char *path, enum vtype type, mode_t mode)
+{
+        char name[MAXNAMELEN];
+        struct vnode *dvp, *vp;
+        struct vattr va;
+        int error;
+
+        if (type != VFIFO)
+                return EINVAL;
+        if ((error = vn_parent(path, &dvp, name, &vp, NO_FOLLOW)) != 0)
+                return error;
+        if (vp != NULL) {
+                VN_RELE(vp);
+                VN_RELE(dvp);
+                return EEXIST;
+        }
+        memset(&va, 0, sizeof(va));
+        va.va_mask = AT_TYPE | AT_MODE;
+        va.va_type = type;
+        va.va_mode = mode & 07777;
+        error = VOP_CREATE(dvp, name, &va, EXCL, &vp, kcred);
         if (error == 0)
                 VN_RELE(vp);
         VN_RELE(dvp);
