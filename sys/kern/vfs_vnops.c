@@ -5,9 +5,10 @@
  */
 
 /*
- * File operations by path, for the kernel itself; system calls will be
- * thin layers over these. Name-space changes purge the name cache here,
- * since the generic layer owns it.
+ * File operations by path, for the kernel and the system calls, which
+ * are thin layers over these. The *at forms start a relative path at a
+ * given directory. Name-space changes purge the name cache here, since
+ * the generic layer owns it.
  */
 
 #include <stddef.h>
@@ -25,15 +26,18 @@
 #include <sys/vfs.h>
 #include <sys/vnode.h>
 
-static int vn_parent(const char *, struct vnode **, char *, struct vnode **,
-    int);
+static int vn_parent(struct vnode *, const char *, struct vnode **, char *,
+    struct vnode **, int);
 
-/* Look up path's parent and last name; *vpp is the target if it exists. */
+/*
+ * Look up path's parent and last name; *vpp is the target if it exists.
+ * A relative path starts at sdir, or the current directory if it is NULL.
+ */
 static int
-vn_parent(const char *path, struct vnode **dvpp, char *name,
-    struct vnode **vpp, int follow)
+vn_parent(struct vnode *sdir, const char *path, struct vnode **dvpp,
+    char *name, struct vnode **vpp, int follow)
 {
-        return lookuppn(path, follow, NULL, dvpp, name, vpp);
+        return lookuppn(path, follow, sdir, dvpp, name, vpp);
 }
 
 /*
@@ -41,14 +45,16 @@ vn_parent(const char *path, struct vnode **dvpp, char *name,
  * creating it with mode if asked. The vnode is returned held.
  */
 int
-vn_open(const char *path, int flags, mode_t mode, struct vnode **vpp)
+vn_openat(struct vnode *sdir, const char *path, int flags, mode_t mode,
+    struct vnode **vpp)
 {
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
         int error;
 
         if ((flags & FCREAT) != 0) {
-                if ((error = vn_parent(path, &dvp, name, &vp, FOLLOW)) != 0)
+                if ((error = vn_parent(sdir, path, &dvp, name, &vp,
+                    FOLLOW)) != 0)
                         return error;
                 if (vp == NULL) {
                         struct vattr va;
@@ -70,7 +76,8 @@ vn_open(const char *path, int flags, mode_t mode, struct vnode **vpp)
                                 return EEXIST;
                         }
                 }
-        } else if ((error = lookupname(path, FOLLOW, &vp)) != 0) {
+        } else if ((error = lookuppn(path, FOLLOW, sdir, NULL, NULL,
+            &vp)) != 0) {
                 return error;
         }
 
@@ -161,13 +168,14 @@ vn_create(const char *path, mode_t mode, int excl, struct vnode **vpp)
 }
 
 int
-vn_remove(const char *path)
+vn_removeat(struct vnode *sdir, const char *path)
 {
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
         int error;
 
-        if ((error = vn_parent(path, &dvp, name, &vp, NO_FOLLOW)) != 0)
+        if ((error = vn_parent(sdir, path, &dvp, name, &vp,
+            NO_FOLLOW)) != 0)
                 return error;
         if (vp == NULL) {
                 VN_RELE(dvp);
@@ -183,17 +191,23 @@ vn_remove(const char *path)
         return error;
 }
 
-/* Make topath another name for the existing file frompath. */
+/*
+ * Make topath another name for the existing file frompath, which is
+ * looked up with follow (System V link() does not follow a last link).
+ */
 int
-vn_link(const char *frompath, const char *topath)
+vn_linkat(struct vnode *fsdir, const char *frompath, struct vnode *tsdir,
+    const char *topath, int follow)
 {
         char name[MAXNAMELEN];
         struct vnode *svp, *dvp, *vp;
         int error;
 
-        if ((error = lookupname(frompath, NO_FOLLOW, &svp)) != 0)
+        if ((error = lookuppn(frompath, follow, fsdir, NULL, NULL,
+            &svp)) != 0)
                 return error;
-        if ((error = vn_parent(topath, &dvp, name, &vp, NO_FOLLOW)) != 0) {
+        if ((error = vn_parent(tsdir, topath, &dvp, name, &vp, NO_FOLLOW)) !=
+            0) {
                 VN_RELE(svp);
                 return error;
         }
@@ -213,20 +227,22 @@ vn_link(const char *frompath, const char *topath)
 }
 
 int
-vn_rename(const char *frompath, const char *topath)
+vn_renameat(struct vnode *fsdir, const char *frompath, struct vnode *tsdir,
+    const char *topath)
 {
         char sname[MAXNAMELEN], tname[MAXNAMELEN];
         struct vnode *sdvp, *svp, *tdvp, *tvp;
         int error;
 
-        if ((error = vn_parent(frompath, &sdvp, sname, &svp, NO_FOLLOW)) !=
-            0)
+        if ((error = vn_parent(fsdir, frompath, &sdvp, sname, &svp,
+            NO_FOLLOW)) != 0)
                 return error;
         if (svp == NULL) {
                 VN_RELE(sdvp);
                 return ENOENT;
         }
-        if ((error = vn_parent(topath, &tdvp, tname, &tvp, NO_FOLLOW)) != 0) {
+        if ((error = vn_parent(tsdir, topath, &tdvp, tname, &tvp,
+            NO_FOLLOW)) != 0) {
                 VN_RELE(svp);
                 VN_RELE(sdvp);
                 return error;
@@ -250,14 +266,15 @@ vn_rename(const char *frompath, const char *topath)
 }
 
 int
-vn_mkdir(const char *path, mode_t mode)
+vn_mkdirat(struct vnode *sdir, const char *path, mode_t mode)
 {
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
         struct vattr va;
         int error;
 
-        if ((error = vn_parent(path, &dvp, name, &vp, NO_FOLLOW)) != 0)
+        if ((error = vn_parent(sdir, path, &dvp, name, &vp,
+            NO_FOLLOW)) != 0)
                 return error;
         if (vp != NULL) {
                 VN_RELE(vp);
@@ -280,7 +297,7 @@ vn_mkdir(const char *path, mode_t mode)
  * files yet) through VOP_CREATE, failing with EEXIST if path exists.
  */
 int
-vn_mknod(const char *path, enum vtype type, mode_t mode)
+vn_mknodat(struct vnode *sdir, const char *path, enum vtype type, mode_t mode)
 {
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
@@ -289,7 +306,8 @@ vn_mknod(const char *path, enum vtype type, mode_t mode)
 
         if (type != VFIFO)
                 return EINVAL;
-        if ((error = vn_parent(path, &dvp, name, &vp, NO_FOLLOW)) != 0)
+        if ((error = vn_parent(sdir, path, &dvp, name, &vp,
+            NO_FOLLOW)) != 0)
                 return error;
         if (vp != NULL) {
                 VN_RELE(vp);
@@ -308,13 +326,14 @@ vn_mknod(const char *path, enum vtype type, mode_t mode)
 }
 
 int
-vn_rmdir(const char *path)
+vn_rmdirat(struct vnode *sdir, const char *path)
 {
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
         int error;
 
-        if ((error = vn_parent(path, &dvp, name, &vp, NO_FOLLOW)) != 0)
+        if ((error = vn_parent(sdir, path, &dvp, name, &vp,
+            NO_FOLLOW)) != 0)
                 return error;
         if (vp == NULL) {
                 VN_RELE(dvp);
@@ -335,7 +354,7 @@ vn_rmdir(const char *path)
 
 /* Create the symbolic link path whose text is target. */
 int
-vn_symlink(const char *target, const char *path)
+vn_symlinkat(const char *target, struct vnode *sdir, const char *path)
 {
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
@@ -344,7 +363,8 @@ vn_symlink(const char *target, const char *path)
 
         if (strlen(target) >= MAXPATHLEN)
                 return ENAMETOOLONG;
-        if ((error = vn_parent(path, &dvp, name, &vp, NO_FOLLOW)) != 0)
+        if ((error = vn_parent(sdir, path, &dvp, name, &vp,
+            NO_FOLLOW)) != 0)
                 return error;
         if (vp != NULL) {
                 VN_RELE(vp);
@@ -362,7 +382,8 @@ vn_symlink(const char *target, const char *path)
 
 /* Read a link's text into buf (size bytes, NUL-terminated). */
 int
-vn_readlink(const char *path, char *buf, size_t size, size_t *lenp)
+vn_readlinkat(struct vnode *sdir, const char *path, char *buf, size_t size,
+    size_t *lenp)
 {
         struct vnode *vp;
         struct iovec iov;
@@ -371,7 +392,7 @@ vn_readlink(const char *path, char *buf, size_t size, size_t *lenp)
 
         if (size == 0)
                 return EINVAL;
-        if ((error = lookupname(path, NO_FOLLOW, &vp)) != 0)
+        if ((error = lookuppn(path, NO_FOLLOW, sdir, NULL, NULL, &vp)) != 0)
                 return error;
         if (vp->v_type != VLNK) {
                 VN_RELE(vp);
@@ -396,12 +417,12 @@ vn_readlink(const char *path, char *buf, size_t size, size_t *lenp)
 }
 
 int
-vn_stat(const char *path, int follow, struct vattr *va)
+vn_statat(struct vnode *sdir, const char *path, int follow, struct vattr *va)
 {
         struct vnode *vp;
         int error;
 
-        if ((error = lookupname(path, follow, &vp)) != 0)
+        if ((error = lookuppn(path, follow, sdir, NULL, NULL, &vp)) != 0)
                 return error;
         va->va_mask = AT_ALL;
         error = VOP_GETATTR(vp, va, kcred);

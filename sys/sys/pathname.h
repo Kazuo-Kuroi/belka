@@ -22,11 +22,12 @@
 struct vnode;
 
 /*
- * Resolve path from startdir (or the root, for an absolute path or a
- * NULL startdir). With dvpp, also return the parent directory of the
- * last component and its name in lastname (MAXNAMELEN bytes); then a
- * missing last component is not an error, and *vpp is set to NULL. All
- * returned vnodes are held. See vfs_lookup.c for the rules.
+ * Resolve path from startdir (the current directory if it is NULL, or
+ * the root for an absolute path). With dvpp, also return the parent
+ * directory of the last component and its name in lastname (MAXNAMELEN
+ * bytes); then a missing last component is not an error, and *vpp is
+ * set to NULL. All returned vnodes are held. See vfs_lookup.c for the
+ * rules.
  */
 int lookuppn(const char *, int, struct vnode *, struct vnode **, char *,
     struct vnode **);

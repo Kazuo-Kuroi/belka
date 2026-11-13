@@ -43,8 +43,10 @@
 #ifndef _SYS_VNODE_H_
 #define _SYS_VNODE_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
+#include <sys/pathname.h>
 #include <sys/spinlock.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -245,26 +247,88 @@ void vattr_to_stat(const struct vattr *, struct stat *);
 extern struct vnode *rootdir;
 
 /*
- * Kernel file operations by path (vfs_vnops.c), for the kernel itself
- * until there are system calls. Paths are absolute, or relative to the
- * root. Each returns 0 or an errno value.
+ * File operations by path (vfs_vnops.c). Each returns 0 or an errno
+ * value. A relative path starts at the directory given to the *at form
+ * (the *at system calls pass a directory descriptor's vnode), or at the
+ * current directory when that is NULL, as it is for the plain forms.
  */
-int vn_open(const char *, int, mode_t, struct vnode **);
+int vn_openat(struct vnode *, const char *, int, mode_t, struct vnode **);
 int vn_close(struct vnode *, int);
 int vn_rdwr(enum uio_rw, struct vnode *, void *, size_t, off_t, int,
     size_t *);
 int vn_create(const char *, mode_t, int, struct vnode **);
-int vn_remove(const char *);
-int vn_link(const char *, const char *);
-int vn_rename(const char *, const char *);
-int vn_mkdir(const char *, mode_t);
-int vn_rmdir(const char *);
-int vn_symlink(const char *, const char *);
-int vn_readlink(const char *, char *, size_t, size_t *);
-int vn_stat(const char *, int, struct vattr *);
+int vn_removeat(struct vnode *, const char *);
+int vn_linkat(struct vnode *, const char *, struct vnode *, const char *,
+    int);
+int vn_renameat(struct vnode *, const char *, struct vnode *, const char *);
+int vn_mkdirat(struct vnode *, const char *, mode_t);
+int vn_rmdirat(struct vnode *, const char *);
+int vn_symlinkat(const char *, struct vnode *, const char *);
+int vn_readlinkat(struct vnode *, const char *, char *, size_t, size_t *);
+int vn_statat(struct vnode *, const char *, int, struct vattr *);
 int vn_truncate(const char *, off_t);
-int vn_mknod(const char *, enum vtype, mode_t);
+int vn_mknodat(struct vnode *, const char *, enum vtype, mode_t);
 int vn_chown(struct vnode *, uid_t, gid_t);
+
+static inline int
+vn_open(const char *path, int flags, mode_t mode, struct vnode **vpp)
+{
+        return vn_openat(NULL, path, flags, mode, vpp);
+}
+
+static inline int
+vn_remove(const char *path)
+{
+        return vn_removeat(NULL, path);
+}
+
+static inline int
+vn_link(const char *frompath, const char *topath)
+{
+        return vn_linkat(NULL, frompath, NULL, topath, NO_FOLLOW);
+}
+
+static inline int
+vn_rename(const char *frompath, const char *topath)
+{
+        return vn_renameat(NULL, frompath, NULL, topath);
+}
+
+static inline int
+vn_mkdir(const char *path, mode_t mode)
+{
+        return vn_mkdirat(NULL, path, mode);
+}
+
+static inline int
+vn_rmdir(const char *path)
+{
+        return vn_rmdirat(NULL, path);
+}
+
+static inline int
+vn_symlink(const char *target, const char *path)
+{
+        return vn_symlinkat(target, NULL, path);
+}
+
+static inline int
+vn_readlink(const char *path, char *buf, size_t size, size_t *lenp)
+{
+        return vn_readlinkat(NULL, path, buf, size, lenp);
+}
+
+static inline int
+vn_stat(const char *path, int follow, struct vattr *va)
+{
+        return vn_statat(NULL, path, follow, va);
+}
+
+static inline int
+vn_mknod(const char *path, enum vtype type, mode_t mode)
+{
+        return vn_mknodat(NULL, path, type, mode);
+}
 
 /* VOP_POLL for objects that are always ready (sys_poll.c). */
 int fs_poll(struct vnode *, short, short *, struct pollhead **, struct cred *);

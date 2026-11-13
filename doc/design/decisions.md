@@ -725,12 +725,11 @@ Recorded 2026-11-07.
   mlibc's thread cancellation signal is `SIGLWP`.
 - **What the library does itself:** `O_CLOEXEC`, `O_DIRECTORY`, and
   `O_NOFOLLOW` (values from later System V) are carried out around
-  `open`; `F_DUPFD_CLOEXEC` and the `dup` flags likewise; the `*at`
-  calls work for `AT_FDCWD` or absolute paths, and fail with `ENOSYS`
-  otherwise; `readdir` rewrites the kernel's records, which have no
-  `d_type`; `waitpid` runs over `waitsys` and builds the status word
-  from the `siginfo_t`; every clock reads `gettimeofday`; `isatty` asks
-  for `TCGETA`. System calls that fail with `ERESTART` are reissued, and
+  `open`; `F_DUPFD_CLOEXEC` and the `dup` flags likewise;
+  `AT_EMPTY_PATH` becomes the call on the descriptor; `readdir`
+  rewrites the kernel's records, which have no `d_type`; `waitpid` runs
+  over `waitsys` and builds the status word from the `siginfo_t`; every
+  clock reads `gettimeofday`; `isatty` asks for `TCGETA`. System calls that fail with `ERESTART` are reissued, and
   signal handlers return through a trampoline passed with every
   `sigaction`, as the kernel expects.
 - **The thread pointer** is the `%fs` base, set with `__lwp_private`, so
@@ -745,10 +744,10 @@ Recorded 2026-11-07.
   statuses, `execve`, `abort`, handlers, masks and pending signals, a
   fault handled with `longjmp`, the clocks, and `uname`. The process
   self-test runs it.
-- **Not yet:** terminals and `termios` with the System V values, the
-  `*at` calls relative to a directory descriptor, `chown`, `poll`, named
-  FIFOs, resource limits (mlibc's `resource.h` is still Linux's), and
-  the libt test programs moving onto mlibc.
+- **Not yet:** terminals and `termios` with the System V values,
+  `pselect` with a signal mask, `getrusage`, and the libt test programs
+  moving onto mlibc. (The `*at` calls, `chown`, `poll`, named FIFOs and
+  resource limits came on 2026-11-12; see below.)
 
 ## POSIX threads (2026-11-09)
 
@@ -1113,6 +1112,37 @@ Recorded 2026-11-07.
     then sums the process's ticks: `SIGXCPU` past the soft limit (each
     second), `SIGKILL` past the hard one.
   - CORE is kept for when there are core files.
+
+## The *at calls (2026-11-12)
+
+- **Calls:** UnixWare 2 has none, so they are Belka's own, numbered
+  after `yield`: `openat` 213, `mknodat` 214, `mkdirat` 215, `unlinkat`
+  216, `renameat` 217, `linkat` 218, `symlinkat` 219, `readlinkat` 220,
+  `fstatat` 221, `fchownat` 222, `fchmodat` 223, `faccessat` 224. Each
+  takes its arguments in the POSIX order.
+- **Flags** (`<sys/fcntl.h>`) take the values later System V gave them:
+  `AT_REMOVEDIR` 0x1, `AT_SYMLINK_FOLLOW` 0x2, `AT_EACCESS` 0x4,
+  `AT_SYMLINK_NOFOLLOW` 0x1000. `AT_FDCWD` is -100, the value mlibc's
+  Belka ABI already had. A flag a call does not take is `EINVAL`.
+- **Lookup:** a relative path starts at the directory open on the
+  descriptor, held for the call; `lookuppn()` always had a start
+  directory. An absolute path ignores the descriptor, and `AT_FDCWD`
+  means the current directory. A descriptor that is not open is
+  `EBADF`, and one that is not a directory `ENOTDIR`. No search
+  permission is checked on the directory until there are credentials.
+- **Kernel interface:** the path functions in `vfs_vnops.c` became
+  their *at forms (`vn_openat`, `vn_removeat`, `vn_linkat` with a follow
+  flag, and so on); the plain names are inline wrappers that pass NULL,
+  the current directory. The old system calls are the new ones with
+  `AT_FDCWD`.
+- **Details:** `linkat` follows a last link in the existing path only
+  with `AT_SYMLINK_FOLLOW`, as `link` never does. `fchmodat` with
+  `AT_SYMLINK_NOFOLLOW` fails with `EOPNOTSUPP` on a link, which has no
+  mode of its own, and changes anything else. `AT_EACCESS` changes
+  nothing while every process is the superuser.
+- **C library:** every `*at` sysdep calls the kernel; `open`, `stat`
+  and `readlink` go through the *at calls. mlibc declares `renameat`
+  only for POSIX 2008, which `_DEFAULT_SOURCE` does not imply there.
 
 ## File systems
 

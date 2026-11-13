@@ -112,7 +112,19 @@
 #define SYS_clock_gettime 210
 #define SYS_clock_getres 211
 #define SYS_yield       212
+#define SYS_openat      213
+#define SYS_mknodat     214
+#define SYS_mkdirat     215
+#define SYS_unlinkat    216
+#define SYS_renameat    217
+#define SYS_linkat      218
+#define SYS_symlinkat   219
+#define SYS_readlinkat  220
+#define SYS_fstatat     221
+#define SYS_fchownat    222
+#define SYS_fchmodat    223
+#define SYS_faccessat   224
 
-#define NSYSCALL        213     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        225     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

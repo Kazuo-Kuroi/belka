@@ -30,6 +30,9 @@ sy_call_t sys_fstat;
 sy_call_t sys_open, sys_creat, sys_link, sys_unlink, sys_chdir, sys_fchdir;
 sy_call_t sys_chmod, sys_stat, sys_lstat, sys_access, sys_rmdir, sys_mkdir;
 sy_call_t sys_symlink, sys_readlink, sys_rename;
+sy_call_t sys_openat, sys_mknodat, sys_mkdirat, sys_unlinkat, sys_renameat;
+sy_call_t sys_linkat, sys_symlinkat, sys_readlinkat, sys_fstatat;
+sy_call_t sys_fchownat, sys_fchmodat, sys_faccessat;
 /* vm_mman.c */
 sy_call_t sys_brk, sys_mmap, sys_munmap, sys_mprotect;
 /* kern_sig.c */

@@ -10,13 +10,14 @@
  * the environment, the heap, stdio on files and directories, errno,
  * processes and wait statuses, signals and handlers, time, the thread
  * pointer, the clocks and processor time, pipes and named FIFOs, poll
- * and select, resource limits, vectored I/O, and getcwd().
+ * and select, resource limits, vectored I/O, the *at calls, and getcwd().
  *
  * usage: libctest dir, where dir holds bin/ and is writable. Exits with
  * the number of failed checks.
  */
 
 #define _DEFAULT_SOURCE         /* POSIX, XSI, and the BSD and SVID extras */
+#define _POSIX_C_SOURCE 200809L /* mlibc wants it named for renameat() */
 
 #include <dirent.h>
 #include <errno.h>
@@ -1009,6 +1010,113 @@ test_file_ops(void)
         CHECK(unlink(path("/libctest.mode")) == 0);
 }
 
+/*
+ * The *at calls, relative to a directory descriptor on ext2 (dir) whose
+ * directory is renamed while open, with the current directory on tmpfs.
+ */
+static void
+test_at_calls(void)
+{
+        struct stat st, st2;
+        char buf[16];
+        ino_t ino;
+        int dfd, fd;
+
+        CHECK(chdir("/") == 0);
+        CHECK(mkdir(path("/libctest.at"), 0755) == 0);
+        dfd = open(path("/libctest.at"), O_RDONLY | O_DIRECTORY);
+        CHECK(dfd >= 0);
+        if (dfd < 0)
+                return;
+        /* The descriptor keeps naming the directory after a rename. */
+        CHECK(rename(path("/libctest.at"), path("/libctest.at2")) == 0);
+
+        fd = openat(dfd, "f", O_RDWR | O_CREAT | O_EXCL, 0644);
+        CHECK(fd >= 0);
+        CHECK(write(fd, "abc", 3) == 3);
+        close(fd);
+        CHECK(openat(dfd, "f", O_RDWR | O_CREAT | O_EXCL, 0644) == -1 &&
+            errno == EEXIST);
+        CHECK(stat(path("/libctest.at2/f"), &st) == 0 && st.st_size == 3);
+        CHECK(fstatat(dfd, "f", &st2, 0) == 0 && st2.st_ino == st.st_ino &&
+            S_ISREG(st2.st_mode));
+        ino = st.st_ino;
+        CHECK(faccessat(dfd, "f", R_OK | W_OK, 0) == 0);
+        CHECK(faccessat(dfd, "f", F_OK, AT_EACCESS) == 0);
+        CHECK(faccessat(dfd, "none", F_OK, 0) == -1 && errno == ENOENT);
+        CHECK(fchmodat(dfd, "f", 0600, 0) == 0);
+        CHECK(fstatat(dfd, "f", &st, 0) == 0 && (st.st_mode & 07777) == 0600);
+        CHECK(fchownat(dfd, "f", 7, 8, 0) == 0);
+        CHECK(fstatat(dfd, "f", &st, 0) == 0 && st.st_uid == 7 &&
+            st.st_gid == 8);
+
+        CHECK(mkdirat(dfd, "d", 0755) == 0);
+        CHECK(fstatat(dfd, "d", &st, 0) == 0 && S_ISDIR(st.st_mode));
+        CHECK(mkfifoat(dfd, "p", 0644) == 0);
+        CHECK(fstatat(dfd, "p", &st, 0) == 0 && S_ISFIFO(st.st_mode));
+
+        /* Links: the symbolic one is followed only when asked. */
+        CHECK(symlinkat("f", dfd, "l") == 0);
+        CHECK(readlinkat(dfd, "l", buf, sizeof(buf)) == 1 && buf[0] == 'f');
+        CHECK(fstatat(dfd, "l", &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+            S_ISLNK(st.st_mode));
+        CHECK(fstatat(dfd, "l", &st, 0) == 0 && st.st_ino == ino);
+        CHECK(fchownat(dfd, "l", 1, 2, AT_SYMLINK_NOFOLLOW) == 0);
+        CHECK(fstatat(dfd, "l", &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+            st.st_uid == 1);
+        CHECK(fstatat(dfd, "f", &st, 0) == 0 && st.st_uid == 7);
+        CHECK(fchmodat(dfd, "l", 0644, AT_SYMLINK_NOFOLLOW) == -1 &&
+            errno == EOPNOTSUPP);
+        CHECK(linkat(dfd, "f", dfd, "d/f2", 0) == 0);
+        CHECK(fstatat(dfd, "f", &st, 0) == 0 && st.st_nlink == 2);
+        CHECK(linkat(dfd, "l", dfd, "l2", 0) == 0);
+        CHECK(fstatat(dfd, "l2", &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+            S_ISLNK(st.st_mode));
+        CHECK(linkat(dfd, "l", dfd, "f3", AT_SYMLINK_FOLLOW) == 0);
+        CHECK(fstatat(dfd, "f3", &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+            st.st_ino == ino);
+
+        /* renameat, between the descriptor and the current directory. */
+        CHECK(renameat(dfd, "d/f2", AT_FDCWD, path("/libctest.at2/g")) == 0);
+        CHECK(fstatat(dfd, "g", &st, 0) == 0 && st.st_ino == ino);
+        CHECK(renameat(dfd, "g", AT_FDCWD, "libctest.g") == -1 &&
+            errno == EXDEV);
+
+        /* An absolute path ignores the descriptor; errors. */
+        fd = openat(-1, "/", O_RDONLY);
+        CHECK(fd >= 0);
+        if (fd >= 0) {
+                /* tmpfs too: the current directory is the root. */
+                CHECK(mkdirat(fd, "libctest.atd", 0755) == 0);
+                CHECK(stat("libctest.atd", &st) == 0 && S_ISDIR(st.st_mode));
+                CHECK(unlinkat(AT_FDCWD, "libctest.atd", AT_REMOVEDIR) == 0);
+                close(fd);
+        }
+        fd = openat(dfd, "f", O_RDONLY);
+        CHECK(fd >= 0);
+        CHECK(openat(fd, "x", O_RDONLY) == -1 && errno == ENOTDIR);
+        CHECK(fstatat(fd, "x", &st, 0) == -1 && errno == ENOTDIR);
+        close(fd);
+        CHECK(openat(999, "f", O_RDONLY) == -1 && errno == EBADF);
+        CHECK(mkdirat(999, "x", 0755) == -1 && errno == EBADF);
+        CHECK(unlinkat(dfd, "f", AT_REMOVEDIR) == -1 && errno == ENOTDIR);
+        CHECK(unlinkat(dfd, "f", 0x40) == -1 && errno == EINVAL);
+        CHECK(fstatat(dfd, "f", &st, 0x40) == -1 && errno == EINVAL);
+        CHECK(linkat(dfd, "f", dfd, "f4", AT_SYMLINK_NOFOLLOW) == -1 &&
+            errno == EINVAL);
+
+        CHECK(unlinkat(dfd, "f", 0) == 0);
+        CHECK(unlinkat(dfd, "f3", 0) == 0);
+        CHECK(unlinkat(dfd, "g", 0) == 0);
+        CHECK(unlinkat(dfd, "l", 0) == 0);
+        CHECK(unlinkat(dfd, "l2", 0) == 0);
+        CHECK(unlinkat(dfd, "p", 0) == 0);
+        CHECK(unlinkat(dfd, "d", AT_REMOVEDIR) == 0);
+        CHECK(fstatat(dfd, "d", &st, 0) == -1 && errno == ENOENT);
+        close(dfd);
+        CHECK(rmdir(path("/libctest.at2")) == 0);
+}
+
 /* getcwd() at the root, in a mounted file system, and below it. */
 static void
 test_cwd(void)
@@ -1047,6 +1155,7 @@ main(int argc, char **argv)
         test_poll();
         test_rlimits();
         test_file_ops();
+        test_at_calls();
         test_cwd();
         printf("libctest: %d failures\n", failures);
         return failures;

@@ -35,6 +35,16 @@
 
 #define FD_CLOEXEC      1
 
+/*
+ * The *at calls: a directory descriptor meaning the current directory,
+ * and their flags. Belka's own; UnixWare 2 has no *at calls.
+ */
+#define AT_FDCWD                (-100)
+#define AT_REMOVEDIR            0x1     /* unlinkat: remove a directory */
+#define AT_SYMLINK_FOLLOW       0x2     /* linkat: follow a last link */
+#define AT_EACCESS              0x4     /* faccessat: effective ids */
+#define AT_SYMLINK_NOFOLLOW     0x1000  /* do not follow a last link */
+
 #define SEEK_SET        0
 #define SEEK_CUR        1
 #define SEEK_END        2
