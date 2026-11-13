@@ -108,11 +108,25 @@ lookuppn(const char *path, int follow, struct vnode *startdir,
         }
         memcpy(pn, path, len + 1);
 
-        /* Relative names start at startdir, or the current directory. */
-        if (startdir == NULL && pn[0] != '/')
-                startdir = curproc->p_cdir;
-        cur = (pn[0] == '/' || startdir == NULL) ? rootdir : startdir;
-        VN_HOLD(cur);
+        /*
+         * Relative names start at startdir, or the current directory,
+         * which is read and held under p_lock: another LWP's chdir may
+         * release the old one as soon as it is replaced.
+         */
+        if (pn[0] == '/') {
+                cur = rootdir;
+                VN_HOLD(cur);
+        } else if (startdir != NULL) {
+                cur = startdir;
+                VN_HOLD(cur);
+        } else {
+                struct proc *p = curproc;
+
+                mutex_lock(&p->p_lock);
+                cur = p->p_cdir != NULL ? p->p_cdir : rootdir;
+                VN_HOLD(cur);
+                mutex_unlock(&p->p_lock);
+        }
 
         for (;;) {
                 size_t clen = 0;
