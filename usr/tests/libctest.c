@@ -906,6 +906,7 @@ cpu_gave_up(int code, const struct timespec *t0)
         printf("libctest: cpu limit child: gave up (%d) after %ld ms, "
             "%ld ticks of processor time\n", code, ms_since(t0),
             (long)tms.tms_utime);
+        fflush(stdout);         /* the child leaves with _exit */
         return code;
 }
 
