@@ -10,14 +10,15 @@
  * the environment, the heap, stdio on files and directories, errno,
  * processes and wait statuses, signals and handlers, time, the thread
  * pointer, the clocks and processor time, pipes and named FIFOs, poll
- * and select, resource limits, vectored I/O, the *at calls, and getcwd().
+ * and select, ppoll and pselect, resource limits and getrusage,
+ * vectored I/O, the *at calls, and getcwd().
  *
  * usage: libctest dir, where dir holds bin/ and is writable. Exits with
  * the number of failed checks.
  */
 
 #define _DEFAULT_SOURCE         /* POSIX, XSI, and the BSD and SVID extras */
-#define _POSIX_C_SOURCE 200809L /* mlibc wants it named for renameat() */
+#define _POSIX_C_SOURCE 202405L /* mlibc wants it named: renameat, ppoll */
 
 #include <dirent.h>
 #include <errno.h>
@@ -811,6 +812,97 @@ test_poll(void)
         CHECK(unlink(path("/libctest.poll")) == 0);
 }
 
+/* Whether sig is in the calling thread's mask. */
+static int
+masked(int sig)
+{
+        sigset_t cur;
+
+        return sigprocmask(SIG_BLOCK, NULL, &cur) == 0 &&
+            sigismember(&cur, sig) == 1;
+}
+
+/*
+ * ppoll() and pselect(): a timespec timeout, and a signal mask held
+ * for the wait alone. A SIGUSR1 held and already pending ends a wait
+ * whose mask lets it in, and is held again once the handler is done; a
+ * wait that ends with an event puts the old mask back too.
+ */
+static void
+test_ppoll(void)
+{
+        struct timespec t0, ts;
+        struct pollfd pfd;
+        struct sigaction sa, old;
+        sigset_t usr1, usr2, none, pend;
+        fd_set rset;
+        int fds[2];
+        char c;
+
+        CHECK(pipe(fds) == 0);
+        pfd = (struct pollfd){ fds[0], POLLIN, 0 };
+        sigemptyset(&none);
+        sigemptyset(&usr1);
+        sigaddset(&usr1, SIGUSR1);
+        sigemptyset(&usr2);
+        sigaddset(&usr2, SIGUSR2);
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = on_usr1;
+        CHECK(sigaction(SIGUSR1, &sa, &old) == 0);
+        CHECK(sigprocmask(SIG_BLOCK, &usr1, NULL) == 0);
+
+        /* The timeout, with no mask. */
+        ts = (struct timespec){ 0, 50000000 };
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        CHECK(ppoll(&pfd, 1, &ts, NULL) == 0 && ms_since(&t0) >= 50);
+        ts = (struct timespec){ 0, 1000000000 };
+        CHECK(ppoll(&pfd, 1, &ts, NULL) == -1 && errno == EINVAL);
+
+        /* The pending signal gets in only through the wait's mask. */
+        got_sig = 0;
+        CHECK(kill(getpid(), SIGUSR1) == 0 && got_sig == 0);
+        ts = (struct timespec){ 0, 0 };
+        CHECK(ppoll(&pfd, 1, &ts, &usr2) == 0 && got_sig == 0);
+        CHECK(masked(SIGUSR1) && !masked(SIGUSR2));
+        ts = (struct timespec){ 5, 0 };
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        CHECK(ppoll(&pfd, 1, &ts, &none) == -1 && errno == EINTR &&
+            got_sig == SIGUSR1 && ms_since(&t0) < 5000);
+        CHECK(masked(SIGUSR1));
+        CHECK(sigpending(&pend) == 0 && sigismember(&pend, SIGUSR1) == 0);
+
+        /* An event ends the wait, and the old mask comes back. */
+        CHECK(write(fds[1], "z", 1) == 1);
+        CHECK(ppoll(&pfd, 1, NULL, &usr2) == 1 && pfd.revents == POLLIN);
+        CHECK(masked(SIGUSR1) && !masked(SIGUSR2));
+
+        /* pselect(): the same with descriptor sets. */
+        FD_ZERO(&rset);
+        FD_SET(fds[0], &rset);
+        CHECK(pselect(fds[0] + 1, &rset, NULL, NULL, NULL, &usr2) == 1 &&
+            FD_ISSET(fds[0], &rset));
+        CHECK(read(fds[0], &c, 1) == 1 && c == 'z');
+        got_sig = 0;
+        CHECK(kill(getpid(), SIGUSR1) == 0 && got_sig == 0);
+        FD_ZERO(&rset);
+        FD_SET(fds[0], &rset);
+        ts = (struct timespec){ 5, 0 };
+        CHECK(pselect(fds[0] + 1, &rset, NULL, NULL, &ts, &none) == -1 &&
+            errno == EINTR && got_sig == SIGUSR1);
+        CHECK(masked(SIGUSR1) && !masked(SIGUSR2));
+        ts = (struct timespec){ 0, 30000000 };
+        FD_ZERO(&rset);
+        FD_SET(fds[0], &rset);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        CHECK(pselect(fds[0] + 1, &rset, NULL, NULL, &ts, NULL) == 0 &&
+            ms_since(&t0) >= 30);
+
+        CHECK(sigprocmask(SIG_UNBLOCK, &usr1, NULL) == 0);
+        CHECK(sigaction(SIGUSR1, &old, NULL) == 0);
+        close(fds[0]);
+        close(fds[1]);
+}
+
 /* Run fn in a child; its wait status. */
 static int
 in_child(int (*fn)(void))
@@ -957,6 +1049,22 @@ test_rlimits(void)
         if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGKILL)
                 printf("libctest: cpu limit child: status %#x\n", status);
         CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+
+        /* getrusage: the CPU child's two seconds, and our own time. */
+        {
+                struct rusage ru;
+                struct tms tms;
+                long ticks;
+
+                CHECK(getrusage(RUSAGE_CHILDREN, &ru) == 0 &&
+                    ru.ru_utime.tv_sec >= 2 && ru.ru_utime.tv_usec >= 0 &&
+                    ru.ru_utime.tv_usec < 1000000);
+                times(&tms);
+                CHECK(getrusage(RUSAGE_SELF, &ru) == 0);
+                ticks = ru.ru_utime.tv_sec * 100 + ru.ru_utime.tv_usec / 10000;
+                CHECK(ticks >= (long)tms.tms_utime);
+                CHECK(getrusage(5, &ru) == -1 && errno == EINVAL);
+        }
 }
 
 /* Named FIFOs on ext2 (dir) and on tmpfs (the root). */
@@ -1154,6 +1262,7 @@ main(int argc, char **argv)
         test_pipes();
         test_fifos();
         test_poll();
+        test_ppoll();
         test_rlimits();
         test_file_ops();
         test_at_calls();

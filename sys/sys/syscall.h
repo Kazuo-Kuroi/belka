@@ -124,7 +124,9 @@
 #define SYS_fchownat    222
 #define SYS_fchmodat    223
 #define SYS_faccessat   224
+#define SYS_pollsys     225
+#define SYS_getrusage   226
 
-#define NSYSCALL        225     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        227     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

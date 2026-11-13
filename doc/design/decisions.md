@@ -750,10 +750,10 @@ Recorded 2026-11-07.
   statuses, `execve`, `abort`, handlers, masks and pending signals, a
   fault handled with `longjmp`, the clocks, and `uname`. The process
   self-test runs it.
-- **Not yet:** terminals and `termios` with the System V values,
-  `pselect` with a signal mask, `getrusage`, and the libt test programs
-  moving onto mlibc. (The `*at` calls, `chown`, `poll`, named FIFOs and
-  resource limits came on 2026-11-12; see below.)
+- **Not yet:** terminals and `termios` with the System V values, and
+  the libt test programs moving onto mlibc. (The `*at` calls, `chown`,
+  `poll`, named FIFOs and resource limits came on 2026-11-12, `ppoll`,
+  `pselect` with a mask and `getrusage` on 2026-11-13; see below.)
 
 ## POSIX threads (2026-11-09)
 
@@ -1085,8 +1085,7 @@ Recorded 2026-11-07.
   ticks plus one.
 - **`select`** is the C library's, on `poll`: readable is `POLLIN` or a
   hang-up or error, writable `POLLOUT` or an error, exceptional
-  `POLLPRI`. `pselect` with a signal mask fails with `ENOSYS` until the
-  kernel can swap the mask atomically.
+  `POLLPRI`. It now goes through `pollsys` (2026-11-13, below).
 
 ## Resource limits (2026-11-12)
 
@@ -1149,6 +1148,27 @@ Recorded 2026-11-07.
 - **C library:** every `*at` sysdep calls the kernel; `open`, `stat`
   and `readlink` go through the *at calls. mlibc declares `renameat`
   only for POSIX 2008, which `_DEFAULT_SOURCE` does not imply there.
+
+## pollsys and getrusage (2026-11-13)
+
+- **`pollsys(fds, nfds, timeout, mask)`** (225, Belka's own, after the
+  Solaris call of that name) is `poll` with a `struct timespec` timeout
+  (NULL: none) and a signal mask held for the wait alone (NULL: the
+  mask stays). The mask goes in as `sigsuspend` puts its own: the old
+  one is kept in `l_sigoldmask`. A wait that a signal ends (`EINTR`)
+  leaves the old mask to the signal's delivery, which restores it after
+  the handler, so the signal is taken under the wait's mask and no
+  other slips in between. A wait that ends any other way puts the old
+  mask back before returning. The timeout is ticks as for the other
+  timed waits: rounded up, plus one.
+- **The C library:** `ppoll` is `pollsys`, and `select` and `pselect`
+  build their `pollfd` array and call it with the timeout and mask as
+  given. mlibc declares `ppoll` only for POSIX 2024 or `_GNU_SOURCE`.
+- **`getrusage(who, struct rusage *)`** (226, Belka's own; UnixWare 2
+  has none) for `RUSAGE_SELF` and `RUSAGE_CHILDREN` (the children
+  reaped). Only the times are kept, and all processor time counts as
+  user time, as it does for `times`; the other fields are zero. The
+  kernel's `struct rusage` has mlibc's layout.
 
 ## File systems
 

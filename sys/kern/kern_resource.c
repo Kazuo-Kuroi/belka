@@ -6,7 +6,8 @@
 
 /*
  * Resource limits: getrlimit (129) and setrlimit (128), UnixWare's
- * numbers, and the processor time limit.
+ * numbers, and the processor time limit; and getrusage (226), Belka's
+ * own.
  *
  * Each process keeps its limits in p_rlimit, under p_lock; fork copies
  * them. Where each is enforced:
@@ -135,4 +136,32 @@ sys_setrlimit(const uint64_t *args, uint64_t *rv __unused)
                     lim.rlim_max != RLIM_INFINITY ? lbolt + 1 : 0;
         mutex_unlock(&p->p_lock);
         return 0;
+}
+
+/*
+ * getrusage(who, struct rusage *), Belka's own: the processor time of
+ * the process (RUSAGE_SELF) or of its reaped children
+ * (RUSAGE_CHILDREN), all as user time; the other fields are zero.
+ */
+int
+sys_getrusage(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct proc *p = curproc;
+        struct rusage ru;
+        uint64_t ticks;
+
+        switch ((int)args[0]) {
+        case RUSAGE_SELF:
+                ticks = proc_ticks(p);
+                break;
+        case RUSAGE_CHILDREN:
+                ticks = p->p_cticks;
+                break;
+        default:
+                return EINVAL;
+        }
+        memset(&ru, 0, sizeof(ru));
+        ru.ru_utime.tv_sec = (int64_t)(ticks / HZ);
+        ru.ru_utime.tv_usec = (int64_t)(ticks % HZ) * (1000000 / HZ);
+        return copyout(&ru, (void *)(uintptr_t)args[1], sizeof(ru));
 }

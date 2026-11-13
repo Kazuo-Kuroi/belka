@@ -920,6 +920,54 @@ sig_suspend(k_sigset_t mask)
         return sig_pause();
 }
 
+/*
+ * For a wait that a signal may end with another mask held for it
+ * (pollsys): hold the mask at umask, as sigsuspend does, and keep the
+ * old one to come back.
+ */
+int
+sig_wait_mask(uint64_t umask)
+{
+        struct proc *p = curproc;
+        struct lwp *l = curlwp;
+        k_sigset_t mask;
+        int s, error;
+
+        if ((error = copyin_sigset(umask, &mask)) != 0)
+                return error;
+        s = spin_lock(&p->p_siglock);
+        if (!l->l_sigsuspend)
+                l->l_sigoldmask = l->l_sigmask;
+        l->l_sigsuspend = 1;
+        l->l_sigmask = mask & ~CANTMASK;
+        sig_recalc_lwp(p, l);
+        spin_unlock(&p->p_siglock, s);
+        return 0;
+}
+
+/*
+ * The wait is over, with error. After EINTR or ERESTART a signal is
+ * due, and its delivery puts the old mask back (after the handler, if
+ * there is one); otherwise it comes back now.
+ */
+void
+sig_wait_mask_end(int error)
+{
+        struct proc *p = curproc;
+        struct lwp *l = curlwp;
+        int s;
+
+        if (error == EINTR || error == ERESTART)
+                return;
+        s = spin_lock(&p->p_siglock);
+        if (l->l_sigsuspend) {
+                l->l_sigmask = l->l_sigoldmask;
+                l->l_sigsuspend = 0;
+        }
+        sig_recalc_lwp(p, l);
+        spin_unlock(&p->p_siglock, s);
+}
+
 int
 sys_sigsuspend(const uint64_t *args, uint64_t *rv __unused)
 {

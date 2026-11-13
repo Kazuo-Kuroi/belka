@@ -34,6 +34,39 @@ struct rlimit {
         rlim_t          rlim_max;       /* the hard limit, the soft one's ceiling */
 };
 
+/* getrusage(who, struct rusage *): whose use. */
+#define RUSAGE_SELF     0
+#define RUSAGE_CHILDREN (-1)       /* the children reaped */
+
+/*
+ * Resource use, laid out as the C library's struct rusage (the times
+ * are struct timevals). Only the times are kept so far, and all
+ * processor time counts as user time.
+ */
+struct rusage_time {
+        int64_t         tv_sec;
+        int64_t         tv_usec;
+};
+
+struct rusage {
+        struct rusage_time ru_utime;    /* user time */
+        struct rusage_time ru_stime;    /* system time */
+        long            ru_maxrss;
+        long            ru_ixrss;
+        long            ru_idrss;
+        long            ru_isrss;
+        long            ru_minflt;
+        long            ru_majflt;
+        long            ru_nswap;
+        long            ru_inblock;
+        long            ru_oublock;
+        long            ru_msgsnd;
+        long            ru_msgrcv;
+        long            ru_nsignals;
+        long            ru_nvcsw;
+        long            ru_nivcsw;
+};
+
 #ifdef _KERNEL
 
 struct proc;

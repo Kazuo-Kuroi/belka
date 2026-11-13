@@ -46,7 +46,7 @@ sy_call_t sys_lwp_sema_wait, sys_lwp_sema_post, sys_lwp_sema_trywait;
 sy_call_t sys_lwp_addr_wait, sys_lwp_addr_wake;
 /* fs/fifofs/fifo_vnops.c */
 sy_call_t sys_pipe, sys_mknod, sys_chown, sys_lchown, sys_poll;
-sy_call_t sys_getrlimit, sys_setrlimit;
+sy_call_t sys_getrlimit, sys_setrlimit, sys_getrusage, sys_pollsys;
 /* kern_time.c */
 sy_call_t sys_clock_gettime, sys_clock_getres, sys_times, sys_yield;
 

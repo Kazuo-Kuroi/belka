@@ -243,6 +243,8 @@ void sig_userret(void);
 int sig_restart(int);
 int sig_child_exit(struct proc *, int, int);
 int sig_sleep_check(void);
+int sig_wait_mask(uint64_t);
+void sig_wait_mask_end(int);
 int lwp_timeout_ticks(uint64_t, long *);
 int64_t lwp_timeout_start(long);
 void lwp_timeout_stop(int64_t);

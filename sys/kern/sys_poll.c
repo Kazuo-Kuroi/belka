@@ -5,7 +5,8 @@
  */
 
 /*
- * poll(fds, nfds, timeout), UnixWare's 87, and the poll heads behind it.
+ * poll(fds, nfds, timeout), UnixWare's 87, pollsys, Belka's own (poll
+ * with a timespec and a signal mask), and the poll heads behind them.
  *
  * Each pass asks every descriptor's vnode for its events (VOP_POLL),
  * which also hands back the object's poll head. A pass that finds
@@ -157,19 +158,20 @@ poll_scan(struct pollfd *fds, struct file **fps, struct polldat *pds,
         return n;
 }
 
-int
-sys_poll(const uint64_t *args, uint64_t *rv)
+/*
+ * The poll itself: wait up to ticks ticks (forever if negative, not at
+ * all if zero) for an event on one of the nfds descriptors at ufds.
+ */
+static int
+do_poll(uint64_t uaddr, size_t nfds, long ticks, uint64_t *rv)
 {
         struct proc *p = curproc;
         struct lwp *l = curlwp;
-        struct pollfd *ufds = (struct pollfd *)(uintptr_t)args[0];
-        size_t nfds = (size_t)args[1];
-        int timeout = (int)args[2];
+        struct pollfd *ufds = (struct pollfd *)(uintptr_t)uaddr;
         struct pollfd *fds = NULL;
         struct file **fps = NULL;
         struct polldat *pds = NULL;
         struct pollstate ps;
-        long ticks;
         int64_t id = 0;
         int timing = 0, error = 0, n = 0, s, r;
 
@@ -189,14 +191,6 @@ sys_poll(const uint64_t *args, uint64_t *rv)
                 if (fds[i].fd >= 0)
                         fps[i] = fd_get(p, fds[i].fd);
         }
-        /* Milliseconds to ticks, rounded up, and one more (see kern_sig). */
-        if (timeout < 0)
-                ticks = -1;
-        else if (timeout == 0)
-                ticks = 0;
-        else
-                ticks = ((long)timeout * HZ + 999) / 1000 + 1;
-
         for (;;) {
                 s = spin_lock(&ps.ps_lock);
                 ps.ps_fired = 0;
@@ -245,5 +239,44 @@ out:
                 kmem_free(fps, nfds * sizeof(*fps));
                 kmem_free(pds, nfds * sizeof(*pds));
         }
+        return error;
+}
+
+int
+sys_poll(const uint64_t *args, uint64_t *rv)
+{
+        int timeout = (int)args[2];
+        long ticks;
+
+        /* Milliseconds to ticks, rounded up, and one more (see kern_sig). */
+        if (timeout < 0)
+                ticks = -1;
+        else if (timeout == 0)
+                ticks = 0;
+        else
+                ticks = ((long)timeout * HZ + 999) / 1000 + 1;
+        return do_poll(args[0], (size_t)args[1], ticks, rv);
+}
+
+/*
+ * pollsys(fds, nfds, const struct timespec *timeout, const sigset_t
+ * *mask), Belka's own: poll with a timespec (NULL: no limit), and with
+ * mask (unless NULL) held for the wait alone, swapped in and out in the
+ * kernel so that no signal slips between. ppoll and pselect use it.
+ */
+int
+sys_pollsys(const uint64_t *args, uint64_t *rv)
+{
+        long ticks = -1;
+        int error;
+
+        if (args[2] != 0 &&
+            (error = lwp_timeout_ticks(args[2], &ticks)) != 0)
+                return error;
+        if (args[3] != 0 && (error = sig_wait_mask(args[3])) != 0)
+                return error;
+        error = do_poll(args[0], (size_t)args[1], ticks, rv);
+        if (args[3] != 0)
+                sig_wait_mask_end(error);
         return error;
 }
