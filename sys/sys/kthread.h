@@ -89,7 +89,7 @@ struct kthread {
         struct kthread  *kt_jobnext;    /* other threads of the job */
         int             kt_tsboost;     /* handed-off mutexes held (TS) */
         uint64_t        kt_ticks;       /* ticks spent running */
-        uint64_t        kt_lastrun;     /* lbolt when last switched out */
+        uint64_t        kt_lastrun;     /* lbolt when its last turn ended */
 
         /* Run queue linkage. */
         struct kthread  *kt_next;

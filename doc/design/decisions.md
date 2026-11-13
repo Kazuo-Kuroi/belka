@@ -212,7 +212,12 @@ Recorded 2026-11-07.
 - **Priorities** 0-127, higher more urgent. One run queue per
   processor with a bitmap of non-empty priorities. Equal priorities
   share by a 10-tick slice; a preempted thread returns to the head of
-  its priority, a yielding or expired one to the tail (IRIX).
+  its priority, a yielding or expired one to the tail (IRIX). A
+  preempted thread keeps the rest of its slice: given a new one, a
+  thread interrupted more often than once a slice never reached a slice
+  end, so its class never lowered it and it kept the processor (fixed
+  2026-11-13; the self-test now runs the fair-share cases with a
+  7-tick preemptor).
 - **Preemptible kernel:** a pending reschedule is taken on the way out
   of any interrupt that arrived at spl0. Wakeups on the local processor
   use a self-IPI so the switch happens as soon as interrupts are on.
@@ -275,8 +280,12 @@ Recorded 2026-11-07.
 - **Deviations from a literal reading:** a running thread is not lowered
   by redistribution, only at the end of its slice (IRIX does the same);
   and within a time-share level the run queue orders threads by when
-  they last ran, because whole jobs move between levels at once and job
-  list order would otherwise starve one of a job's threads.
+  their last turn ended, because whole jobs move between levels at once
+  and job list order would otherwise starve one of a job's threads. A
+  turn ends when a thread sleeps, yields, or uses up its slice, not when
+  it is preempted, and the time is taken before it is queued again;
+  stamped after, an expired thread was sorted by its previous turn and
+  could run again ahead of the other threads of its job.
 - **SCHED_RR / SCHED_FIFO:** fixed priorities from `PRI_TS_BOOST` (3) up;
   RR is sliced among equals, FIFO never. Kernel threads default to RR;
   interrupt threads are FIFO at `PRI_INTR`.

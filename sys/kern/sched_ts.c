@@ -26,7 +26,7 @@
  *   thread; that waits for its slice to end, as in IRIX, so a running
  *   thread is not preempted by a level change of equal standing.
  * - Within a level, the run queue orders time-share threads by when they
- *   last ran, so threads of one job take turns.
+ *   last ended a turn, so threads of one job take turns.
  *
  * Locking: wt_lock protects the active list and every job's thread
  * list; balances change atomically. The tick takes a thread's kt_lock

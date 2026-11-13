@@ -682,12 +682,24 @@ test_class_switch(void)
         CHECK(failures == before);
 }
 
+/* Wake every 7 ticks, more often than a time slice ends, until stop. */
+static void
+preemptor(void *arg __unused)
+{
+        while (!stop)
+                delay(7);
+        vsema(&done);
+}
+
 /*
  * Weights 20, 20, and 27 should share one processor about 1 : 1 : 1.95.
- * With joined jobs the share follows jobs, not threads.
+ * With joined jobs the share follows jobs, not threads. With preempt, a
+ * kernel thread interrupts the spinners more often than once a slice,
+ * and the shares must not change: a preempted thread that was given a
+ * new slice never reached the end of one, and kept the processor.
  */
 static void
-test_fair_share(int join)
+test_fair_share(int join, int preempt)
 {
         struct kthread *kt[3];
         uint64_t t0[3], d[3];
@@ -699,6 +711,9 @@ test_fair_share(int join)
             "ts_c");
         if (join)
                 CHECK(ts_join(kt[1], kt[0]) == 0);
+        if (preempt)
+                (void)kthread_create_bound(preemptor, NULL, PRI_KERNEL,
+                    "preempt", test_cpu());
         delay(10);
         for (int i = 0; i < 3; i++)
                 t0[i] = kt[i]->kt_ticks;
@@ -706,10 +721,11 @@ test_fair_share(int join)
         for (int i = 0; i < 3; i++)
                 d[i] = kt[i]->kt_ticks - t0[i];
         stop = 1;
-        wait_done(3);
+        wait_done(preempt ? 4 : 3);
 
-        printf("selftest: fair share%s: %ju %ju %ju ticks\n",
+        printf("selftest: fair share%s%s: %ju %ju %ju ticks\n",
             join ? " (a and b share a job)" : " (weights 20 20 27)",
+            preempt ? ", preempted" : "",
             (uintmax_t)d[0], (uintmax_t)d[1], (uintmax_t)d[2]);
         /*
          * a and b match to within two time slices: within one job,
@@ -904,8 +920,10 @@ selftest_sched(void)
         test_bind();
         test_ts_weights();
         test_class_switch();
-        test_fair_share(0);
-        test_fair_share(1);
+        test_fair_share(0, 0);
+        test_fair_share(1, 0);
+        test_fair_share(0, 1);
+        test_fair_share(1, 1);
         test_rr_over_ts();
         test_fifo();
         test_ts_mutex_rules(SCHED_TS, TS_DEFWEIGHT);

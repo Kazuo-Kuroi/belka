@@ -12,8 +12,11 @@
  *
  * - One run queue per processor, by priority. A thread preempted by a
  *   higher-priority one goes back at the head of its priority (IRIX
- *   sorts it as pri+1); one that yields or uses up its slice goes to
- *   the tail.
+ *   sorts it as pri+1) and keeps what was left of its time slice; one
+ *   that yields, sleeps, or uses up its slice goes to the tail and gets
+ *   a whole slice next time. Were a preempted thread given a new slice,
+ *   one interrupted more often than once a slice would never reach the
+ *   end of one, and its class would never get to lower it.
  * - The kernel is preemptible: when an interrupt arrives at spl0 and a
  *   reschedule is pending, the interrupted thread is switched out on
  *   the way back from the interrupt. Spin locks raise to splhi, so a
@@ -241,6 +244,18 @@ swtch(int s)
         else
                 minpri = old->kt_pri + 1;
 
+        /*
+         * Unless preempted, the thread's turn is over: it gets a whole
+         * slice next time, and goes behind time-share threads of its
+         * level that have waited since before now. A preempted thread
+         * is still in its turn, keeping its place and the rest of its
+         * slice.
+         */
+        if ((old->kt_flags & KTF_PREEMPTED) == 0) {
+                old->kt_slice = SCHED_SLICE;
+                old->kt_lastrun = lbolt;
+        }
+
         (void)spin_lock(&rq->rq_lock);
         new = runq_take(rq, minpri, ci, &busy);
         if (busy) {
@@ -291,10 +306,8 @@ swtch(int s)
                         panic("swtch: idle thread lock held");
         }
 
-        old->kt_lastrun = lbolt;
         new->kt_state = KT_ONPROC;
         new->kt_cpu = ci;
-        new->kt_slice = SCHED_SLICE;
         new->kt_nswitch++;
         sc->sc_prev = old;
         sc->sc_nswitch++;
