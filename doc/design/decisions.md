@@ -464,7 +464,13 @@ Recorded 2026-11-07.
 
 - **System calls** enter through `syscall` and leave through `sysretq`.
   `iretq` is used instead whenever the frame no longer describes an
-  ordinary user context (exec, or a non-canonical %rip).
+  ordinary user context (exec, or a non-canonical %rip), and whenever
+  its %rcx and %r11 are not the %rip and %rflags that `sysretq` would
+  leave in them: a context loaded by `setcontext` (how a signal handler
+  returns) or a signal frame must give every register back. A handler
+  that returned to code stopped by an interrupt used to find those two
+  registers overwritten (fixed 2026-11-12). `md_syscall_return` keeps
+  %r11 equal to the flags it sets, so ordinary calls stay on `sysretq`.
   - The native table uses UnixWare's numbers, with arguments in %rdi,
     %rsi, %rdx, %r10, %r8 and %r9.
   - Results follow the System V convention: on success the carry flag is

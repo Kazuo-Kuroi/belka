@@ -7,8 +7,9 @@
 /*
  * Signals from the point of view of a program: handlers and siginfo,
  * masks and pending signals, the UnixWare delivery order, SA_RESETHAND,
- * SA_NODEFER, SA_RESTART and ERESTART, faults handled and repaired,
- * alarm and pause, sigsuspend, stop and continue with wait, SIGCHLD,
+ * SA_NODEFER, SA_RESTART and ERESTART, faults handled and repaired with
+ * every register back, alarm and pause, sigsuspend, stop and continue
+ * with wait, SIGCHLD,
  * alternate stacks, contexts, the floating-point state across a
  * handler, process groups, and the old signal interfaces.
  *
@@ -188,6 +189,42 @@ test_fault(void)
         CHECK(info_code == SEGV_MAPERR && info_addr == 0x50001234UL);
         CHECK(munmap((void *)0x50001000UL, 4096) == 0);
         CHECK(set_default(SIGSEGV) == 0);
+}
+
+static void
+on_ill(int sig, siginfo_t *si, void *ctx)
+{
+        ucontext_t *uc = ctx;
+
+        (void)si;
+        hits++;
+        last_sig = sig;
+        uc->uc_mcontext.gregs[REG_RIP] += 2;    /* past the ud2 */
+}
+
+/*
+ * A handler's return gives the interrupted code every register back,
+ * %rcx and %r11 too, though the return is a system call whose sysretq
+ * would leave them holding %rip and %rflags.
+ */
+static void
+test_fault_regs(void)
+{
+        uint64_t rcx, r11;
+
+        reset_counts();
+        CHECK(catch(SIGILL, on_ill, 0) == 0);
+        __asm__ __volatile__(
+            "movabsq $0x0123456789abcdef, %%rcx\n\t"
+            "movabsq $0xfedcba9876543210, %%r11\n\t"
+            "ud2\n\t"
+            "movq %%rcx, %0\n\t"
+            "movq %%r11, %1"
+            : "=&r"(rcx), "=&r"(r11) : : "rcx", "r11", "memory");
+        CHECK(hits == 1 && last_sig == SIGILL);
+        CHECK(rcx == 0x0123456789abcdefULL);
+        CHECK(r11 == 0xfedcba9876543210ULL);
+        CHECK(set_default(SIGILL) == 0);
 }
 
 /* alarm and pause: pause returns EINTR once the handler has run. */
@@ -557,6 +594,7 @@ main(int argc, char **argv, char **envp __attribute__((__unused__)))
         test_mask_order();
         test_resethand();
         test_fault();
+        test_fault_regs();
         test_alarm();
         test_sigsuspend();
         test_defaults();

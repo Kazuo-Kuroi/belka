@@ -214,7 +214,9 @@ md_set_private(struct lwp *l, uint64_t base)
 
 /*
  * The system call result: on success the two values, carry clear; on
- * failure the error number, carry set (System V).
+ * failure the error number, carry set (System V). %r11 follows the
+ * flags, as sysretq will leave it, so that the call still returns
+ * through sysretq (see Xsyscall).
  */
 void
 md_syscall_return(struct trapframe *tf, int error, uint64_t rv1,
@@ -228,4 +230,5 @@ md_syscall_return(struct trapframe *tf, int error, uint64_t rv1,
                 tf->tf_rdx = rv2;
                 tf->tf_rflags &= ~(uint64_t)PSL_C;
         }
+        tf->tf_r11 = tf->tf_rflags;
 }

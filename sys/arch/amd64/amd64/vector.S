@@ -221,7 +221,11 @@ ENTRY(Xsyscall)
         /*
          * sysretq loads CS and SS from fixed selectors and %rip from
          * %rcx; a non-canonical %rip would fault in the kernel with the
-         * user's stack. Anything unusual goes back through iretq.
+         * user's stack. It also leaves %rcx and %r11 holding %rip and
+         * %rflags, which is right only for a frame the call left as the
+         * syscall instruction made it: a context loaded by setcontext,
+         * as a signal handler's return is, or a signal frame, needs
+         * every register back. Anything unusual goes back through iretq.
          */
         cmpq    $USER_CS, TF_CS(%rsp)
         jne     user_return
@@ -230,6 +234,12 @@ ENTRY(Xsyscall)
         movabsq $USER_VA_END, %rax
         cmpq    %rax, TF_RIP(%rsp)
         jae     user_return
+        movq    TF_RIP(%rsp), %rax
+        cmpq    %rax, TF_RCX(%rsp)
+        jne     user_return
+        movq    TF_RFLAGS(%rsp), %rax
+        cmpq    %rax, TF_R11(%rsp)
+        jne     user_return
         RESTORE_REGS
         movq    TF_RIP(%rsp), %rcx
         movq    TF_RFLAGS(%rsp), %r11
