@@ -574,8 +574,8 @@ Recorded 2026-11-07.
   - `test-fault` and `test-apfault` now require the panic they provoke,
     so an unrelated panic can no longer pass as the expected one.
 - **Not yet:** init and sessions, device special files (the console is
-  a private vnode), and credentials beyond the kernel's. (Resource
-  limits came on 2026-11-12, below.)
+  a private vnode). (Resource limits came on 2026-11-12, and
+  credentials on 2026-11-13, below.)
 
 ## Signals (2026-11-08)
 
@@ -645,8 +645,8 @@ Recorded 2026-11-07.
   exec resets caught signals and clears both SIGCHLD flags, as in
   UnixWare.
 - **Not yet:** `/proc` tracing, core files, terminals and orphaned process groups,
-  SIGXFSZ on EFBIG, and permission checks (every process is the
-  superuser).
+  and SIGXFSZ on EFBIG. (Permission to signal came with credentials,
+  2026-11-13.)
 
 ## LWPs (2026-11-08)
 
@@ -1038,8 +1038,9 @@ Recorded 2026-11-07.
   against the same `libc.so.1`.
 - **Not yet:** shared libraries of Belka's own beyond the test one,
   `libc.so.1`'s versioning of its symbols (mapfile versions), lazy
-  binding (mlibc binds everything at load), and `LD_LIBRARY_PATH` and
-  friends for set-user-ID programs once there are credentials.
+  and lazy binding (mlibc binds everything at load). Set-ID programs
+  get `AT_SECURE`, and mlibc's dynamic linker then ignores
+  `LD_LIBRARY_PATH` and `LD_PRELOAD` (2026-11-13).
 
 ## Named FIFOs (2026-11-12)
 
@@ -1068,9 +1069,9 @@ Recorded 2026-11-07.
 - **`chown` (16), `fchown` (94) and `lchown` (130)**, UnixWare's
   numbers, set a file's owner and group through `VOP_SETATTR`; an id of
   `(uid_t)-1` keeps that one. ext2 stores ids past 16 bits in the high
-  halves. Every process is the superuser for now, so there is no
-  permission check and the set-ID bits are kept; both come with
-  credentials. The C library's `Fchownat` maps onto the three calls.
+  halves. Who may change an owner, and the set-ID bits it clears, came
+  with credentials (2026-11-13). The C library's `Fchownat` maps onto
+  the three calls.
 
 ## poll (2026-11-12)
 
@@ -1102,8 +1103,8 @@ Recorded 2026-11-07.
   System V's resources: CPU 0, FSIZE 1, DATA 2, STACK 3, CORE 4, NOFILE
   5, VMEM 6 (`RLIMIT_AS`). Limits are 64-bit and `RLIM_INFINITY` is all
   ones, as mlibc has it; mlibc's Belka ABI gained `resource.h` with these
-  numbers. A soft limit above its hard one is `EINVAL`; every process is
-  the superuser, so hard limits may be raised. fork copies the limits.
+  numbers. A soft limit above its hard one is `EINVAL`; only the
+  superuser may raise a hard limit (`EPERM`). fork copies the limits.
 - **Defaults:** everything unlimited but the stack (soft 8 MB, the
   space set aside for it) and open files (1024, `NOFILE_MAX`, which also
   caps whatever is set).
@@ -1142,8 +1143,8 @@ Recorded 2026-11-07.
   descriptor, held for the call; `lookuppn()` always had a start
   directory. An absolute path ignores the descriptor, and `AT_FDCWD`
   means the current directory. A descriptor that is not open is
-  `EBADF`, and one that is not a directory `ENOTDIR`. No search
-  permission is checked on the directory until there are credentials.
+  `EBADF`, and one that is not a directory `ENOTDIR`. Search permission
+  on it is checked as on any directory of a path.
 - **Kernel interface:** the path functions in `vfs_vnops.c` became
   their *at forms (`vn_openat`, `vn_removeat`, `vn_linkat` with a follow
   flag, and so on); the plain names are inline wrappers that pass NULL,
@@ -1152,8 +1153,8 @@ Recorded 2026-11-07.
 - **Details:** `linkat` follows a last link in the existing path only
   with `AT_SYMLINK_FOLLOW`, as `link` never does. `fchmodat` with
   `AT_SYMLINK_NOFOLLOW` fails with `EOPNOTSUPP` on a link, which has no
-  mode of its own, and changes anything else. `AT_EACCESS` changes
-  nothing while every process is the superuser.
+  mode of its own, and changes anything else. `faccessat` with
+  `AT_EACCESS` checks with the effective ids rather than the real ones.
 - **C library:** every `*at` sysdep calls the kernel; `open`, `stat`
   and `readlink` go through the *at calls. mlibc declares `renameat`
   only for POSIX 2008, which `_DEFAULT_SOURCE` does not imply there.
@@ -1178,6 +1179,78 @@ Recorded 2026-11-07.
   reaped). Only the times are kept, and all processor time counts as
   user time, as it does for `times`; the other fields are zero. The
   kernel's `struct rusage` has mlibc's layout.
+
+## Credentials (2026-11-13)
+
+- **`struct cred`** (SVR4): real, effective, and saved user and group
+  ids and up to `NGROUPS_MAX` (16, as in UnixWare) supplementary groups,
+  reference counted and never changed once shared; a change makes a
+  copy (`crdup`) and installs it. Privilege is an effective user id of
+  0; there is no finer privilege model yet.
+- **Where they live:** the process's `p_cred` is replaced only by the
+  process itself, under `p_lock`, with the pointer swapped under a
+  small spin lock, `p_crlock`, so `kill` can take a reference to
+  another process's credentials. Each LWP keeps its own reference,
+  `l_cred`, brought up to date on entry to every system call (UnixWare
+  does the same), so one call sees one set throughout and needs no lock:
+  `CRED()`. An open file keeps the credentials it was opened with
+  (`f_cred`); kernel threads use `kcred`.
+- **Calls,** with UnixWare's numbers: `setuid` 23, `setgid` 46,
+  `setgroups` 91, `getgroups` 92, `setegid` 136, `seteuid` 141;
+  `getuid` and `getgid` return the real id and the effective one in the
+  second register. POSIX rules with saved ids: the superuser's
+  `setuid` sets all three, `seteuid` the effective one only; anyone
+  else may set the effective id to the real or saved one. Ids above
+  `0x7fffffff` are `EINVAL`. `setreuid` and the `setres*` calls are
+  not provided.
+- **File permissions:** the file systems check a file's own bits with
+  `vaccess()` (owner, then group including supplementary groups, then
+  others; the superuser may do anything but execute a file no one may
+  execute). The rest is common, in `vfs_vnops.c` and `lookuppn()`:
+  search permission on every directory of a path, checked before the
+  name cache; write and search permission on a directory to make or
+  remove a name; sticky directories (only the file's or directory's
+  owner, or the superuser, may remove or rename a name: `EPERM`); and
+  write permission on a directory moved to another parent.
+- **New files** belong to the effective user and group, or to the
+  directory's group if it is set-group-ID, in which case a new
+  directory inherits the bit. A file `open` has just made is not
+  checked against its own mode (so `O_CREAT|O_RDWR` with 0444 works);
+  `open` always creates exclusively underneath, so a file someone else
+  made meanwhile is checked as usual.
+- **Changing attributes:** only the owner or the superuser may
+  `chmod`; anyone else loses `S_ISVTX` on a file that is not a
+  directory and `S_ISGID` for a group it is not in. `chown` follows
+  `_POSIX_CHOWN_RESTRICTED`: the owner may change the group to one of
+  its own, nothing more, and a change by anyone but the superuser
+  clears the set-ID bits. A write by anyone but the superuser clears
+  them too (System V).
+- **`access` and `faccessat`** check with a copy of the credentials
+  whose effective ids are the real ones, put in `l_cred` for the call,
+  so the path's directories are searched as the real user too;
+  `AT_EACCESS` uses the effective ids.
+- **Set-ID programs:** exec gives the effective user or group of the
+  file's owner or group for `S_ISUID` or `S_ISGID`, and then sets the
+  saved ids to the effective ones. When the effective ids differ from
+  the real ones the auxiliary vector carries `AT_SECURE` 1 (number 23,
+  the C library's), and mlibc's dynamic linker ignores
+  `LD_LIBRARY_PATH` and `LD_PRELOAD`.
+- **Signals and limits:** a signal may be sent by the superuser, or by
+  a process whose real or effective user id is the target's real or
+  saved one, and `SIGCONT` to any process in the same session.
+  `kill` to a group fails with `EPERM` if processes matched but none
+  could be signalled. Only the superuser raises a hard resource limit.
+- **The C library:** mlibc's `setuid`, `seteuid`, `setgid`,
+  `setegid`, `getgroups`, and `setgroups` call the kernel. `truncate`
+  is `open` for writing (which checks permission) and `ftruncate`.
+- **Tests:** `credtest` (mlibc) starts as the superuser, sets files up
+  on ext2, and checks each rule as user 100 in child processes,
+  including a set-ID copy of itself that checks its ids and
+  `AT_SECURE`. The process self-test now also counts `cred` among the
+  zones that must not leak.
+- **Not yet:** a login, `/etc/passwd`, and an init that drops
+  privilege, so everything else still runs as the superuser; mount
+  options (`nosuid`); `setreuid`; privileges finer than uid 0.
 
 ## File systems
 

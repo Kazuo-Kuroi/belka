@@ -328,7 +328,7 @@ $(ABICHECK)/ok: tools/abicheck/kernel.c tools/abicheck/libc.c \
 # same way.
 LIBC_DIR        := build/user-libc-$(TOOLCHAIN)$(LDSUFFIX)
 LIBC_DBGDIR     := $(LIBC_DIR)-debug
-LIBC_PROGS      := libctest threadtest dyntest
+LIBC_PROGS      := libctest threadtest dyntest credtest
 LIBC_SPROGS     := libctest-static
 LIBC_PIEPROGS   := dyntest-pie
 LIBC_DBGBINS    := $(addprefix $(LIBC_DBGDIR)/,$(LIBC_PROGS))

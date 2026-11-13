@@ -32,6 +32,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/cred.h>
 #include <sys/errno.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
@@ -79,9 +80,11 @@ lwp_alloc(struct proc *p, struct lwp **lp)
         memset(l, 0, sizeof(*l));
         l->l_proc = p;
         l->l_altflags = SS_DISABLE;
+        l->l_cred = cred_getproc(p);
         s = spin_lock(&p->p_siglock);
         if ((p->p_lwpflags & PL_SINGLE) != 0) {
                 spin_unlock(&p->p_siglock, s);
+                crfree(l->l_cred);
                 kmem_zone_free(lwp_zone, l);
                 return EAGAIN;
         }
@@ -98,6 +101,7 @@ lwp_alloc(struct proc *p, struct lwp **lp)
 void
 lwp_free(struct lwp *l)
 {
+        crfree(l->l_cred);
         kmem_zone_free(lwp_zone, l);
 }
 

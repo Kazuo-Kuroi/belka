@@ -19,6 +19,7 @@
  *   break.
  * - p_as may be replaced only by the process itself (exec), so its own
  *   LWP reads it without a lock.
+ * - p_cred is replaced under p_lock and p_crlock; see <sys/cred.h>.
  * - p_siglock (a spin lock, since signals are posted from interrupts)
  *   protects the signal state of the process and of its LWPs: actions,
  *   pending signals and their information, masks and alternate stacks,
@@ -64,6 +65,7 @@ struct lwp {
         struct trapframe *l_tf;         /* user registers */
         void            *l_fpu;         /* floating-point save area */
         uint64_t        l_fsbase;       /* LWP private data (%fs base) */
+        struct cred     *l_cred;        /* held; see <sys/cred.h> */
 
         /* Signals, under p_siglock. */
         k_sigset_t      l_sigmask;      /* held */
@@ -129,7 +131,8 @@ struct proc {
         int             p_wcont;        /* a continue not yet waited for */
 
         struct as       *p_as;
-        struct cred     *p_cred;
+        struct cred     *p_cred;        /* see <sys/cred.h> */
+        struct spinlock p_crlock;       /* the p_cred pointer */
 
         /*
          * Processor time in clock ticks, all counted as user time for

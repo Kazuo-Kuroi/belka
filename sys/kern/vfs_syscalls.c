@@ -8,10 +8,8 @@
  * System calls on path names. Each copies its paths in and calls the
  * kernel file interface (vfs_vnops.c). Relative paths start at the
  * process's current directory, or for the *at calls (Belka's own) at
- * the directory open on a descriptor unless it is AT_FDCWD. There are
- * no permission checks beyond the file systems' own, since every
- * process runs with the kernel's credentials until security is in
- * scope.
+ * the directory open on a descriptor unless it is AT_FDCWD. Permission
+ * rules are in vfs_vnops.c and lookuppn().
  */
 
 #include <stddef.h>
@@ -418,24 +416,37 @@ sys_fstatat(const uint64_t *args, uint64_t *rv __unused)
 }
 
 /*
- * access(path, mode): whether the file exists, and the access allowed.
- * With every process the superuser, the real and effective ids are the
- * same, so faccessat's AT_EACCESS changes nothing yet.
+ * access(path, mode): whether the file exists, and the access allowed
+ * to the real user and group (faccessat's AT_EACCESS: the effective
+ * ones), checked with credentials whose effective ids are the real
+ * ones, as in System V. The path is looked up with them too.
  */
 static int
 do_access(int dirfd, uint64_t uaddr, int mode, int flag)
 {
+        struct lwp *l = curlwp;
+        struct cred *saved = l->l_cred, *cr = NULL;
         struct vnode *vp;
         int error;
 
         if ((mode & ~(VREAD | VWRITE | VEXEC)) != 0 ||
             (flag & ~AT_EACCESS) != 0)
                 return EINVAL;
-        if ((error = upath_lookup(dirfd, uaddr, FOLLOW, &vp)) != 0)
-                return error;
-        if (mode != 0)
-                error = VOP_ACCESS(vp, mode, kcred);
-        VN_RELE(vp);
+        if ((flag & AT_EACCESS) == 0) {
+                cr = crdup(saved);
+                cr->cr_uid = cr->cr_ruid;
+                cr->cr_gid = cr->cr_rgid;
+                l->l_cred = cr;
+        }
+        if ((error = upath_lookup(dirfd, uaddr, FOLLOW, &vp)) == 0) {
+                if (mode != 0)
+                        error = VOP_ACCESS(vp, mode, CRED());
+                VN_RELE(vp);
+        }
+        if (cr != NULL) {
+                l->l_cred = saved;
+                crfree(cr);
+        }
         return error;
 }
 
@@ -461,7 +472,6 @@ static int
 do_chmod(int dirfd, uint64_t uaddr, mode_t mode, int flag)
 {
         struct vnode *vp;
-        struct vattr va;
         int error;
 
         if ((flag & ~AT_SYMLINK_NOFOLLOW) != 0)
@@ -470,14 +480,10 @@ do_chmod(int dirfd, uint64_t uaddr, mode_t mode, int flag)
             (flag & AT_SYMLINK_NOFOLLOW) != 0 ? NO_FOLLOW : FOLLOW, &vp)) !=
             0)
                 return error;
-        if (vp->v_type == VLNK) {
+        if (vp->v_type == VLNK)
                 error = EOPNOTSUPP;
-        } else {
-                memset(&va, 0, sizeof(va));
-                va.va_mask = AT_MODE;
-                va.va_mode = mode & 07777;
-                error = VOP_SETATTR(vp, &va, kcred);
-        }
+        else
+                error = vn_chmod(vp, mode & 07777);
         VN_RELE(vp);
         return error;
 }
@@ -548,7 +554,7 @@ set_cdir(struct vnode *vp)
                 VN_RELE(vp);
                 return ENOTDIR;
         }
-        if ((error = VOP_ACCESS(vp, VEXEC, kcred)) != 0) {
+        if ((error = VOP_ACCESS(vp, VEXEC, CRED())) != 0) {
                 VN_RELE(vp);
                 return error;
         }

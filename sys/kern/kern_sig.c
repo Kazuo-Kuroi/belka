@@ -658,12 +658,36 @@ copyout_sigset(k_sigset_t ks, uint64_t uaddr)
 
 /* --- System calls. --- */
 
+/*
+ * Whether a process with credentials cr, in session sid, may signal t
+ * with sig: the superuser may signal anyone; others need their real or
+ * effective user id to be t's real or saved one, except that SIGCONT
+ * may go to any process of the same session (System V).
+ */
+static int
+sig_permitted(struct cred *cr, pid_t sid, struct proc *t, int sig)
+{
+        struct cred *tcr;
+        int ok;
+
+        if (CRED_ISROOT(cr))
+                return 1;
+        tcr = cred_getproc(t);
+        ok = cr->cr_ruid == tcr->cr_ruid || cr->cr_uid == tcr->cr_ruid ||
+            cr->cr_ruid == tcr->cr_suid || cr->cr_uid == tcr->cr_suid;
+        crfree(tcr);
+        return ok || (sig == SIGCONT && t->p_sid == sid);
+}
+
 struct killarg {
         int             ka_all;
         pid_t           ka_pgid;
         int             ka_sig;
         const siginfo_t *ka_si;
-        int             ka_found;
+        struct cred     *ka_cred;
+        pid_t           ka_sid;
+        int             ka_found;       /* a process matched */
+        int             ka_sent;        /* one was allowed */
 };
 
 static void
@@ -675,20 +699,27 @@ kill_one(struct proc *t, void *arg)
             (!ka->ka_all && t->p_pgid != ka->ka_pgid))
                 return;
         ka->ka_found = 1;
+        if (!sig_permitted(ka->ka_cred, ka->ka_sid, t, ka->ka_sig))
+                return;
+        ka->ka_sent = 1;
         if (ka->ka_sig != 0)
                 sigtoproc(t, ka->ka_sig, ka->ka_si);
 }
 
-/* Send sig to every process matching (all, or process group pgid). */
+/*
+ * Send sig to every process matching (all, or process group pgid) that
+ * the caller may signal: ESRCH if none matched, EPERM if none could be.
+ */
 static int
 kill_group(int all, pid_t pgid, int sig, const siginfo_t *si)
 {
-        struct killarg ka = { all, pgid, sig, si, 0 };
+        struct killarg ka = { all, pgid, sig, si, CRED(), 0, 0, 0 };
 
         mutex_lock(&proctree_lock);
+        ka.ka_sid = curproc->p_sid;
         proc_iterate_locked(kill_one, &ka);
         mutex_unlock(&proctree_lock);
-        return ka.ka_found ? 0 : ESRCH;
+        return !ka.ka_found ? ESRCH : !ka.ka_sent ? EPERM : 0;
 }
 
 struct pgfind {
@@ -722,7 +753,7 @@ sys_kill(const uint64_t *args, uint64_t *rv __unused)
         si.si_signo = sig;
         si.si_code = SI_USER;
         si.si_pid = p->p_pid;
-        si.si_uid = (int32_t)p->p_cred->cr_uid;
+        si.si_uid = (int32_t)CRED()->cr_ruid;
         if (pid == 0)
                 return kill_group(0, p->p_pgid, sig, &si);
         if (pid == -1)
@@ -734,6 +765,10 @@ sys_kill(const uint64_t *args, uint64_t *rv __unused)
         if (t == NULL || t->p_stat == SZOMB || (t->p_flags & P_SYSTEM) != 0) {
                 mutex_unlock(&proctree_lock);
                 return ESRCH;
+        }
+        if (!sig_permitted(CRED(), p->p_sid, t, sig)) {
+                mutex_unlock(&proctree_lock);
+                return EPERM;
         }
         if (sig != 0)
                 sigtoproc(t, sig, &si);

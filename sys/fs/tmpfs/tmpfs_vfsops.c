@@ -38,9 +38,13 @@ const struct vfsops tmpfs_vfsops = {
         tmpfs_mount, tmpfs_unmount, tmpfs_root, tmpfs_statvfs, tmpfs_sync
 };
 
-/* Make a node of type type. tm_lock is held. */
+/*
+ * Make a node of type type, owned by va_uid and va_gid if va gives them
+ * (else by the superuser). tm_lock is held.
+ */
 struct tmpnode *
-tmpnode_alloc(struct tmount *tm, enum vtype type, mode_t mode)
+tmpnode_alloc(struct tmount *tm, enum vtype type, mode_t mode,
+    const struct vattr *va)
 {
         struct tmpnode *tn = kmem_zalloc(sizeof(*tn), KM_SLEEP);
         struct timespec now;
@@ -51,8 +55,10 @@ tmpnode_alloc(struct tmount *tm, enum vtype type, mode_t mode)
         tn->tn_mount = tm;
         tn->tn_type = type;
         tn->tn_mode = mode & 07777;
-        tn->tn_uid = kcred->cr_uid;
-        tn->tn_gid = kcred->cr_gid;
+        if (va != NULL && (va->va_mask & AT_UID) != 0)
+                tn->tn_uid = va->va_uid;
+        if (va != NULL && (va->va_mask & AT_GID) != 0)
+                tn->tn_gid = va->va_gid;
         tn->tn_ino = tm->tm_nextino++;
         tn->tn_atime = tn->tn_mtime = tn->tn_ctime = now;
 
@@ -112,7 +118,7 @@ tmpfs_mount(struct vfs *vfsp, const void *data, struct cred *cr __unused)
             args->ta_maxpages : st.ps_managed / 4;
 
         mutex_lock(&tm->tm_lock);
-        root = tmpnode_alloc(tm, VDIR, 0755);
+        root = tmpnode_alloc(tm, VDIR, 0755, NULL);
         root->tn_parent = root;
         root->tn_nlink = 2;
         TNTOV(root)->v_flag |= VROOT;

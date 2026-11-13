@@ -18,7 +18,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sys/cred.h>
 #include <sys/errno.h>
 #include <sys/proc.h>
 #include <sys/signal.h>
@@ -40,21 +39,6 @@ sys_getpid(const uint64_t *args __unused, uint64_t *rv)
         mutex_lock(&proctree_lock);
         rv[1] = (uint64_t)p->p_parent->p_pid;
         mutex_unlock(&proctree_lock);
-        return 0;
-}
-
-/* Real and effective ids; there are no others yet. */
-static int
-sys_getuid(const uint64_t *args __unused, uint64_t *rv)
-{
-        rv[0] = rv[1] = curproc->p_cred->cr_uid;
-        return 0;
-}
-
-static int
-sys_getgid(const uint64_t *args __unused, uint64_t *rv)
-{
-        rv[0] = rv[1] = curproc->p_cred->cr_gid;
         return 0;
 }
 
@@ -216,6 +200,12 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_faccessat] = sys_faccessat,
         [SYS_pollsys] = sys_pollsys,
         [SYS_getrusage] = sys_getrusage,
+        [SYS_setuid] = sys_setuid,
+        [SYS_seteuid] = sys_seteuid,
+        [SYS_setgid] = sys_setgid,
+        [SYS_setegid] = sys_setegid,
+        [SYS_getgroups] = sys_getgroups,
+        [SYS_setgroups] = sys_setgroups,
         [SYS_alarm] = sys_alarm,
         [SYS_pause] = sys_pause,
         [SYS_kill] = sys_kill,

@@ -104,17 +104,8 @@ ext2fs_access(struct vnode *vp, int mode, struct cred *cr)
         if ((mode & VWRITE) != 0 && ip->i_mnt->em_ronly &&
             vp->v_type != VCHR && vp->v_type != VBLK)
                 return EROFS;
-        if (CRED_ISROOT(cr)) {
-                if ((mode & VEXEC) != 0 && vp->v_type != VDIR &&
-                    (m & 0111) == 0)
-                        return EACCES;
-                return 0;
-        }
-        if (cr->cr_uid == ip_uid(ip))
-                m >>= 6;
-        else if (cr->cr_gid == ip_gid(ip))
-                m >>= 3;
-        return ((m & 7) & mode) == (mode & 7) ? 0 : EACCES;
+        return vaccess(vp->v_type, m & 07777, ip_uid(ip), ip_gid(ip), mode,
+            cr);
 }
 
 static int
@@ -244,7 +235,7 @@ ext2fs_create(struct vnode *dvp, const char *nm, struct vattr *va, int excl,
                 return error == ENOENT ? ENOENT : error;
         }
         if ((error = ext2fs_newinode(em, dp, (uint16_t)((va->va_type == VFIFO ?
-            S_IFIFO : S_IFREG) | (va->va_mode & 07777)), &ip)) == 0) {
+            S_IFIFO : S_IFREG) | (va->va_mode & 07777)), va, &ip)) == 0) {
                 if ((error = ext2fs_direnter(dp, nm, ip->i_number,
                     ext2fs_ftype(va->va_type))) != 0) {
                         ip->i_din.e2di_nlink = 0;
@@ -462,7 +453,7 @@ ext2fs_mkdir(struct vnode *dvp, const char *nm, struct vattr *va,
                 goto out;
         }
         if ((error = ext2fs_newinode(em, dp, (uint16_t)(S_IFDIR |
-            (va->va_mode & 07777)), &ip)) != 0)
+            (va->va_mode & 07777)), va, &ip)) != 0)
                 goto out;
         if ((error = ext2fs_dirinit(ip, dp->i_number)) != 0 ||
             (error = ext2fs_iupdate(ip)) != 0 ||
@@ -528,7 +519,7 @@ ext2fs_readdir(struct vnode *vp, struct uio *uio, int *eofp,
 }
 
 static int
-ext2fs_symlink(struct vnode *dvp, const char *nm, struct vattr *va __unused,
+ext2fs_symlink(struct vnode *dvp, const char *nm, struct vattr *va,
     const char *target, struct cred *cr __unused)
 {
         struct ext2inode *dp = VTOI(dvp), *ip;
@@ -550,7 +541,7 @@ ext2fs_symlink(struct vnode *dvp, const char *nm, struct vattr *va __unused,
         }
         if (error != ENOENT)
                 goto out;
-        if ((error = ext2fs_newinode(em, dp, S_IFLNK | 0777, &ip)) != 0)
+        if ((error = ext2fs_newinode(em, dp, S_IFLNK | 0777, va, &ip)) != 0)
                 goto out;
         if (len < EXT2_MAXSYMLINKLEN) {
                 /* A fast link: the text lives in the block pointers. */
@@ -655,7 +646,7 @@ ext2fs_read(struct vnode *vp, struct uio *uio, int ioflag __unused,
  */
 static int
 ext2fs_write(struct vnode *vp, struct uio *uio, int ioflag,
-    struct cred *cr __unused)
+    struct cred *cr)
 {
         struct ext2inode *ip = VTOI(vp);
         struct ext2mount *em = ip->i_mnt;
@@ -714,6 +705,9 @@ ext2fs_write(struct vnode *vp, struct uio *uio, int ioflag,
         }
         if (uio->uio_resid != start) {
                 ip->i_din.e2di_mtime = ip->i_din.e2di_ctime = ext2fs_now();
+                /* A write by anyone else takes the set-ID bits. */
+                if (!CRED_ISROOT(cr))
+                        ip->i_din.e2di_mode &= (uint16_t)~(S_ISUID | S_ISGID);
                 if (error == ENOSPC || error == EFBIG)
                         error = 0;
         }

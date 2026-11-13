@@ -45,7 +45,11 @@
 #define AT_BASE         7
 #define AT_FLAGS        8
 #define AT_ENTRY        9
-/* The program's path as exec was given it: the C library's (Linux's) number. */
+/*
+ * Not System V's: the C library's (Linux's) numbers. AT_SECURE: the
+ * program runs with ids it was not started with (set-ID).
+ */
+#define AT_SECURE       23
 #define AT_EXECFN       31
 
 typedef struct {

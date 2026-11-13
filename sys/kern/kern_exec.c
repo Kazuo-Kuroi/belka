@@ -27,6 +27,12 @@
  * psABI requires it even for static programs), then the strings. %rsp
  * points at argc and is 16-byte aligned.
  *
+ * A program file with S_ISUID or S_ISGID set runs with its owner or
+ * group as the effective user or group; either way the saved ids then
+ * take the effective ones (POSIX). When the effective ids then differ
+ * from the real ones, AT_SECURE tells the dynamic linker to ignore the
+ * environment's library paths.
+ *
  * Errors before the new address space replaces the old one are returned
  * to the caller; after that point there is nothing to return to, and
  * the process is killed, as in UnixWare. Once the program's headers are
@@ -44,6 +50,7 @@
 #include <sys/pathname.h>
 #include <sys/proc.h>
 #include <sys/signal.h>
+#include <sys/stat.h>
 #include <sys/sysent.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
@@ -62,7 +69,7 @@
 #define ARG_MAX         (64 * 1024)     /* argument and environment bytes */
 #define EXEC_MINSTACK   (1024 * 1024)   /* holds ARG_MAX, its pointers, auxv */
 #define EXEC_MAXPHDR    32
-#define NAUXV           9
+#define NAUXV           10
 
 struct execargs {
         char            *ea_buf;        /* argv strings, then env strings */
@@ -231,7 +238,7 @@ elf_interp(struct vnode *vp, const Elf64_Ehdr *peh, const Elf64_Phdr *ph,
                 goto out;
         if ((*vpp)->v_type != VREG)
                 error = EACCES;
-        else if ((error = VOP_ACCESS(*vpp, VEXEC, kcred)) == 0)
+        else if ((error = VOP_ACCESS(*vpp, VEXEC, CRED())) == 0)
                 error = elf_read_headers(*vpp, eh, iph, 1);
         if (error != 0) {
                 VN_RELE(*vpp);
@@ -365,7 +372,7 @@ elf_zero_tails(const Elf64_Ehdr *eh, const Elf64_Phdr *ph, vaddr_t bias)
  */
 static uint64_t
 exec_stack(const struct execargs *ea, const char *path,
-    const Elf64_Ehdr *eh, vaddr_t phdr, vaddr_t entry, vaddr_t base)
+    const Elf64_Ehdr *eh, vaddr_t phdr, vaddr_t entry, vaddr_t base, int secure)
 {
         size_t nptr = 1 + (size_t)ea->ea_argc + 1 + (size_t)ea->ea_envc + 1;
         size_t vecsize = nptr * 8 + NAUXV * sizeof(Elf64_auxv_t);
@@ -405,8 +412,10 @@ exec_stack(const struct execargs *ea, const char *path,
         aux[6].a_val = 0;
         aux[7].a_type = AT_EXECFN;
         aux[7].a_val = fnbase;
-        aux[8].a_type = AT_NULL;
-        aux[8].a_val = 0;
+        aux[8].a_type = AT_SECURE;
+        aux[8].a_val = (uint64_t)secure;
+        aux[9].a_type = AT_NULL;
+        aux[9].a_val = 0;
 
         error = copyout(ea->ea_buf, (void *)(uintptr_t)strbase, ea->ea_len);
         if (error == 0)
@@ -415,6 +424,37 @@ exec_stack(const struct execargs *ea, const char *path,
                 error = copyout(vec, (void *)(uintptr_t)sp, vecsize);
         kmem_free(vec, vecsize);
         return error == 0 ? sp : 0;
+}
+
+/*
+ * Give p, now running a program whose file has the attributes va, the
+ * ids it runs with (see the top of this file). Returns whether the new
+ * image is to be told AT_SECURE. Only p's one LWP is left.
+ */
+static int
+exec_setid(struct proc *p, const struct vattr *va)
+{
+        struct cred *cr, *ncr;
+        int secure;
+
+        mutex_lock(&p->p_lock);
+        cr = p->p_cred;
+        ncr = crdup(cr);
+        if ((va->va_mode & S_ISUID) != 0)
+                ncr->cr_uid = va->va_uid;
+        if ((va->va_mode & S_ISGID) != 0)
+                ncr->cr_gid = va->va_gid;
+        ncr->cr_suid = ncr->cr_uid;
+        ncr->cr_sgid = ncr->cr_gid;
+        secure = ncr->cr_uid != ncr->cr_ruid || ncr->cr_gid != ncr->cr_rgid;
+        if (ncr->cr_uid != cr->cr_uid || ncr->cr_gid != cr->cr_gid ||
+            ncr->cr_suid != cr->cr_suid || ncr->cr_sgid != cr->cr_sgid)
+                cred_setproc(p, ncr);
+        else
+                crfree(ncr);
+        mutex_unlock(&p->p_lock);
+        cred_refresh(curlwp);
+        return secure;
 }
 
 /*
@@ -434,9 +474,11 @@ exec_common(const char *path, struct execargs *ea)
         struct vnode *vp, *ivp = NULL;
         struct as *nas, *oas;
         vaddr_t brk, phdr, ibrk, iphdr, bias, ibias = 0, entry;
+        struct vattr va;
         uint64_t sp;
         const char *base = path;
         int error, s;
+        int secure;
 
         if ((error = lookupname(path, FOLLOW, &vp)) != 0)
                 goto fail;
@@ -444,9 +486,12 @@ exec_common(const char *path, struct execargs *ea)
                 error = EACCES;
                 goto fail_vp;
         }
-        if ((error = VOP_ACCESS(vp, VEXEC, kcred)) != 0 ||
+        if ((error = VOP_ACCESS(vp, VEXEC, CRED())) != 0 ||
             (error = elf_read_headers(vp, &eh, ph, 0)) != 0 ||
             (error = elf_interp(vp, &eh, ph, &ivp, &ieh, iph)) != 0)
+                goto fail_vp;
+        va.va_mask = AT_ALL;
+        if ((error = VOP_GETATTR(vp, &va, CRED())) != 0)
                 goto fail_vp;
         bias = eh.e_type == ET_DYN ? VM_PIE_BASE : 0;
         entry = eh.e_entry + bias;
@@ -485,9 +530,11 @@ exec_common(const char *path, struct execargs *ea)
         if (ivp != NULL)
                 VN_RELE(ivp);
 
+        secure = exec_setid(p, &va);
         if (elf_zero_tails(&eh, ph, bias) != 0 ||
             (ivp != NULL && elf_zero_tails(&ieh, iph, ibias) != 0) ||
-            (sp = exec_stack(ea, path, &eh, phdr, entry, ibias)) == 0) {
+            (sp = exec_stack(ea, path, &eh, phdr, entry, ibias,
+            secure)) == 0) {
                 kmem_free(ph, 2 * EXEC_MAXPHDR * sizeof(*ph));
                 execargs_free(ea);
                 proc_exit(CLD_KILLED, SIGKILL);

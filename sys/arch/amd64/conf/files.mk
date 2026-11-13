@@ -18,6 +18,7 @@ KERNEL_END_SRC  := sys/arch/amd64/amd64/kernel_end.S
 MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_clock.c \
                    sys/kern/kern_cons.c \
+                   sys/kern/kern_cred.c \
                    sys/kern/kern_kmem.c \
                    sys/kern/kern_descrip.c \
                    sys/kern/kern_exec.c \

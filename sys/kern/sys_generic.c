@@ -223,15 +223,11 @@ int
 sys_fchmod(const uint64_t *args, uint64_t *rv __unused)
 {
         struct file *fp = fd_get(curproc, (int)args[0]);
-        struct vattr va;
         int error;
 
         if (fp == NULL)
                 return EBADF;
-        memset(&va, 0, sizeof(va));
-        va.va_mask = AT_MODE;
-        va.va_mode = (mode_t)args[1] & 07777;
-        error = VOP_SETATTR(fp->f_vnode, &va, kcred);
+        error = vn_chmod(fp->f_vnode, (mode_t)args[1] & 07777);
         frele(fp);
         return error;
 }

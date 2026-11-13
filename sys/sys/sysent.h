@@ -49,5 +49,8 @@ sy_call_t sys_pipe, sys_mknod, sys_chown, sys_lchown, sys_poll;
 sy_call_t sys_getrlimit, sys_setrlimit, sys_getrusage, sys_pollsys;
 /* kern_time.c */
 sy_call_t sys_clock_gettime, sys_clock_getres, sys_times, sys_yield;
+/* kern_cred.c */
+sy_call_t sys_setuid, sys_seteuid, sys_setgid, sys_setegid, sys_getuid;
+sy_call_t sys_getgid, sys_getgroups, sys_setgroups;
 
 #endif /* _SYS_SYSENT_H_ */

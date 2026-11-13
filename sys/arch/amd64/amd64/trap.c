@@ -23,6 +23,7 @@
 #include <stdint.h>
 
 #include <sys/compiler.h>
+#include <sys/cred.h>
 #include <sys/errno.h>
 #include <sys/kthread.h>
 #include <sys/proc.h>
@@ -388,6 +389,7 @@ syscall(struct trapframe *tf)
         uint64_t rv[2] = { 0, tf->tf_rdx };
         int error;
 
+        cred_refresh(curlwp);
         error = syscall_dispatch(tf->tf_rax, args, rv);
         if (error != EJUSTRETURN)
                 md_syscall_return(tf, error, rv[0], rv[1]);

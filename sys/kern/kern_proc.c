@@ -81,6 +81,8 @@ proc_init(void)
         proc0.p_pid = 0;
         proc0.p_stat = SRUN;
         proc0.p_flags = P_SYSTEM;
+        spinlock_init(&proc0.p_crlock, "cred");
+        crhold(kcred);
         proc0.p_cred = kcred;
         proc0.p_cmask = 022;
         rlimit_init(&proc0);
@@ -145,7 +147,8 @@ proc_alloc(struct proc *parent)
         sv_init(&p->p_lwpsv, "lwps");
         sv_init(&p->p_rendezsv, "parked");
         p->p_stat = SIDL;
-        p->p_cred = parent->p_cred;
+        spinlock_init(&p->p_crlock, "cred");
+        p->p_cred = cred_getproc(parent);
         p->p_cmask = parent->p_cmask;
         memcpy(p->p_rlimit, parent->p_rlimit, sizeof(p->p_rlimit));
         p->p_cpucheck = parent->p_cpucheck != 0 ? lbolt + 1 : 0;
@@ -190,6 +193,7 @@ proc_unlink(struct proc *p)
 void
 proc_free(struct proc *p)
 {
+        crfree(p->p_cred);
         if (p->p_ofile != NULL) {
                 kmem_free(p->p_ofile, (size_t)p->p_nofile *
                     sizeof(struct file *));

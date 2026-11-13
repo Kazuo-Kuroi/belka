@@ -47,7 +47,8 @@ falloc(struct vnode *vp, int flag)
         mutex_init(&fp->f_offlock, "file");
         fp->f_offset = 0;
         fp->f_vnode = vp;
-        fp->f_cred = kcred;
+        fp->f_cred = CRED();
+        crhold(fp->f_cred);
         return fp;
 }
 
@@ -65,6 +66,7 @@ frele(struct file *fp)
                 return;
         (void)VOP_CLOSE(fp->f_vnode, fp->f_flag, fp->f_cred);
         VN_RELE(fp->f_vnode);
+        crfree(fp->f_cred);
         kmem_zone_free(file_zone, fp);
 }
 

@@ -139,7 +139,7 @@ poll_scan(struct pollfd *fds, struct file **fps, struct polldat *pds,
                         rev = POLLNVAL;
                 } else {
                         if (VOP_POLL(fps[i]->f_vnode, fds[i].events, &rev,
-                            &ph, kcred) != 0)
+                            &ph, fps[i]->f_cred) != 0)
                                 rev = POLLERR;
                         /* An end open only one way sees only that way. */
                         if ((fps[i]->f_flag & FREAD) == 0)

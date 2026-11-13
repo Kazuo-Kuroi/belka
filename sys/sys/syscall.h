@@ -38,6 +38,7 @@
 #define SYS_stat        18
 #define SYS_lseek       19
 #define SYS_getpid      20
+#define SYS_setuid      23
 #define SYS_getuid      24
 #define SYS_alarm       27
 #define SYS_fstat       28
@@ -49,6 +50,7 @@
 #define SYS_dup         41
 #define SYS_pipe        42
 #define SYS_times       43
+#define SYS_setgid      46
 #define SYS_getgid      47
 #define SYS_signal      48
 #define SYS_ioctl       54
@@ -63,6 +65,8 @@
 #define SYS_lstat       88
 #define SYS_symlink     89
 #define SYS_readlink    90
+#define SYS_setgroups   91
+#define SYS_getgroups   92
 #define SYS_fchmod      93
 #define SYS_fchown      94
 #define SYS_sigprocmask 95
@@ -83,6 +87,8 @@
 #define SYS_lchown      130
 #define SYS_rename      134
 #define SYS_uname       135
+#define SYS_setegid     136
+#define SYS_seteuid     141
 #define SYS_gettimeofday 171
 #define SYS_lwpcreate   173
 #define SYS_lwpexit     174

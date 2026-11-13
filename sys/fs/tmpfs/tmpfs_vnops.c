@@ -169,18 +169,7 @@ tmpfs_access(struct vnode *vp, int mode, struct cred *cr)
         struct tmpnode *tn = VTOTN(vp);
         mode_t m = tn->tn_mode;
 
-        if (CRED_ISROOT(cr)) {
-                /* The superuser may execute only what is executable. */
-                if ((mode & VEXEC) != 0 && tn->tn_type != VDIR &&
-                    (m & 0111) == 0)
-                        return EACCES;
-                return 0;
-        }
-        if (cr->cr_uid == tn->tn_uid)
-                m >>= 6;
-        else if (cr->cr_gid == tn->tn_gid)
-                m >>= 3;
-        return ((m & 7) & mode) == (mode & 7) ? 0 : EACCES;
+        return vaccess(tn->tn_type, m, tn->tn_uid, tn->tn_gid, mode, cr);
 }
 
 static int
@@ -311,7 +300,7 @@ tmpfs_create(struct vnode *dvp, const char *nm, struct vattr *va, int excl,
                 mutex_unlock(&tm->tm_lock);
                 return error;
         }
-        tn = tmpnode_alloc(tm, va->va_type, va->va_mode);
+        tn = tmpnode_alloc(tm, va->va_type, va->va_mode, va);
         if ((error = tdir_add(dir, nm, tn)) != 0) {
                 tmpnode_free(tm, tn);
                 mutex_unlock(&tm->tm_lock);
@@ -478,7 +467,7 @@ tmpfs_mkdir(struct vnode *dvp, const char *nm, struct vattr *va,
         } else if (tdir_find(dir, nm, NULL) != NULL) {
                 error = EEXIST;
         } else {
-                tn = tmpnode_alloc(tm, VDIR, va->va_mode);
+                tn = tmpnode_alloc(tm, VDIR, va->va_mode, va);
                 if ((error = tdir_add(dir, nm, tn)) != 0) {
                         tmpnode_free(tm, tn);
                 } else {
@@ -584,7 +573,7 @@ tmpfs_readdir(struct vnode *vp, struct uio *uio, int *eofp,
 }
 
 static int
-tmpfs_symlink(struct vnode *dvp, const char *nm, struct vattr *va __unused,
+tmpfs_symlink(struct vnode *dvp, const char *nm, struct vattr *va,
     const char *target, struct cred *cr __unused)
 {
         struct tmpnode *dir = VTOTN(dvp);
@@ -601,7 +590,7 @@ tmpfs_symlink(struct vnode *dvp, const char *nm, struct vattr *va __unused,
         } else if (tdir_find(dir, nm, NULL) != NULL) {
                 error = EEXIST;
         } else {
-                tn = tmpnode_alloc(tm, VLNK, 0777);
+                tn = tmpnode_alloc(tm, VLNK, 0777, va);
                 tn->tn_link = kmem_alloc(len + 1, KM_SLEEP);
                 memcpy(tn->tn_link, target, len + 1);
                 tn->tn_linklen = len;
@@ -668,7 +657,7 @@ tmpfs_read(struct vnode *vp, struct uio *uio, int ioflag __unused,
  */
 static int
 tmpfs_write(struct vnode *vp, struct uio *uio, int ioflag,
-    struct cred *cr __unused)
+    struct cred *cr)
 {
         struct tmpnode *tn = VTOTN(vp);
         struct tmount *tm = tn->tn_mount;
@@ -726,6 +715,9 @@ tmpfs_write(struct vnode *vp, struct uio *uio, int ioflag,
         }
         if (uio->uio_resid != start) {
                 tn_touch(tn, TOUCH_M | TOUCH_C);
+                /* A write by anyone else takes the set-ID bits. */
+                if (!CRED_ISROOT(cr))
+                        tn->tn_mode &= ~(mode_t)(S_ISUID | S_ISGID);
                 if (error == ENOSPC || error == EFBIG)
                         error = 0;
         }

@@ -99,7 +99,8 @@ struct tmount {
 
 extern const struct vnodeops tmpfs_vnodeops;
 
-struct tmpnode *tmpnode_alloc(struct tmount *, enum vtype, mode_t);
+struct tmpnode *tmpnode_alloc(struct tmount *, enum vtype, mode_t,
+    const struct vattr *);
 void tmpnode_free(struct tmount *, struct tmpnode *);
 
 #endif /* _FS_TMPFS_TMPFS_H_ */

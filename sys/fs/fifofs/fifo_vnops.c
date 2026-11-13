@@ -533,7 +533,6 @@ static const struct vnodeops fifo_vnodeops = {
 static struct fifonode *
 fifo_alloc(void)
 {
-        struct proc *p = curproc;
         struct fifonode *fn = kmem_zalloc(sizeof(*fn), KM_SLEEP);
 
         fn->fn_buf = kmem_alloc(PIPE_SIZE, KM_SLEEP);
@@ -541,8 +540,8 @@ fifo_alloc(void)
         sv_init(&fn->fn_rsv, "piperd");
         sv_init(&fn->fn_wsv, "pipewr");
         pollhead_init(&fn->fn_ph);
-        fn->fn_uid = p->p_cred->cr_uid;
-        fn->fn_gid = p->p_cred->cr_gid;
+        fn->fn_uid = CRED()->cr_uid;
+        fn->fn_gid = CRED()->cr_gid;
         gethrestime(&fn->fn_ctime);
         fn->fn_atime = fn->fn_mtime = fn->fn_ctime;
         vn_init(&fn->fn_vnode, NULL, VFIFO, &fifo_vnodeops, fn);

@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include <sys/buf.h>
+#include <sys/cred.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
 #include <sys/proc.h>
@@ -73,6 +74,7 @@ main(void)
         vfs_init();
         anon_init();
         as_init();
+        cred_init();
         proc_init();
         if (vfs_mountroot("tmpfs", NULL) != 0)
                 panic("cannot mount the root file system");

@@ -44,15 +44,22 @@
 static int lookup_component(struct vnode *, const char *, struct vnode **);
 static int lookup_readlink(struct vnode *, char *, size_t *);
 
+/*
+ * Look name up in dvp, which the caller must be allowed to search; the
+ * check comes before the name cache, which would otherwise bypass it.
+ */
 static int
 lookup_component(struct vnode *dvp, const char *name, struct vnode **vpp)
 {
         int dots = strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+        struct cred *cr = CRED();
         int error;
 
+        if ((error = VOP_ACCESS(dvp, VEXEC, cr)) != 0)
+                return error;
         if (!dots && (*vpp = dnlc_lookup(dvp, name)) != NULL)
                 return 0;
-        if ((error = VOP_LOOKUP(dvp, name, vpp, kcred)) != 0)
+        if ((error = VOP_LOOKUP(dvp, name, vpp, cr)) != 0)
                 return error;
         if (!dots)
                 dnlc_enter(dvp, name, *vpp);
@@ -76,7 +83,7 @@ lookup_readlink(struct vnode *vp, char *buf, size_t *lenp)
         uio.uio_segflg = UIO_SYSSPACE;
         uio.uio_limit = UIO_NOLIMIT;
         uio.uio_rw = UIO_READ;
-        if ((error = VOP_READLINK(vp, &uio, kcred)) != 0)
+        if ((error = VOP_READLINK(vp, &uio, CRED())) != 0)
                 return error;
         *lenp = (size_t)(MAXPATHLEN - 1 - uio.uio_resid);
         buf[*lenp] = '\0';

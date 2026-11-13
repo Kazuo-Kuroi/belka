@@ -24,13 +24,13 @@
  *   it.
  * - RLIMIT_CORE is kept, for when there are core files.
  *
- * Every process is the superuser so far, so any process may raise its
- * hard limits.
+ * Only the superuser may raise a hard limit.
  */
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/cred.h>
 #include <sys/errno.h>
 #include <sys/param.h>
 #include <sys/proc.h>
@@ -130,6 +130,11 @@ sys_setrlimit(const uint64_t *args, uint64_t *rv __unused)
                         lim.rlim_max = NOFILE_MAX;
         }
         mutex_lock(&p->p_lock);
+        if (lim.rlim_max > p->p_rlimit[which].rlim_max &&
+            !CRED_ISROOT(CRED())) {
+                mutex_unlock(&p->p_lock);
+                return EPERM;
+        }
         p->p_rlimit[which] = lim;
         if (which == RLIMIT_CPU)
                 p->p_cpucheck = lim.rlim_cur != RLIM_INFINITY ||

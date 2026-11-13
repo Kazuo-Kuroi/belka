@@ -141,25 +141,31 @@ ext2fs_vget(struct ext2mount *em, uint32_t ino, struct ext2inode **ipp)
 }
 
 /*
- * Allocate and initialise a new inode of mode mode for a file in pip.
+ * Allocate and initialise a new inode of mode mode for a file in pip,
+ * owned by va_uid and va_gid if va gives them (else by the superuser).
  * Returned held, with one link for a file and two for a directory.
  * em_lock is held.
  */
 int
 ext2fs_newinode(struct ext2mount *em, struct ext2inode *pip, uint16_t mode,
-    struct ext2inode **ipp)
+    const struct vattr *va, struct ext2inode **ipp)
 {
         int isdir = (mode & S_IFMT) == S_IFDIR;
         struct ext2inode *ip;
         uint32_t ino, now = ext2fs_now();
+        uint32_t uid, gid;
         int error;
 
         if ((error = ext2fs_ialloc(em, pip, isdir, &ino)) != 0)
                 return error;
         ip = inode_incore(em, ino);
         ip->i_din.e2di_mode = mode;
-        ip->i_din.e2di_uid = (uint16_t)kcred->cr_uid;
-        ip->i_din.e2di_gid = (uint16_t)kcred->cr_gid;
+        uid = (va->va_mask & AT_UID) != 0 ? va->va_uid : 0;
+        gid = (va->va_mask & AT_GID) != 0 ? va->va_gid : 0;
+        ip->i_din.e2di_uid = (uint16_t)uid;
+        ip->i_din.e2di_uid_high = (uint16_t)(uid >> 16);
+        ip->i_din.e2di_gid = (uint16_t)gid;
+        ip->i_din.e2di_gid_high = (uint16_t)(gid >> 16);
         ip->i_din.e2di_atime = ip->i_din.e2di_ctime =
             ip->i_din.e2di_mtime = now;
         ip->i_din.e2di_nlink = isdir ? 2 : 1;

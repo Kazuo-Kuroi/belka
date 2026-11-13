@@ -58,7 +58,7 @@ struct vfreelist {
         volatile uint32_t vf_len;
 };
 
-static struct cred kernel_cred;         /* uid 0, gid 0 */
+static struct cred kernel_cred = { .cr_ref = 1 };      /* all ids 0 */
 struct cred *kcred = &kernel_cred;
 struct vnode *rootdir;
 

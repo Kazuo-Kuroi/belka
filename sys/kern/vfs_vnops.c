@@ -9,6 +9,26 @@
  * are thin layers over these. The *at forms start a relative path at a
  * given directory. Name-space changes purge the name cache here, since
  * the generic layer owns it.
+ *
+ * The permission rules common to every file system are here too, with
+ * the caller's credentials (CRED()), as in System V:
+ * - Making or removing a name needs write and search permission on
+ *   the directory. In a sticky directory (S_ISVTX) only the owner of
+ *   the file or of the directory, or the superuser, may remove or
+ *   rename a name. Moving a directory to another parent needs write
+ *   permission on it, for its "..".
+ * - A new file belongs to the effective user, and to the effective
+ *   group, or to the directory's group if the directory is set-group-ID
+ *   (a new directory then inherits the bit). Asking for set-group-ID on
+ *   a group the caller is not in clears it.
+ * - Only the owner or the superuser may change a mode; anyone else
+ *   loses S_ISVTX on a file other than a directory, and S_ISGID if not
+ *   in the file's group. The owner may give a file to one of its own
+ *   groups but not to another user (_POSIX_CHOWN_RESTRICTED), and the
+ *   set-ID bits go when anyone but the superuser changes an owner.
+ * Search permission on each directory of a path is checked in
+ * lookuppn(), and the file systems check a file's own bits in
+ * VOP_ACCESS (vaccess()).
  */
 
 #include <stddef.h>
@@ -28,6 +48,9 @@
 
 static int vn_parent(struct vnode *, const char *, struct vnode **, char *,
     struct vnode **, int);
+static int vn_dirwrite(struct vnode *, struct cred *);
+static int vn_sticky(struct vnode *, struct vnode *, struct cred *);
+static int vn_newattr(struct vnode *, struct vattr *, struct cred *);
 
 /*
  * Look up path's parent and last name; *vpp is the target if it exists.
@@ -41,6 +64,87 @@ vn_parent(struct vnode *sdir, const char *path, struct vnode **dvpp,
 }
 
 /*
+ * The System V check of mode (VREAD, VWRITE, VEXEC) against a file of
+ * type type with permission bits fmode, owner uid, and group gid: the
+ * owner's bits if cr's effective user owns it, else the group's if cr
+ * is in its group, else the others'. The superuser may do anything but
+ * execute a file that no one may execute.
+ */
+int
+vaccess(enum vtype type, mode_t fmode, uid_t uid, gid_t gid, int mode,
+    struct cred *cr)
+{
+        if (CRED_ISROOT(cr)) {
+                if ((mode & VEXEC) != 0 && type != VDIR &&
+                    (fmode & 0111) == 0)
+                        return EACCES;
+                return 0;
+        }
+        if (cr->cr_uid == uid)
+                fmode >>= 6;
+        else if (groupmember(gid, cr))
+                fmode >>= 3;
+        return ((fmode & 7) & mode) == (mode & 7) ? 0 : EACCES;
+}
+
+/* Whether cr may make or remove names in directory dvp. */
+static int
+vn_dirwrite(struct vnode *dvp, struct cred *cr)
+{
+        return VOP_ACCESS(dvp, VWRITE | VEXEC, cr);
+}
+
+/* Whether cr may remove vp from dvp if dvp is sticky. */
+static int
+vn_sticky(struct vnode *dvp, struct vnode *vp, struct cred *cr)
+{
+        struct vattr va;
+        int error;
+
+        if (CRED_ISROOT(cr))
+                return 0;
+        va.va_mask = AT_ALL;
+        if ((error = VOP_GETATTR(dvp, &va, cr)) != 0)
+                return error;
+        if ((va.va_mode & S_ISVTX) == 0 || va.va_uid == cr->cr_uid)
+                return 0;
+        va.va_mask = AT_ALL;
+        if ((error = VOP_GETATTR(vp, &va, cr)) != 0)
+                return error;
+        return va.va_uid == cr->cr_uid ? 0 : EPERM;
+}
+
+/*
+ * Check that cr may make a name in dvp, and set the owner, group, and
+ * set-group-ID bit of the new file whose type and mode va holds.
+ */
+static int
+vn_newattr(struct vnode *dvp, struct vattr *va, struct cred *cr)
+{
+        struct vattr dva;
+        int error;
+
+        if ((error = vn_dirwrite(dvp, cr)) != 0)
+                return error;
+        dva.va_mask = AT_ALL;
+        if ((error = VOP_GETATTR(dvp, &dva, cr)) != 0)
+                return error;
+        va->va_mask |= AT_UID | AT_GID;
+        va->va_uid = cr->cr_uid;
+        if ((dva.va_mode & S_ISGID) != 0) {
+                va->va_gid = dva.va_gid;
+                if (va->va_type == VDIR)
+                        va->va_mode |= S_ISGID;
+        } else {
+                va->va_gid = cr->cr_gid;
+        }
+        if ((va->va_mode & S_ISGID) != 0 && va->va_type != VDIR &&
+            !CRED_ISROOT(cr) && !groupmember(va->va_gid, cr))
+                va->va_mode &= ~(mode_t)S_ISGID;
+        return 0;
+}
+
+/*
  * Open path with FREAD/FWRITE/FCREAT/FEXCL/FTRUNC/FAPPEND flags,
  * creating it with mode if asked. The vnode is returned held.
  */
@@ -48,27 +152,37 @@ int
 vn_openat(struct vnode *sdir, const char *path, int flags, mode_t mode,
     struct vnode **vpp)
 {
+        struct cred *cr = CRED();
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
-        int error;
+        int created = 0, error;
 
         if ((flags & FCREAT) != 0) {
+again:
                 if ((error = vn_parent(sdir, path, &dvp, name, &vp,
                     FOLLOW)) != 0)
                         return error;
                 if (vp == NULL) {
                         struct vattr va;
 
+                        /*
+                         * Always exclusive, so that a file made by
+                         * someone else meanwhile is opened only after
+                         * the usual check: a new one needs none.
+                         */
                         memset(&va, 0, sizeof(va));
                         va.va_mask = AT_TYPE | AT_MODE;
                         va.va_type = VREG;
                         va.va_mode = mode & 07777;
-                        error = VOP_CREATE(dvp, name, &va,
-                            (flags & FEXCL) != 0 ? EXCL : NONEXCL, &vp,
-                            kcred);
+                        if ((error = vn_newattr(dvp, &va, cr)) == 0)
+                                error = VOP_CREATE(dvp, name, &va, EXCL,
+                                    &vp, cr);
                         VN_RELE(dvp);
+                        if (error == EEXIST && (flags & FEXCL) == 0)
+                                goto again;
                         if (error != 0)
                                 return error;
+                        created = 1;
                 } else {
                         VN_RELE(dvp);
                         if ((flags & FEXCL) != 0) {
@@ -85,8 +199,8 @@ vn_openat(struct vnode *sdir, const char *path, int flags, mode_t mode,
                 VN_RELE(vp);
                 return EISDIR;
         }
-        if ((error = VOP_ACCESS(vp, ((flags & FREAD) != 0 ? VREAD : 0) |
-            ((flags & FWRITE) != 0 ? VWRITE : 0), kcred)) != 0) {
+        if (!created && (error = VOP_ACCESS(vp, ((flags & FREAD) != 0 ?
+            VREAD : 0) | ((flags & FWRITE) != 0 ? VWRITE : 0), cr)) != 0) {
                 VN_RELE(vp);
                 return error;
         }
@@ -100,7 +214,7 @@ vn_openat(struct vnode *sdir, const char *path, int flags, mode_t mode,
                         return error;
                 vp = fvp;
         }
-        if ((error = VOP_OPEN(&vp, flags, kcred)) != 0) {
+        if ((error = VOP_OPEN(&vp, flags, cr)) != 0) {
                 VN_RELE(vp);
                 return error;
         }
@@ -110,8 +224,8 @@ vn_openat(struct vnode *sdir, const char *path, int flags, mode_t mode,
 
                 memset(&va, 0, sizeof(va));
                 va.va_mask = AT_SIZE;
-                if ((error = VOP_SETATTR(vp, &va, kcred)) != 0) {
-                        (void)VOP_CLOSE(vp, flags, kcred);
+                if ((error = VOP_SETATTR(vp, &va, cr)) != 0) {
+                        (void)VOP_CLOSE(vp, flags, cr);
                         VN_RELE(vp);
                         return error;
                 }
@@ -124,7 +238,7 @@ vn_openat(struct vnode *sdir, const char *path, int flags, mode_t mode,
 int
 vn_close(struct vnode *vp, int flags)
 {
-        int error = VOP_CLOSE(vp, flags, kcred);
+        int error = VOP_CLOSE(vp, flags, CRED());
 
         VN_RELE(vp);
         return error;
@@ -170,6 +284,7 @@ vn_create(const char *path, mode_t mode, int excl, struct vnode **vpp)
 int
 vn_removeat(struct vnode *sdir, const char *path)
 {
+        struct cred *cr = CRED();
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
         int error;
@@ -183,7 +298,9 @@ vn_removeat(struct vnode *sdir, const char *path)
         }
         if (vp->v_type == VDIR) {
                 error = EPERM;
-        } else if ((error = VOP_REMOVE(dvp, name, kcred)) == 0) {
+        } else if ((error = vn_dirwrite(dvp, cr)) == 0 &&
+            (error = vn_sticky(dvp, vp, cr)) == 0 &&
+            (error = VOP_REMOVE(dvp, name, cr)) == 0) {
                 dnlc_remove(dvp, name);
         }
         VN_RELE(vp);
@@ -199,6 +316,7 @@ int
 vn_linkat(struct vnode *fsdir, const char *frompath, struct vnode *tsdir,
     const char *topath, int follow)
 {
+        struct cred *cr = CRED();
         char name[MAXNAMELEN];
         struct vnode *svp, *dvp, *vp;
         int error;
@@ -218,18 +336,39 @@ vn_linkat(struct vnode *fsdir, const char *frompath, struct vnode *tsdir,
                 error = EPERM;
         } else if (svp->v_vfsp != dvp->v_vfsp) {
                 error = EXDEV;
-        } else {
-                error = VOP_LINK(dvp, svp, name, kcred);
+        } else if ((error = vn_dirwrite(dvp, cr)) == 0) {
+                error = VOP_LINK(dvp, svp, name, cr);
         }
         VN_RELE(dvp);
         VN_RELE(svp);
         return error;
 }
 
+/*
+ * Whether cr may rename svp in sdvp to a name in tdvp that is now tvp
+ * (or NULL).
+ */
+static int
+vn_rename_ok(struct vnode *sdvp, struct vnode *svp, struct vnode *tdvp,
+    struct vnode *tvp, struct cred *cr)
+{
+        int error;
+
+        if ((error = vn_dirwrite(sdvp, cr)) != 0 ||
+            (error = vn_sticky(sdvp, svp, cr)) != 0 ||
+            (error = vn_dirwrite(tdvp, cr)) != 0 ||
+            (tvp != NULL && (error = vn_sticky(tdvp, tvp, cr)) != 0))
+                return error;
+        if (svp->v_type == VDIR && sdvp != tdvp)
+                return VOP_ACCESS(svp, VWRITE, cr);
+        return 0;
+}
+
 int
 vn_renameat(struct vnode *fsdir, const char *frompath, struct vnode *tsdir,
     const char *topath)
 {
+        struct cred *cr = CRED();
         char sname[MAXNAMELEN], tname[MAXNAMELEN];
         struct vnode *sdvp, *svp, *tdvp, *tvp;
         int error;
@@ -249,8 +388,8 @@ vn_renameat(struct vnode *fsdir, const char *frompath, struct vnode *tsdir,
         }
         if (sdvp->v_vfsp != tdvp->v_vfsp) {
                 error = EXDEV;
-        } else if ((error = VOP_RENAME(sdvp, sname, tdvp, tname, kcred)) ==
-            0) {
+        } else if ((error = vn_rename_ok(sdvp, svp, tdvp, tvp, cr)) == 0 &&
+            (error = VOP_RENAME(sdvp, sname, tdvp, tname, cr)) == 0) {
                 dnlc_remove(sdvp, sname);
                 dnlc_remove(tdvp, tname);
                 /* A directory that was replaced takes its names with it. */
@@ -268,6 +407,7 @@ vn_renameat(struct vnode *fsdir, const char *frompath, struct vnode *tsdir,
 int
 vn_mkdirat(struct vnode *sdir, const char *path, mode_t mode)
 {
+        struct cred *cr = CRED();
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
         struct vattr va;
@@ -285,8 +425,8 @@ vn_mkdirat(struct vnode *sdir, const char *path, mode_t mode)
         va.va_mask = AT_TYPE | AT_MODE;
         va.va_type = VDIR;
         va.va_mode = mode & 07777;
-        error = VOP_MKDIR(dvp, name, &va, &vp, kcred);
-        if (error == 0)
+        if ((error = vn_newattr(dvp, &va, cr)) == 0 &&
+            (error = VOP_MKDIR(dvp, name, &va, &vp, cr)) == 0)
                 VN_RELE(vp);
         VN_RELE(dvp);
         return error;
@@ -299,6 +439,7 @@ vn_mkdirat(struct vnode *sdir, const char *path, mode_t mode)
 int
 vn_mknodat(struct vnode *sdir, const char *path, enum vtype type, mode_t mode)
 {
+        struct cred *cr = CRED();
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
         struct vattr va;
@@ -318,8 +459,8 @@ vn_mknodat(struct vnode *sdir, const char *path, enum vtype type, mode_t mode)
         va.va_mask = AT_TYPE | AT_MODE;
         va.va_type = type;
         va.va_mode = mode & 07777;
-        error = VOP_CREATE(dvp, name, &va, EXCL, &vp, kcred);
-        if (error == 0)
+        if ((error = vn_newattr(dvp, &va, cr)) == 0 &&
+            (error = VOP_CREATE(dvp, name, &va, EXCL, &vp, cr)) == 0)
                 VN_RELE(vp);
         VN_RELE(dvp);
         return error;
@@ -328,6 +469,7 @@ vn_mknodat(struct vnode *sdir, const char *path, enum vtype type, mode_t mode)
 int
 vn_rmdirat(struct vnode *sdir, const char *path)
 {
+        struct cred *cr = CRED();
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
         int error;
@@ -343,7 +485,9 @@ vn_rmdirat(struct vnode *sdir, const char *path)
                 error = ENOTDIR;
         } else if ((vp->v_flag & VROOT) != 0 || vp->v_vfsmountedhere != NULL) {
                 error = EBUSY;
-        } else if ((error = VOP_RMDIR(dvp, name, kcred)) == 0) {
+        } else if ((error = vn_dirwrite(dvp, cr)) == 0 &&
+            (error = vn_sticky(dvp, vp, cr)) == 0 &&
+            (error = VOP_RMDIR(dvp, name, cr)) == 0) {
                 dnlc_remove(dvp, name);
                 dnlc_purge_vp(vp);
         }
@@ -356,6 +500,7 @@ vn_rmdirat(struct vnode *sdir, const char *path)
 int
 vn_symlinkat(const char *target, struct vnode *sdir, const char *path)
 {
+        struct cred *cr = CRED();
         char name[MAXNAMELEN];
         struct vnode *dvp, *vp;
         struct vattr va;
@@ -375,7 +520,8 @@ vn_symlinkat(const char *target, struct vnode *sdir, const char *path)
         va.va_mask = AT_TYPE | AT_MODE;
         va.va_type = VLNK;
         va.va_mode = 0777;
-        error = VOP_SYMLINK(dvp, name, &va, target, kcred);
+        if ((error = vn_newattr(dvp, &va, cr)) == 0)
+                error = VOP_SYMLINK(dvp, name, &va, target, cr);
         VN_RELE(dvp);
         return error;
 }
@@ -407,7 +553,7 @@ vn_readlinkat(struct vnode *sdir, const char *path, char *buf, size_t size,
         uio.uio_segflg = UIO_SYSSPACE;
         uio.uio_limit = UIO_NOLIMIT;
         uio.uio_rw = UIO_READ;
-        error = VOP_READLINK(vp, &uio, kcred);
+        error = VOP_READLINK(vp, &uio, CRED());
         VN_RELE(vp);
         if (error == 0) {
                 *lenp = size - 1 - (size_t)uio.uio_resid;
@@ -425,7 +571,7 @@ vn_statat(struct vnode *sdir, const char *path, int follow, struct vattr *va)
         if ((error = lookuppn(path, follow, sdir, NULL, NULL, &vp)) != 0)
                 return error;
         va->va_mask = AT_ALL;
-        error = VOP_GETATTR(vp, va, kcred);
+        error = VOP_GETATTR(vp, va, CRED());
         VN_RELE(vp);
         return error;
 }
@@ -433,6 +579,7 @@ vn_statat(struct vnode *sdir, const char *path, int follow, struct vattr *va)
 int
 vn_truncate(const char *path, off_t size)
 {
+        struct cred *cr = CRED();
         struct vnode *vp;
         struct vattr va;
         int error;
@@ -448,21 +595,54 @@ vn_truncate(const char *path, off_t size)
         memset(&va, 0, sizeof(va));
         va.va_mask = AT_SIZE;
         va.va_size = size;
-        error = VOP_SETATTR(vp, &va, kcred);
+        if ((error = VOP_ACCESS(vp, VWRITE, cr)) == 0)
+                error = VOP_SETATTR(vp, &va, cr);
         VN_RELE(vp);
         return error;
 }
 
 /*
+ * Give vp the permission bits mode (07777), by the rules at the top of
+ * this file.
+ */
+int
+vn_chmod(struct vnode *vp, mode_t mode)
+{
+        struct cred *cr = CRED();
+        struct vattr va;
+        int error;
+
+        va.va_mask = AT_ALL;
+        if ((error = VOP_GETATTR(vp, &va, cr)) != 0)
+                return error;
+        if (!CRED_ISROOT(cr)) {
+                if (cr->cr_uid != va.va_uid)
+                        return EPERM;
+                if (vp->v_type != VDIR)
+                        mode &= ~(mode_t)S_ISVTX;
+                if (!groupmember(va.va_gid, cr))
+                        mode &= ~(mode_t)S_ISGID;
+        }
+        memset(&va, 0, sizeof(va));
+        va.va_mask = AT_MODE;
+        va.va_mode = mode & 07777;
+        return VOP_SETATTR(vp, &va, cr);
+}
+
+/*
  * Give vp a new owner and group; (uid_t)-1 or (gid_t)-1 leaves that
- * one as it is. Every process is the superuser so far, so there is no
- * permission check and the set-ID bits stay.
+ * one as it is. See the top of this file for who may.
  */
 int
 vn_chown(struct vnode *vp, uid_t uid, gid_t gid)
 {
-        struct vattr va;
+        struct cred *cr = CRED();
+        struct vattr cur, va;
+        int error;
 
+        cur.va_mask = AT_ALL;
+        if ((error = VOP_GETATTR(vp, &cur, cr)) != 0)
+                return error;
         memset(&va, 0, sizeof(va));
         if (uid != (uid_t)-1) {
                 va.va_mask |= AT_UID;
@@ -472,5 +652,18 @@ vn_chown(struct vnode *vp, uid_t uid, gid_t gid)
                 va.va_mask |= AT_GID;
                 va.va_gid = gid;
         }
-        return VOP_SETATTR(vp, &va, kcred);
+        if (!CRED_ISROOT(cr)) {
+                if (cr->cr_uid != cur.va_uid ||
+                    (uid != (uid_t)-1 && uid != cur.va_uid) ||
+                    (gid != (gid_t)-1 && gid != cur.va_gid &&
+                    !groupmember(gid, cr)))
+                        return EPERM;
+                if ((cur.va_mode & (S_ISUID | S_ISGID)) != 0 &&
+                    vp->v_type != VDIR) {
+                        va.va_mask |= AT_MODE;
+                        va.va_mode = cur.va_mode & 07777 &
+                            ~(mode_t)(S_ISUID | S_ISGID);
+                }
+        }
+        return VOP_SETATTR(vp, &va, cr);
 }

@@ -237,7 +237,7 @@ extern const struct vnodeops ext2fs_vnodeops;
 /* ext2fs_vfsops.c */
 int ext2fs_vget(struct ext2mount *, uint32_t, struct ext2inode **);
 int ext2fs_newinode(struct ext2mount *, struct ext2inode *, uint16_t,
-    struct ext2inode **);
+    const struct vattr *, struct ext2inode **);
 void ext2fs_rele_locked(struct ext2inode *);
 int ext2fs_inactive_locked(struct ext2inode *);
 int ext2fs_reclaim(struct vnode *, int);
