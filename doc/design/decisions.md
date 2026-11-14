@@ -1422,12 +1422,68 @@ Recorded 2026-11-07.
   profiling timer counting system time, old values, and a child without
   timers. Counting system time against the virtual timer makes it fail.
 
-## Init (decided 2026-11-14)
+## Init (decided and built 2026-11-14)
 
 - **BSD-style init and rc,** not System V's `inittab` and run levels:
-  `/etc/rc` with `rc.conf` and `rc.d` scripts, single user and multi
-  user only. NetBSD's `init` and rc system may be imported (their BSD
-  licences, kept with the code) rather than written afresh.
+  NetBSD's `init` (`contrib/netbsd`, BSD licences kept with the code),
+  `/etc/rc` with `/etc/rc.conf` over `/etc/defaults/rc.conf`, single
+  user and multi user only. The rc is Belka's own and minimal for now:
+  no `rc.d` or `rcorder` until there are utilities and services for
+  them; site additions go in `/etc/rc.local`.
+- **The boot:** without `selftest` on the command line (the test ISOs
+  have it), the kernel mounts the ext2 root from `root=vdN` (`vd0` by
+  default), devfs on `/dev`, and runs `/sbin/init` (or `init=path`;
+  `single` passes `-s`) as process 1. Init starts in process 0's session
+  and makes its own with `setsid`; it never gets a controlling terminal
+  (`tty_open`). If it exits, the kernel panics.
+- **Orphans go to init** (`initproc`), which hears of zombies among
+  them by `SIGCHLD`; until init runs, and in a self-test boot, process 0
+  reaps them as before. `kill(-1, sig)` leaves init alone, as System V
+  does (the caller is still included).
+- **`uadmin`** (UnixWare's 55, `kern_uadmin.c`), for the superuser:
+  `A_REBOOT` stops at once; `A_SHUTDOWN` sends `SIGKILL` to every other
+  process but init, waits up to five seconds, writes back every file
+  system with `vfs_shutting_down` set, so ext2 also marks itself clean
+  as an unmount would, and then halts or reboots. Belka's
+  `reboot`/`halt` first stop init's logins (`SIGTSTP`), send `SIGTERM`
+  to all, wait two seconds and `sync`.
+- **Logins:** init runs getty on each line `/etc/ttys` turns on. getty
+  is Belka's own and small (no `gettytab`): it takes the line as its
+  controlling terminal, sets sane modes, and runs NetBSD's `login`
+  (set-user-ID root), which checks the password with `crypt` and drops
+  to the user's IDs. Root may log in only on a line marked `secure`.
+  The password file is `/etc/passwd` itself for now (mlibc reads no
+  shadow file), with NetBSD's `$sha1$` hashes: bcrypt is left out for
+  its advertising clause. The image's root has no password.
+- **The shell** is mksh R59c (`contrib/mksh`), `/bin/sh`, built without
+  its `Build.sh`: a hand-written configuration and our own generators
+  for its option tables and signal names.
+- **The compat library** (`usr/lib/compat`, MIT) gives the imported
+  programs the BSD interfaces mlibc lacks: `<sys/cdefs.h>` macros, an
+  in-memory `dbopen` for init's session table, `getttyent`, `fparseln`,
+  `strvis`, `crypt`, `getprogname`, `strtonum`, `sysctl` for
+  `hw.machine`. Some are stand-ins: `setlogin` and `revoke` do nothing
+  (the kernel keeps no login name and cannot revoke a terminal yet),
+  utmp and wtmp are not kept, and `arc4random` is not for secrets.
+- **mlibc fixes found on the way:** `login_tty` closed its descriptor
+  even when it was 0 to 2; reading a line-buffered or unbuffered stream
+  now flushes line-buffered output first, so a `printf` prompt shows
+  before `getchar` waits; `strsignal` knows `SIGEMT`, `SIGWAITING`,
+  `SIGLWP` and `SIGAIO`; the Belka ABI's `NSIG_MAX` is 35, not Linux's
+  1024; and `socket` fails with `EAFNOSUPPORT`, which keeps `syslog`
+  quiet.
+- **Images and tests:** `tools/mkroot.sh` builds the root image with
+  `fakeroot` (root-owned files, set-user-ID `login`). `make run` boots
+  it to a login prompt on the serial console; `make run-selftest` is the
+  old self-test boot. `make test-boot` boots the test image, whose
+  `/etc/rc.local` runs `usr/tests/boottest` in the background: it checks
+  root under init with devfs, an orphan going to init, and on a
+  pseudo-terminal a wrong password turned away, root refused on a line
+  not marked secure, and the test user logged in to a shell with the
+  user's IDs, home and name; then it halts. The run must show that and
+  the console's getty, and the image must pass `e2fsck` afterwards.
+- **Not yet:** a utility set (no `ls` or `cat`), `rc.d`, a shadow
+  password file, utmp, `revoke`, `setlogin`, setting the host name.
 
 ## File systems
 

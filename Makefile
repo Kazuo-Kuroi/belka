@@ -79,6 +79,7 @@ APFAULT_ISO     := $(BUILD)/belka-apfault.iso
 STACK_ISO       := $(BUILD)/belka-stack.iso
 UAF_ISO         := $(BUILD)/belka-uaf.iso
 REBOOT_ISO      := $(BUILD)/belka-reboot.iso
+BOOT_ISO        := $(BUILD)/belka-boot.iso
 
 INCLUDES        := -nostdinc -isystem $(CC_INCLUDE) \
                    -Isys -Isys/arch/$(ARCH)/include -Isys/external
@@ -142,7 +143,7 @@ iso: $(ISO)
 ISO_DEPS        := $(KERNEL) $(LIMINE_DIR)/.stamp tools/mkiso.sh $(DISK)
 
 $(ISO): $(ISO_DEPS)
-	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 3 "selftest" $@
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 3 "" $@
 
 $(TEST_ISO): $(ISO_DEPS)
 	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "selftest debugexit" $@
@@ -162,6 +163,9 @@ $(UAF_ISO): $(ISO_DEPS)
 $(REBOOT_ISO): $(ISO_DEPS)
 	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "selftest debugexit testreboot" $@
 
+$(BOOT_ISO): $(ISO_DEPS)
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit" $@
+
 
 $(MKDISK): tools/mkdisk.c
 	@mkdir -p $(dir $@)
@@ -175,15 +179,22 @@ $(DISK): $(MKDISK)
 # "max"); QEMU_CPU=qemu64 tests the clock-tick fallback.
 QEMU            ?= qemu-system-x86_64
 QEMU_CPU        ?= max,+invtsc
-QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu $(QEMU_CPU) -smp $(SMP) -m $(MEM) \
+QEMU_BASE       := -machine q35,accel=kvm:tcg -cpu $(QEMU_CPU) -smp $(SMP) -m $(MEM) \
                    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
-                   -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+                   -device isa-debug-exit,iobase=0xf4,iosize=0x04
+# The self-test boots: the raw test disk and the two ext2 images.
+QEMU_FLAGS      := $(QEMU_BASE) \
                    -drive file=$(DISK),if=none,id=vd0,format=raw \
                    -device virtio-blk-pci,drive=vd0,disable-legacy=on \
                    -drive file=$(EXT2_1K),if=none,id=vd1,format=raw \
                    -device virtio-blk-pci,drive=vd1,disable-legacy=on \
                    -drive file=$(EXT2_4K),if=none,id=vd2,format=raw \
                    -device virtio-blk-pci,drive=vd2,disable-legacy=on \
+                   -display none -no-reboot
+# A normal boot: the root image (tools/mkroot.sh) as vd0.
+QEMU_ROOT_FLAGS = $(QEMU_BASE) \
+                   -drive file=$(1),if=none,id=vd0,format=raw \
+                   -device virtio-blk-pci,drive=vd0,disable-legacy=on \
                    -display none -no-reboot
 
 # The C library: mlibc, from the contrib/mlibc submodule (the belka
@@ -386,6 +397,8 @@ $(LIBC_SODIR)/%.so.1: $(MLIBC_SO_BUILD)/%.so.1
 
 user-progs: $(LIBC_BINS)
 
+include mk/userland.mk
+
 EXT2_DIRS       = $(LIBC_DIR) usr/lib64=$(LIBC_SODIR) \
                   lib=$(TESTLIB_DIR)
 
@@ -398,9 +411,15 @@ MKEXT2          = @mkdir -p build && \
 ext2-images: $(LIBC_BINS)
 	$(MKEXT2)
 
-run: $(ISO) $(DISK) $(LIBC_BINS)
+# A normal boot to a login prompt on the serial console, with the root
+# image; "root" has no password. "run-selftest" boots the self-tests.
+run: $(ISO) $(ROOT_IMG)
+	$(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_IMG)) -cdrom $(ISO) \
+	    -serial mon:stdio
+
+run-selftest: $(TEST_ISO) $(DISK) $(LIBC_BINS)
 	$(MKEXT2)
-	$(QEMU) $(QEMU_FLAGS) -cdrom $(ISO) -serial mon:stdio
+	$(QEMU) $(QEMU_FLAGS) -cdrom $(TEST_ISO) -serial mon:stdio
 
 # The kernel reports its result through the QEMU debug-exit device:
 # QEMU exits with 33 after a clean halt and 35 after a panic. "test"
@@ -452,7 +471,18 @@ test-reboot: $(REBOOT_ISO) $(LIBC_BINS)
 	    $(BUILD)/test-reboot-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(REBOOT_ISO)
 
-test-all: test test-fault test-apfault test-stack test-uaf test-reboot
+# The system as booted: init, /etc/rc, getty, login and the shell, with
+# usr/tests/boottest run from /etc/rc.local on the test root image. It
+# halts through uadmin, which must leave the image clean; the console
+# must have shown init's getty.
+test-boot: $(BOOT_ISO) $(ROOT_DEPS) $(SYS_DIR)/boottest
+	$(MKROOT_TEST)
+	QEMU_EXPECT="boottest: 0 failures$$(printf '\nlogin: ')" \
+	    sh tools/qemu-test.sh pass $(BUILD)/test-boot-serial.log \
+	    $(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_TEST_IMG)) -cdrom $(BOOT_ISO)
+	$(E2FSCK) -fn $(ROOT_TEST_IMG)
+
+test-all: test test-fault test-apfault test-stack test-uaf test-reboot test-boot
 
 clean:
 	rm -rf $(BUILD)

@@ -1,0 +1,5 @@
+#
+# /etc/ttys: the terminals init(8) runs getty(8) on.
+#
+# name          getty                           type    status
+console         "/usr/libexec/getty std"        vt100   on secure

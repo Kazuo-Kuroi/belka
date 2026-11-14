@@ -1,0 +1,6 @@
+wheel:*:0:root
+daemon:*:1:
+tty:*:4:
+users:*:100:
+nogroup:*:32766:
+nobody:*:32767:

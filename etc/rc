@@ -1,0 +1,32 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-14
+# SPDX-License-Identifier: MIT
+#
+# /etc/rc: multi-user start-up, run by init(8) with "autoboot" when the
+# system boots. A failure (a non-zero exit) leaves init in single-user
+# mode. Settings come from /etc/rc.conf, read after the defaults in
+# /etc/defaults/rc.conf; site additions go in /etc/rc.local.
+#
+# This is the minimal rc: there is no rc.d or rcorder yet.
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+umask 022
+
+. /etc/defaults/rc.conf
+[ -f /etc/rc.conf ] && . /etc/rc.conf
+
+if [ "$rc_configured" != YES ]; then
+        echo "/etc/rc.conf is not configured: staying single-user."
+        exit 1
+fi
+
+echo "Starting Belka multi-user."
+
+if [ -f /etc/rc.local ]; then
+        . /etc/rc.local
+fi
+
+exit 0

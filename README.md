@@ -20,19 +20,32 @@ submodules.
 make                    # build build/amd64-gcc/belka
 make TOOLCHAIN=clang    # build with Clang
 make LINKER=gnu         # link with GNU ld instead of the illumos ld
-make run                # boot in QEMU with the serial console on stdio
+make run                # boot the root image to a login prompt (root, no
+                        # password), serial console on stdio
+make run-selftest       # boot the self-tests with the console on stdio
 make test               # boot, run the self-tests, and report PASS/FAIL
 make test-fault         # boot, force a page fault, expect a clean panic
 make test-apfault       # the same, on a secondary processor
 make test-stack         # overflow a kernel stack, expect a double fault
 make test-uaf           # write to freed kmem, expect it to be caught
 make test-reboot        # reboot through the ACPI reset register
+make test-boot          # boot the test root image: init, rc, getty, login
 make test-all           # every test above
 ```
 
-Every QEMU run attaches `build/test-disk.img`, an 8 MB disk with a known
-pattern in each sector, as a virtio block device (`vd0`); it is built by
-`tools/mkdisk.c` with the host compiler (`HOSTCC`, default `cc`).
+The system programs are built statically against mlibc and put on an
+ext2 root image by `tools/mkroot.sh` (it needs `fakeroot`): NetBSD's
+`init` and `login` (`contrib/netbsd`), mksh as `/bin/sh`
+(`contrib/mksh`), and Belka's own `getty` and `reboot`/`halt`
+(`usr/sbin`), over a small compat library (`usr/lib/compat`); `/etc`
+comes from `etc/`. `make sys-progs` builds the programs and `make
+root-image` the image. A normal boot (no `selftest` on the kernel
+command line) mounts that image as root and starts `/sbin/init`.
+
+Every self-test boot attaches `build/test-disk.img`, an 8 MB disk with
+a known pattern in each sector, as a virtio block device (`vd0`); it is
+built by `tools/mkdisk.c` with the host compiler (`HOSTCC`, default
+`cc`).
 Two ext2 images are attached as `vd1` (1 KB blocks) and `vd2` (4 KB
 blocks). `tools/mkext2.sh` rebuilds them with `mke2fs` before every
 boot, because the tests write to them. After `make test`, the host

@@ -8,8 +8,8 @@
 # its result through the isa-debug-exit device: QEMU exits with status
 # 33 after a clean halt and 35 after a panic. Serial output is saved to
 # the log file and echoed. If QEMU_EXPECT is set, the log must also
-# contain that text. Whatever the expected outcome, a self-test failure
-# line in the log fails the run.
+# contain that text (each of its lines, if it has several). Whatever the
+# expected outcome, a self-test failure line in the log fails the run.
 #
 # With "reset", the kernel is expected to reset the machine, which QEMU
 # run with -no-reboot turns into exit status 0.
@@ -54,10 +54,18 @@ if grep -qE '^selftest: [^ ]+:[0-9]+: ' "$log"; then
         exit 1
 fi
 if [ "$status" -eq "$want" ]; then
-        if [ -n "${QEMU_EXPECT:-}" ] && ! grep -qF "$QEMU_EXPECT" "$log"; then
-                echo "test: FAIL ($got, but \"$QEMU_EXPECT\" not seen)" >&2
-                exit 1
-        fi
+        # Each line of QEMU_EXPECT must be in the log.
+        nl='
+'
+        oldifs=$IFS
+        IFS=$nl
+        for text in ${QEMU_EXPECT:-}; do
+                if ! grep -qF -- "$text" "$log"; then
+                        echo "test: FAIL ($got, but \"$text\" not seen)" >&2
+                        exit 1
+                fi
+        done
+        IFS=$oldifs
         echo "test: PASS ($got)"
         exit 0
 fi
