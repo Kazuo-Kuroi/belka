@@ -3,6 +3,7 @@
 /*-
  * Copyright (c) 1980, 1987, 1988, 1991, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
+ * Portions Copyright 2026 Setsuna Software L.C.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -533,6 +534,7 @@ main(int argc, char *argv[])
 #endif
 
 	(void)gettimeofday(&now, NULL);
+#ifndef NO_PW_AGING	/* Belka: struct passwd has no pw_expire or pw_change */
 	if (pwd->pw_expire) {
 		if (now.tv_sec >= pwd->pw_expire) {
 			(void)printf("Sorry -- your account has expired.\n");
@@ -554,6 +556,7 @@ main(int argc, char *argv[])
 			    ctime(&pwd->pw_change));
 
 	}
+#endif
 	/* Nothing else left to fail -- really log in. */
 	update_db(quietlog, rootlogin, fflag);
 
