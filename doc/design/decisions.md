@@ -1531,6 +1531,53 @@ Recorded 2026-11-07.
   numbers in `ls -l`, `tty`, `nice`, and more. Making `utimensat` ignore
   the modification time makes it fail.
 
+## The interactive console (2026-11-14)
+
+- **`make test-console`** (in `test-all`) types at the serial console
+  as a person would: `tools/condrive`, a host tool, follows a script of
+  `expect`, `send` and `sleep` lines (`usr/tests/console.script`) over
+  QEMU's Unix socket. It logs in as root on the console (marked secure
+  in `/etc/ttys`, which login can now see through `ttyname`), checks
+  `/etc/profile`'s `PATH`, recalls history with `^P`, stops a command
+  with `^C`, stops and continues one with `^Z` and `fg`, runs `ps`, logs
+  out and in through a fresh getty, and halts, leaving the image clean.
+  mksh's `sleep` is built in and runs in the shell, so the script uses
+  `/bin/sleep` for a job to stop.
+- **`/etc/profile`** sets `PATH` (`/sbin` and `/usr/sbin` for root),
+  `TERM` and the umask. **`make run`** first repairs the root image with
+  the host's `e2fsck -p`: a boot not ended by `halt` leaves it dirty,
+  which the kernel mounts read-only, and there is no fsck on Belka yet.
+
+## /proc and ps (2026-11-14)
+
+- **IRIX's /proc,** System V Release 4.0's flat file system, not SVR4.2's
+  directories (UnixWare's) nor Linux's or BSD's: `/proc/NNNNN` for each
+  process (decimal, five digits or more), owned by its real user, mode
+  0600, asked about with `ioctl()`; and IRIX's `/proc/pinfo/NNNNN`, mode
+  0444, which answers only `PIOCPSINFO`, so that `ps` needs no
+  privilege. `<sys/procfs.h>` has SVR4's ioctl number and field names in
+  Belka's 64-bit layout (with `pr_euid` and `pr_egid` added, and IRIX's
+  `pr_ctime`). The kernel mounts it on `/proc` at boot.
+- **Only `PIOCPSINFO` so far:** the state letter (O, R, S, T, Z), ids,
+  nice value, priority and class, address-space size, processor time,
+  start time, controlling terminal, command name and arguments (kept at
+  exec, `p_psargs`). Reading a process's address space and the
+  debugging ioctls are for later; `read()` gives `EIO`.
+- **Nodes:** the two directories are static; a process's file is a
+  private vnode made at each lookup, holding only the process id, and
+  freed (after leaving the name cache) when unreferenced, so a file
+  whose process has gone answers `ENOENT`. `p_as` is now replaced under
+  `proctree_lock` (exec, exit), so `/proc` can measure another
+  process's address space.
+- **`ps`** (`usr/bin/ps`, Belka's own) is System V's: `-e`/`-A`, `-a`,
+  `-d`, `-f`, `-l`, `-p`, `-t` and `-u`, with its column layouts, over
+  `/proc/pinfo`.
+- **Tests:** boottest checks owners and modes, the listing, init and
+  itself, a stopped child (T), a zombie (Z), and that a non-root
+  process is refused init's file but not its pinfo; utiltest and the
+  console session run `ps`. Reporting no stopped state makes boottest
+  fail.
+
 ## Terminal descriptions (decided 2026-11-14)
 
 - **terminfo, not termcap,** when curses and full-screen programs come:

@@ -9,7 +9,8 @@
 #   /sbin/init, reboot, halt    /usr/libexec/getty    /usr/bin/login
 #   /bin/sh (mksh), /bin/mksh   /bin/ls, cat, cp ... (ksenon-utils)
 #   /etc from the tree's etc/, with /etc/mnttab a link to /dev/mnttab
-#   /dev (devfs is mounted on it), /tmp, /root
+#   /bin/ps (Belka's), /dev and /proc (devfs and procfs go on them),
+#   /tmp, /root
 #
 # Everything is owned by root, and login is set-user-ID, through
 # fakeroot(1). root has no password.
@@ -47,8 +48,8 @@ src=$(mktemp -d)
 trap 'rm -rf "$src"' EXIT
 
 mkdir -p "$src/bin" "$src/sbin" "$src/usr/bin" "$src/usr/libexec" \
-    "$src/usr/tests" "$src/usr/lib64" "$src/etc/defaults" "$src/dev" "$src/tmp" \
-    "$src/root" "$src/home"
+    "$src/usr/tests" "$src/usr/lib64" "$src/etc/defaults" "$src/dev" \
+    "$src/proc" "$src/tmp" "$src/root" "$src/home"
 
 install_prog() {        # program destination
         $STRIP --strip-debug -o "$src/$2" "$sys/$1"
@@ -79,6 +80,7 @@ ln "$src/bin/mv" "$src/bin/cp"
 ln "$src/bin/mv" "$src/bin/ln"
 ln "$src/bin/chown" "$src/bin/chgrp"
 ln "$src/bin/test" "$src/bin/["
+cp "$sys/ps" "$src/bin/ps"            # dynamic: not stripped
 cp "$libdir/ld.so.1" "$libdir/libc.so.1" "$src/usr/lib64/"
 
 for f in rc rc.conf ttys passwd group shells profile defaults/rc.conf; do

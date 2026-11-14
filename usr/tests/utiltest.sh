@@ -135,6 +135,11 @@ status "nice -n -5, root" 0 nice -n -5 true
 check "nice runs it" "ran" nice -n 19 sh -c 'echo ran'
 check "id -u" "0" id -u
 check "uname -s" "Belka" uname -s
+# ps, over /proc/pinfo.
+check "ps -p 1" "1 init" sh -c 'set -- $(ps -p 1 | tail -n 1) && echo $1 $4'
+check "ps -f -p 1" "root 0" sh -c 'set -- $(ps -f -p 1 | tail -n 1) && echo $1 $3'
+check "ps -e: init" "yes" sh -c 'ps -e | while read pid tty time cmd; do [ "$cmd" = init ] && echo yes; done; true'
+check "ps -l: state" "S" sh -c 'set -- $(ps -l -p $PPID | tail -n 1) && echo $2'
 status date 0 date -u +%Y
 status sleep 0 sleep 1
 status who 0 who

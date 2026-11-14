@@ -147,7 +147,7 @@ $(MKPASSWD): $(MKPASSWD_SRCS) $(wildcard tools/mkpasswd-inc/*.h)
 	    -D'_DIAGASSERT(e)=((void)0)' -o $@ $(MKPASSWD_SRCS)
 
 # The boot test (usr/tests/boottest.c), for the test root image only.
-$(SYS_OBJ)/boottest.o: usr/tests/boottest.c $(MLIBC)
+$(SYS_OBJ)/boottest.o: usr/tests/boottest.c sys/sys/procfs.h $(MLIBC)
 	@mkdir -p $(dir $@)
 	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
 $(SYS_DIR)/boottest: $(SYS_OBJ)/boottest.o $(SYS_DEPS)
@@ -207,20 +207,30 @@ xn-progs: $(XN_BINS)
 
 .PHONY: xn-progs
 
+# ps, Belka's own (usr/bin/ps), over /proc/pinfo; dynamic, like the
+# utilities.
+$(SYS_OBJ)/ps.o: usr/bin/ps/ps.c sys/sys/procfs.h $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
+$(SYS_DIR)/ps: $(SYS_OBJ)/ps.o $(MLIBC_SHARED) $(PROGRAM_BEGIN) $(PROGRAM_END) \
+                $(LD_DEPS)
+	$(call LINK_DYNAMIC,$(DYN_INTERP),) $(LIBC_CRT0) $(PROGRAM_BEGIN) $< \
+	    $(SYSLIB)/libc.so $(LIBC_RTLIB) $(PROGRAM_END) $(LIBC_CRTN)
+
 # The root images (tools/mkroot.sh): for "run", kept between boots and
 # made again when what goes in changes; for "test-boot", made afresh
 # for each boot.
 ROOT_IMG        := build/root-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
-ROOT_DEPS       := $(SYS_PROGS) $(XN_BINS) $(LIBC_SOS) $(MKPASSWD) \
-                   tools/mkroot.sh \
+ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(XN_BINS) $(LIBC_SOS) \
+                   $(MKPASSWD) tools/mkroot.sh \
                    $(wildcard etc/* etc/defaults/*)
 
 $(ROOT_IMG): $(ROOT_DEPS)
 	sh tools/mkroot.sh $@ $(SYS_DIR) $(MKPASSWD) $(LIBC_SODIR)
 
-MKROOT_TEST     = sh tools/mkroot.sh -t $(ROOT_TEST_IMG) $(SYS_DIR) $(MKPASSWD) \
-                  $(LIBC_SODIR)
+MKROOT_TEST     = sh tools/mkroot.sh -t $(ROOT_TEST_IMG) $(SYS_DIR) \
+                  $(MKPASSWD) $(LIBC_SODIR)
 
 root-image: $(ROOT_IMG)
 

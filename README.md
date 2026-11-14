@@ -31,6 +31,7 @@ make test-stack         # overflow a kernel stack, expect a double fault
 make test-uaf           # write to freed kmem, expect it to be caught
 make test-reboot        # reboot through the ACPI reset register
 make test-boot          # boot the test root image: init, rc, getty, login
+make test-console       # type a session at the serial console, as a person
 make test-all           # every test above
 ```
 
@@ -40,8 +41,8 @@ ext2 root image by `tools/mkroot.sh` (it needs `fakeroot`): NetBSD's
 (`contrib/mksh`), and Belka's own `getty` and `reboot`/`halt`
 (`usr/sbin`), over a small compat library (`usr/lib/compat`), and in
 `/bin` the Ksenon utilities, `ls`, `cat`, `cp` and the rest
-(`contrib/ksenon-utils`, mostly linked dynamically); `/etc` comes from
-`etc/`. `make sys-progs` builds the programs and `make
+(`contrib/ksenon-utils`, mostly linked dynamically), and Belka's `ps`
+over IRIX-style `/proc`; `/etc` comes from `etc/`. `make sys-progs` builds the programs and `make
 root-image` the image. A normal boot (no `selftest` on the kernel
 command line) mounts that image as root and starts `/sbin/init`.
 

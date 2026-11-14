@@ -10,7 +10,8 @@
  * NetBSD's init, Belka's getty, NetBSD's login and mksh.
  *
  * It checks that it runs as root under init (process 1) with /dev
- * mounted; that an orphan goes to init; that the utilities work
+ * mounted; that an orphan goes to init; that /proc reports processes;
+ * that the utilities work
  * (usr/tests/utiltest.sh); and, on a pseudo-terminal, that
  * getty and login turn away a wrong password, refuse root on a line
  * /etc/ttys does not mark secure, and log the test user in with the
@@ -25,6 +26,7 @@
 
 #define _GNU_SOURCE             /* posix_openpt */
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -32,10 +34,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "../../sys/sys/procfs.h"
 
 static int failures;
 
@@ -194,6 +199,97 @@ test_orphan(void)
         close(p[0]);
 }
 
+/* PIOCPSINFO on /proc/pinfo/NNNNN; 0, or the error. */
+static int
+psinfo(pid_t pid, struct prpsinfo *ps)
+{
+        char path[64];
+        int fd, r;
+
+        snprintf(path, sizeof(path), "/proc/pinfo/%05d", (int)pid);
+        if ((fd = open(path, O_RDONLY)) < 0)
+                return errno;
+        r = ioctl(fd, PIOCPSINFO, ps) == 0 ? 0 : errno;
+        close(fd);
+        return r;
+}
+
+/* /proc, IRIX's: a file per process, and PIOCPSINFO. */
+static void
+test_proc(void)
+{
+        struct prpsinfo ps;
+        struct stat st;
+        struct dirent *de;
+        DIR *dir;
+        pid_t pid;
+        int status = -1, seen1 = 0, seenpinfo = 0, p[2];
+        char c;
+
+        /* The files, their owners and modes. */
+        CHECK(stat("/proc/00001", &st) == 0 && S_ISREG(st.st_mode) &&
+            (st.st_mode & 07777) == 0600 && st.st_uid == 0);
+        CHECK(stat("/proc/pinfo/00001", &st) == 0 &&
+            (st.st_mode & 07777) == 0444);
+        CHECK(stat("/proc/29999", &st) == -1 && errno == ENOENT);
+        CHECK((dir = opendir("/proc")) != NULL);
+        while (dir != NULL && (de = readdir(dir)) != NULL) {
+                seen1 |= strcmp(de->d_name, "00001") == 0;
+                seenpinfo |= strcmp(de->d_name, "pinfo") == 0;
+        }
+        if (dir != NULL)
+                closedir(dir);
+        CHECK(seen1 && seenpinfo);
+
+        /* init, and this process. */
+        CHECK(psinfo(1, &ps) == 0 && ps.pr_pid == 1 && ps.pr_ppid == 0 &&
+            strcmp(ps.pr_fname, "init") == 0 && ps.pr_uid == 0 &&
+            ps.pr_ttydev == PRNODEV);
+        CHECK(psinfo(getpid(), &ps) == 0 && ps.pr_pid == getpid() &&
+            ps.pr_ppid == getppid() && ps.pr_sname == 'O' &&
+            strncmp(ps.pr_psargs, "/usr/tests/boottest test", 24) == 0 &&
+            strcmp(ps.pr_fname, "boottest") == 0 && ps.pr_size > 0 &&
+            strcmp(ps.pr_clname, "TS") == 0 && ps.pr_nice == 20 &&
+            ps.pr_nlwp == 1 && ps.pr_start[0] > 0);
+
+        /* A stopped child, then a zombie. */
+        if ((pid = fork()) == 0) {
+                pause();
+                _exit(0);
+        }
+        CHECK(pid > 0 && kill(pid, SIGSTOP) == 0);
+        CHECK(waitpid(pid, &status, WUNTRACED) == pid && WIFSTOPPED(status));
+        CHECK(psinfo(pid, &ps) == 0 && ps.pr_sname == 'T' &&
+            ps.pr_ppid == getpid());
+        CHECK(kill(pid, SIGKILL) == 0);
+        /* Killed but not yet reaped: a zombie. */
+        for (int i = 0; i < 100 && psinfo(pid, &ps) == 0 && !ps.pr_zomb; i++)
+                usleep(10000);
+        CHECK(psinfo(pid, &ps) == 0 && ps.pr_zomb && ps.pr_sname == 'Z');
+        CHECK(waitpid(pid, &status, 0) == pid);
+        CHECK(psinfo(pid, &ps) == ENOENT);
+
+        /* Not root: init's own file is closed to it, pinfo is not. */
+        CHECK(pipe(p) == 0);
+        if ((pid = fork()) == 0) {
+                int fd;
+
+                c = 'x';
+                if (setuid(100) == 0 &&
+                    open("/proc/00001", O_RDONLY) == -1 && errno == EACCES &&
+                    (fd = open("/proc/pinfo/00001", O_RDONLY)) >= 0 &&
+                    ioctl(fd, PIOCPSINFO, &ps) == 0 && ps.pr_pid == 1)
+                        c = 'y';
+                (void)write(p[1], &c, 1);
+                _exit(0);
+        }
+        close(p[1]);
+        c = 0;
+        CHECK(read(p[0], &c, 1) == 1 && c == 'y');
+        close(p[0]);
+        CHECK(waitpid(pid, &status, 0) == pid);
+}
+
 /* The utilities, by usr/tests/utiltest.sh: it must find no failures. */
 static void
 test_utilities(void)
@@ -258,6 +354,7 @@ main(int argc, char **argv)
         setvbuf(stdout, NULL, _IONBF, 0);
         test_setting();
         test_orphan();
+        test_proc();
         test_utilities();
         test_login(argv[1], argv[2], argv[3], argv[4]);
         printf("boottest: %d failures\n", failures);

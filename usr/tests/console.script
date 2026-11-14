@@ -59,6 +59,10 @@ expect #\x20 15000
 send ls -l /etc/mnttab\r
 expect -> ../dev/mnttab
 
+# ps: the shell and ps itself, on the console.
+send ps\r
+expect \x20console\x20
+
 # Stop the system.
 send halt\r
 expect halted 30000
