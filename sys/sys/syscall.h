@@ -89,6 +89,8 @@
 #define SYS_uname       135
 #define SYS_setegid     136
 #define SYS_seteuid     141
+#define SYS_setitimer   169
+#define SYS_getitimer   170
 #define SYS_gettimeofday 171
 #define SYS_lwpcreate   173
 #define SYS_lwpexit     174

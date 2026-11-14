@@ -374,6 +374,12 @@ OFF(struct tms, tms_utime, struct tms, tms_utime)
 OFF(struct tms, tms_stime, struct tms, tms_stime)
 OFF(struct tms, tms_cutime, struct tms, tms_cutime)
 OFF(struct tms, tms_cstime, struct tms, tms_cstime)
+CONST(ITIMER_REAL)
+CONST(ITIMER_VIRTUAL)
+CONST(ITIMER_PROF)
+SIZE(struct itimerval, struct itimerval)
+OFF(struct itimerval, it_value.tv_sec, struct itimerval, it_value.tv_sec)
+OFF(struct itimerval, it_value.tv_usec, struct itimerval, it_value.tv_usec)
 
 /* The auxiliary vector. */
 CONST(AT_NULL)

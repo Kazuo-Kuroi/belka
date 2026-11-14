@@ -495,6 +495,7 @@ sched_tick(int user)
         kt->kt_ticks++;
         if (user)
                 kt->kt_uticks++;
+        itimer_tick(kt, user);
         (void)thread_lock(kt);
         cl = kt->kt_class;
         if (cl != NULL && cl->cl_tick != NULL)

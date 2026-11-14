@@ -1344,6 +1344,158 @@ test_cwd(void)
         CHECK(rmdir(path("/libctest.cwd")) == 0);
 }
 
+static volatile int it_alrm, it_vt, it_prof;
+
+static void
+on_itimer(int sig)
+{
+        if (sig == SIGALRM)
+                it_alrm++;
+        else if (sig == SIGVTALRM)
+                it_vt++;
+        else if (sig == SIGPROF)
+                it_prof++;
+}
+
+static int
+set_ms(int which, long value, long interval)
+{
+        struct itimerval itv = {
+                { interval / 1000, interval % 1000 * 1000 },
+                { value / 1000, value % 1000 * 1000 },
+        };
+
+        return setitimer(which, &itv, NULL);
+}
+
+static long
+tv_ms(const struct timeval *tv)
+{
+        return tv->tv_sec * 1000 + tv->tv_usec / 1000;
+}
+
+/* A forked child has no timers of its parent's. */
+static int
+child_itimers(void)
+{
+        struct itimerval itv;
+
+        for (int w = ITIMER_REAL; w <= ITIMER_PROF; w++)
+                if (getitimer(w, &itv) != 0 || tv_ms(&itv.it_value) != 0 ||
+                    tv_ms(&itv.it_interval) != 0)
+                        return 1;
+        return 0;
+}
+
+/*
+ * Interval timers: the real one repeating, the virtual one counting
+ * only user time, the profiling one counting system time too, alarm()
+ * sharing the real one, and none of them inherited by fork.
+ */
+static void
+test_itimers(void)
+{
+        struct sigaction sa;
+        struct itimerval itv, old;
+        long t0, used;
+        int n;
+
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = on_itimer;
+        sa.sa_flags = SA_RESTART;
+        CHECK(sigaction(SIGALRM, &sa, NULL) == 0 &&
+            sigaction(SIGVTALRM, &sa, NULL) == 0 &&
+            sigaction(SIGPROF, &sa, NULL) == 0);
+
+        /* Bad arguments. */
+        CHECK(set_ms(3, 10, 0) == -1 && errno == EINVAL);
+        itv = (struct itimerval){ { 0, 0 }, { 0, 1000000 } };
+        CHECK(setitimer(ITIMER_REAL, &itv, NULL) == -1 && errno == EINVAL);
+        CHECK(getitimer(-1, &itv) == -1 && errno == EINVAL);
+
+        /* Real: first in 50 ms, then every 30 ms. */
+        it_alrm = 0;
+        t0 = mono_ms();
+        CHECK(set_ms(ITIMER_REAL, 50, 30) == 0);
+        CHECK(getitimer(ITIMER_REAL, &itv) == 0 &&
+            tv_ms(&itv.it_value) > 0 && tv_ms(&itv.it_value) <= 70 &&
+            tv_ms(&itv.it_interval) == 30);
+        while (it_alrm < 6 && mono_ms() - t0 < 5000)
+                pause();
+        used = mono_ms() - t0;
+        n = it_alrm;
+        CHECK(set_ms(ITIMER_REAL, 0, 0) == 0);
+        if (n < 6 || used < 50 + 5 * 30 - 20 || used > 2000)
+                printf("libctest: itimer real: %d signals in %ld ms\n", n,
+                    used);
+        CHECK(n >= 6 && used >= 50 + 5 * 30 - 20 && used <= 2000);
+        CHECK(getitimer(ITIMER_REAL, &itv) == 0 &&
+            tv_ms(&itv.it_value) == 0 && tv_ms(&itv.it_interval) == 0);
+
+        /* alarm() is the real timer, in seconds. */
+        CHECK(set_ms(ITIMER_REAL, 5000, 0) == 0);
+        CHECK(alarm(0) == 5);
+        CHECK(alarm(7) == 0);
+        CHECK(set_ms(ITIMER_REAL, 0, 0) == 0);
+        CHECK(getitimer(ITIMER_REAL, &old) == 0 &&
+            tv_ms(&old.it_value) == 0);
+
+        /* Virtual: sleeping does not count; spinning does. */
+        it_vt = 0;
+        CHECK(set_ms(ITIMER_VIRTUAL, 100, 0) == 0);
+        {
+                struct timespec req = { 0, 200000000 };
+
+                nanosleep(&req, NULL);
+        }
+        CHECK(it_vt == 0);
+        CHECK(getitimer(ITIMER_VIRTUAL, &itv) == 0 &&
+            tv_ms(&itv.it_value) >= 80 && tv_ms(&itv.it_interval) == 0);
+        /* Nor does time in the kernel. */
+        burn_sys(300);
+        CHECK(getitimer(ITIMER_VIRTUAL, &itv) == 0);
+        if (it_vt != 0 || tv_ms(&itv.it_value) < 50)
+                printf("libctest: itimer virtual: %d signals, %ld ms left "
+                    "after system time\n", it_vt, tv_ms(&itv.it_value));
+        CHECK(it_vt == 0 && tv_ms(&itv.it_value) >= 50);
+        t0 = cpu_ms();
+        while (it_vt == 0 && cpu_ms() - t0 < 5000)
+                continue;
+        used = cpu_ms() - t0;
+        if (it_vt != 1 || used < 80)
+                printf("libctest: itimer virtual: %d signals after %ld ms\n",
+                    it_vt, used);
+        CHECK(it_vt == 1 && used >= 80);
+        CHECK(getitimer(ITIMER_VIRTUAL, &itv) == 0 &&
+            tv_ms(&itv.it_value) == 0);
+
+        /* Profiling: time in the kernel counts. */
+        it_prof = 0;
+        CHECK(set_ms(ITIMER_PROF, 100, 100) == 0);
+        burn_sys(400);
+        CHECK(set_ms(ITIMER_PROF, 0, 0) == 0);
+        if (it_prof < 2)
+                printf("libctest: itimer prof: %d signals\n", it_prof);
+        CHECK(it_prof >= 2);
+
+        /* The old value comes back; a child starts with none. */
+        CHECK(set_ms(ITIMER_VIRTUAL, 3000, 1000) == 0);
+        CHECK(set_ms(ITIMER_REAL, 3000, 0) == 0);
+        n = in_child(child_itimers);
+        CHECK(WIFEXITED(n) && WEXITSTATUS(n) == 0);
+        itv = (struct itimerval){ { 0, 0 }, { 0, 0 } };
+        CHECK(setitimer(ITIMER_VIRTUAL, &itv, &old) == 0 &&
+            tv_ms(&old.it_value) > 2000 && tv_ms(&old.it_value) <= 3000 &&
+            tv_ms(&old.it_interval) == 1000);
+        CHECK(setitimer(ITIMER_REAL, &itv, &old) == 0 &&
+            tv_ms(&old.it_value) > 2000 && tv_ms(&old.it_value) <= 3010);
+
+        sa.sa_handler = SIG_DFL;
+        sigaction(SIGALRM, &sa, NULL);
+        sigaction(SIGVTALRM, &sa, NULL);
+        sigaction(SIGPROF, &sa, NULL);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1364,6 +1516,7 @@ main(int argc, char **argv)
         test_file_ops();
         test_at_calls();
         test_cwd();
+        test_itimers();
         printf("libctest: %d failures\n", failures);
         return failures;
 }

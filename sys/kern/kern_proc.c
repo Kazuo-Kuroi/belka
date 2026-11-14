@@ -382,7 +382,7 @@ proc_exit(int code, int data)
         /* The other LWPs go first; if another LWP is ending us, just go. */
         if (proc_single(1) != 0)
                 lwp_exit();
-        sig_cancel_alarm(p);
+        itimer_exit(p);
         fd_close_all(p);
         /* A session leader's terminal is let go (SIGHUP). */
         if (p->p_pid == p->p_sid)

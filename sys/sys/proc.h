@@ -186,8 +186,12 @@ struct proc {
         int             p_stopsig;
         struct sv       p_stopsv;       /* where a stopped LWP waits */
         struct sv       p_pausesv;      /* pause, sigsuspend */
-        int64_t         p_alarm;        /* pending alarm callout, or 0 */
+        /* Interval timers, in ticks (kern_itimer.c). */
+        int64_t         p_alarm;        /* ITIMER_REAL's callout, or 0 */
         uint64_t        p_alarm_when;   /* lbolt it fires at */
+        uint64_t        p_alarm_ival;   /* its interval, or 0 */
+        uint64_t        p_itvalue[2];   /* VIRTUAL, PROF: left, 0 if off */
+        uint64_t        p_itival[2];    /* their intervals */
 
         char            p_comm[PSCOMSIZ];
 };
@@ -259,7 +263,7 @@ void sig_wait_mask_end(int);
 int lwp_timeout_ticks(uint64_t, long *);
 int64_t lwp_timeout_start(long);
 void lwp_timeout_stop(int64_t);
-void sig_cancel_alarm(struct proc *);
+void itimer_exit(struct proc *);
 
 /* kern_exec.c */
 struct execargs;

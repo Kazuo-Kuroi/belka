@@ -159,6 +159,7 @@ void sched_init(void);
 void sched_cpu_init(struct cpu_info *, struct kthread *);
 void sched_idle(void) __dead;
 void sched_tick(int);
+void itimer_tick(struct kthread *, int);     /* kern_itimer.c */
 void sched_preempt_check(void);
 void swtch(int);
 void cpu_switch_md(struct kthread *, struct kthread *);

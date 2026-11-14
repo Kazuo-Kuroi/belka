@@ -561,58 +561,6 @@ sig_exec(struct proc *p)
         spin_unlock(&p->p_siglock, s);
 }
 
-/* --- alarm --- */
-
-static void
-alarm_fire(void *arg)
-{
-        struct proc *p = arg;
-
-        p->p_alarm = 0;
-        psignal(p, SIGALRM);
-}
-
-/* Cancel p's alarm, returning the seconds that were left. */
-static uint64_t
-alarm_cancel(struct proc *p)
-{
-        toid_t id;
-        uint64_t when;
-
-        mutex_lock(&p->p_lock);
-        id = p->p_alarm;
-        when = p->p_alarm_when;
-        p->p_alarm = 0;
-        mutex_unlock(&p->p_lock);
-        if (id == 0 || !untimeout(id) || when <= lbolt)
-                return 0;
-        return (when - lbolt + HZ - 1) / HZ;
-}
-
-void
-sig_cancel_alarm(struct proc *p)
-{
-        (void)alarm_cancel(p);
-}
-
-int
-sys_alarm(const uint64_t *args, uint64_t *rv)
-{
-        struct proc *p = curproc;
-        uint64_t secs = (uint32_t)args[0];
-
-        rv[0] = alarm_cancel(p);
-        if (secs != 0) {
-                toid_t id = timeout(alarm_fire, p, (long)(secs * HZ));
-
-                mutex_lock(&p->p_lock);
-                p->p_alarm = id;
-                p->p_alarm_when = lbolt + secs * HZ;
-                mutex_unlock(&p->p_lock);
-        }
-        return 0;
-}
-
 /* --- Signal sets between user and kernel. --- */
 
 static k_sigset_t

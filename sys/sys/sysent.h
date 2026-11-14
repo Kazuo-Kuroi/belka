@@ -37,7 +37,7 @@ sy_call_t sys_fchownat, sys_fchmodat, sys_faccessat;
 sy_call_t sys_brk, sys_mmap, sys_munmap, sys_mprotect;
 /* kern_sig.c */
 sy_call_t sys_kill, sys_sigaction, sys_sigprocmask, sys_sigsuspend;
-sy_call_t sys_sigpending, sys_sigaltstack, sys_signal, sys_pause, sys_alarm;
+sy_call_t sys_sigpending, sys_sigaltstack, sys_signal, sys_pause;
 sy_call_t sys_context, sys_pgrpsys, sys_sigwait;
 /* kern_lwp.c */
 sy_call_t sys_lwpcreate, sys_lwpexit, sys_lwpwait, sys_lwpself, sys_lwpinfo;
@@ -47,6 +47,8 @@ sy_call_t sys_lwp_addr_wait, sys_lwp_addr_wake;
 /* fs/fifofs/fifo_vnops.c */
 sy_call_t sys_pipe, sys_mknod, sys_chown, sys_lchown, sys_poll;
 sy_call_t sys_getrlimit, sys_setrlimit, sys_getrusage, sys_pollsys;
+/* kern_itimer.c */
+sy_call_t sys_alarm, sys_setitimer, sys_getitimer;
 /* kern_time.c */
 sy_call_t sys_clock_gettime, sys_clock_getres, sys_times, sys_yield;
 /* kern_cred.c */

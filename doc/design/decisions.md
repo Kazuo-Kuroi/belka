@@ -766,9 +766,8 @@ Recorded 2026-11-07.
   System V `signal`, `sigwait`) inline system calls that return error
   numbers and never touch `errno`, since an LWP made with `_lwp_create`
   has no thread block of mlibc's (its `%fs` base is 0) and must not
-  call into the library. `setitimer` exists only as `alarm` needs it:
-  `ITIMER_REAL` without an interval, in whole seconds, through the
-  `alarm` call; there are no interval timers yet.
+  call into the library. The interval timers came on 2026-11-14 (see
+  Interval timers below).
 - **Later:** the `*at` calls, `chown`, `poll`, named FIFOs and resource
   limits came on 2026-11-12; `ppoll`, `pselect` with a mask,
   `getrusage`, and terminals with `termios` on 2026-11-13; see below.
@@ -1399,6 +1398,29 @@ Recorded 2026-11-07.
   (system time), and checks each lands on its side in `times`,
   `getrusage` and `wait4`. Counting every tick as user time makes it
   fail.
+
+## Interval timers (2026-11-14)
+
+- **`setitimer` and `getitimer`** are UnixWare's 169 and 170; `alarm`
+  (27) is the real timer without an interval. Each process has three,
+  in clock ticks (`kern_itimer.c`): `ITIMER_REAL`, a callout, sends
+  `SIGALRM`; `ITIMER_VIRTUAL` counts down at each tick taken in user
+  mode (`SIGVTALRM`), `ITIMER_PROF` at every tick of the process's
+  (`SIGPROF`), both from `sched_tick` on any processor by
+  compare-and-swap. An expired timer with an interval is reloaded.
+- **The real timer's state** is under `p_siglock`, which its callout
+  takes: cancelling clears `p_alarm` first, so a callout already on its
+  way does nothing, and `untimeout` waits for one that is running. Its
+  callout is set a tick past the expiry recorded, since a callout runs
+  at a tick boundary that may come at once; the time left reads as
+  asked, and never less than that passes.
+- **Not inherited** by `fork`; kept across `exec`; the real one is
+  cancelled at exit. mlibc's `setitimer`, `getitimer` and `alarm` are
+  the calls themselves.
+- **Tests:** `libctest`'s `test_itimers`: a repeating real timer, alarm
+  sharing it, the virtual timer ignoring sleep and system time, the
+  profiling timer counting system time, old values, and a child without
+  timers. Counting system time against the virtual timer makes it fail.
 
 ## Init (decided 2026-11-14)
 

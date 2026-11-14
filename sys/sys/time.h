@@ -5,9 +5,9 @@
  */
 
 /*
- * Time: the timespec, the clocks clock_gettime() reads (with the POSIX
- * values the C library uses), and, in the kernel, the high-resolution
- * clock and the time of day.
+ * Time: the timespec and timeval, the interval timers, the clocks
+ * clock_gettime() reads (with the POSIX values the C library uses),
+ * and, in the kernel, the high-resolution clock and the time of day.
  *
  * This header is shared with user programs and uses no kernel types.
  */
@@ -23,6 +23,21 @@ struct timespec {
 };
 
 #define NANOSEC         ((uint64_t)1000000000)
+
+/* gettimeofday(), and the interval timers of setitimer() and getitimer(). */
+struct timeval {
+        int64_t         tv_sec;
+        int64_t         tv_usec;
+};
+
+struct itimerval {
+        struct timeval  it_interval;    /* reloaded on expiry; 0: once */
+        struct timeval  it_value;       /* left; 0: disarmed */
+};
+
+#define ITIMER_REAL     0       /* real time; SIGALRM */
+#define ITIMER_VIRTUAL  1       /* user time; SIGVTALRM */
+#define ITIMER_PROF     2       /* user and system time; SIGPROF */
 
 /* Clocks for clock_gettime() and clock_getres(). */
 #define CLOCK_REALTIME          0       /* the time of day */
