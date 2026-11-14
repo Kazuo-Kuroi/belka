@@ -31,6 +31,7 @@
 #include <sys/schedclass.h>
 #include <sys/signal.h>
 #include <sys/synch.h>
+#include <sys/time.h>
 #include <sys/systm.h>
 #include <sys/tty.h>
 #include <sys/vnode.h>
@@ -44,7 +45,6 @@
 #include <vm/hat.h>
 
 #define PIDHASH         64
-#define PID_MAX         30000
 #define USER_PRI        PRI_KERNEL      /* until the thread joins TS */
 
 struct proc proc0;
@@ -154,6 +154,13 @@ proc_alloc(struct proc *parent)
         p->p_cred = cred_getproc(parent);
         p->p_cmask = parent->p_cmask;
         p->p_nice = parent->p_nice;
+        {
+                struct timespec ts;
+
+                gethrestime(&ts);
+                p->p_start[0] = ts.tv_sec;
+                p->p_start[1] = ts.tv_nsec;
+        }
         memcpy(p->p_rlimit, parent->p_rlimit, sizeof(p->p_rlimit));
         p->p_cpucheck = parent->p_cpucheck != 0 ? lbolt + 1 : 0;
         memcpy(p->p_comm, parent->p_comm, PSCOMSIZ);
@@ -418,12 +425,14 @@ proc_exit(int code, int data)
         if (cdir != NULL)
                 VN_RELE(cdir);
 
-        /* Leave the address space before freeing it. */
+        /* Leave the address space before freeing it (see <sys/proc.h>). */
+        mutex_lock(&proctree_lock);
         s = splhi();
         as = p->p_as;
         p->p_as = NULL;
         hat_activate(NULL);
         splx(s);
+        mutex_unlock(&proctree_lock);
         if (as != NULL)
                 as_free(as);
 

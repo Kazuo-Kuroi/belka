@@ -41,9 +41,10 @@ static const char copyright[] =
 
 /*
  * A normal boot: the root file system is ext2 on the disk the command
- * line names (root=vdN; vd0 if none), devfs goes on /dev, and
- * /sbin/init (or init=path) runs as process 1, in single-user mode if
- * the command line says "single". Process 1 never exits.
+ * line names (root=vdN; vd0 if none), devfs goes on /dev and procfs on
+ * /proc, and /sbin/init (or init=path) runs as process 1, in
+ * single-user mode if the command line says "single". Process 1 never
+ * exits.
  */
 static void
 start_init(void)
@@ -67,6 +68,8 @@ start_init(void)
         if ((error = vfs_mount("devfs", "/dev", NULL)) != 0)
                 printf("init: cannot mount devfs on /dev: error %d\n",
                     error);
+        if ((error = vfs_mount("proc", "/proc", NULL)) != 0)
+                printf("init: cannot mount /proc: error %d\n", error);
         if ((error = proc_spawn_init(path, argv, envp, &pid)) != 0)
                 panic("cannot start %s: error %d", path, error);
         if (pid != 1)

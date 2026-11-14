@@ -64,6 +64,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/fs/fifofs/fifo_vnops.c \
                    sys/fs/tmpfs/tmpfs_vfsops.c \
                    sys/fs/devfs/devfs.c \
+                   sys/fs/procfs/procfs.c \
                    sys/fs/tmpfs/tmpfs_vnops.c \
                    sys/kern/subr_prf.c \
                    sys/kern/subr_selftest.c \

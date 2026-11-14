@@ -17,14 +17,16 @@
  *   p_stat, and the wait information; p_waitsv is waited on with it.
  * - p_lock (a mutex) protects a process's file table, directories, and
  *   break.
- * - p_as may be replaced only by the process itself (exec), so its own
- *   LWP reads it without a lock.
+ * - p_as may be replaced only by the process itself (exec, exit), under
+ *   proctree_lock, so its own LWP reads it without a lock and others
+ *   (/proc) with proctree_lock.
  * - p_cred is replaced under p_lock and p_crlock; see <sys/cred.h>.
  * - p_siglock (a spin lock, since signals are posted from interrupts)
  *   protects the signal state of the process and of its LWPs: actions,
  *   pending signals and their information, masks and alternate stacks,
- *   and the stop state; and the LWP list and every LWP's l_flags. It ranks above sync object locks, so a
- *   poster can interrupt the LWP's sleep while holding it.
+ *   and the stop state; and the LWP list and every LWP's l_flags. It
+ *   ranks above sync object locks, so a poster can interrupt the LWP's
+ *   sleep while holding it.
  */
 
 #ifndef _SYS_PROC_H_
@@ -50,6 +52,8 @@ struct trapframe;
 struct vnode;
 
 #define PSCOMSIZ        16      /* command name, with its terminator */
+#define PSARGSZ         80      /* the arguments, for /proc */
+#define PID_MAX         30000   /* process ids are 1 to PID_MAX - 1 */
 #define NOFILE_MAX      1024    /* open files per process */
 
 /* A set of signals inside the kernel: bit (sig - 1). */
@@ -195,6 +199,8 @@ struct proc {
         uint64_t        p_itival[2];    /* their intervals */
 
         char            p_comm[PSCOMSIZ];
+        char            p_psargs[PSARGSZ];      /* argv at exec, joined */
+        int64_t         p_start[2];     /* fork: seconds, ns since 1970 */
 };
 
 extern struct proc proc0;

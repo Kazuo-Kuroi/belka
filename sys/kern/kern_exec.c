@@ -519,11 +519,13 @@ exec_common(const char *path, struct execargs *ea)
         }
 
         /* The point of no return: switch to the new image. */
+        mutex_lock(&proctree_lock);     /* for others reading p_as */
         s = splhi();
         oas = p->p_as;
         p->p_as = nas;
         hat_activate(nas->a_hat);
         splx(s);
+        mutex_unlock(&proctree_lock);
         if (oas != NULL)
                 as_free(oas);
         VN_RELE(vp);            /* the mappings hold it */
@@ -549,6 +551,20 @@ exec_common(const char *path, struct execargs *ea)
         memset(p->p_comm, 0, PSCOMSIZ);
         for (size_t i = 0; i + 1 < PSCOMSIZ && base[i] != '\0'; i++)
                 p->p_comm[i] = base[i];
+        /* The arguments, joined by spaces, as /proc shows them. */
+        memset(p->p_psargs, 0, PSARGSZ);
+        {
+                size_t n = 0;
+                const char *a = ea->ea_buf;
+
+                for (int i = 0; i < ea->ea_argc && n + 1 < PSARGSZ; i++) {
+                        if (i > 0)
+                                p->p_psargs[n++] = ' ';
+                        for (; *a != '\0' && n + 1 < PSARGSZ; a++)
+                                p->p_psargs[n++] = *a;
+                        a += strlen(a) + 1;
+                }
+        }
         mutex_unlock(&p->p_lock);
         fd_close_exec(p);
         sig_exec(p);
