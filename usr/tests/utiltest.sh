@@ -1,0 +1,145 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-14
+# SPDX-License-Identifier: MIT
+#
+# The utilities (ksenon-utils) on Belka, run by usr/tests/boottest as
+# root on the booted test image. It uses nothing but the utilities and
+# the shell (mksh), and looks most at what rests on Belka's own calls:
+# df (statvfs, /dev/mnttab), touch (utimensat), nice, tty (ttyname),
+# chown, ln, and the device numbers ls shows. Their full suite, which
+# needs grep, sed and awk, runs on GNU/Linux.
+#
+# Prints "utiltest: N failures" and exits with N.
+
+PATH=/bin:/sbin:/usr/bin
+export PATH
+LC_ALL=C
+TZ=UTC0
+export LC_ALL TZ
+
+fail=0
+pass=0
+
+# check NAME EXPECTED COMMAND...: the command's output, with its last
+# newline removed, must be EXPECTED, and its status 0.
+check() {
+        name=$1
+        want=$2
+        shift 2
+        got=$("$@" 2>&1)
+        st=$?
+        if [ "$st" -eq 0 ] && [ "$got" = "$want" ]; then
+                pass=$((pass + 1))
+        else
+                fail=$((fail + 1))
+                echo "utiltest: FAIL $name: status $st, want [$want], got [$got]"
+        fi
+}
+
+# status NAME EXPECTED COMMAND...: only the exit status counts.
+status() {
+        name=$1
+        want=$2
+        shift 2
+        "$@" >/dev/null 2>&1
+        st=$?
+        if [ "$st" -eq "$want" ]; then
+                pass=$((pass + 1))
+        else
+                fail=$((fail + 1))
+                echo "utiltest: FAIL $name: status $st, want $want"
+        fi
+}
+
+# The words of a command's output, one per line, for picking fields.
+field() {
+        n=$1
+        shift
+        set -- $("$@")
+        eval "echo \${$n}"
+}
+
+work=/tmp/utiltest.$$
+mkdir "$work" || { echo "utiltest: cannot make $work"; exit 1; }
+cd "$work" || exit 1
+umask 022
+
+# Text.
+check echo "a b" echo a b
+check printf "x-5-0a" printf '%s-%d-%02x' x 5 10
+check basename "c" basename /a/b/c.txt .txt
+check dirname "/a/b" dirname /a/b/c
+check expr "7" expr 3 + 4
+status true 0 true
+status false 1 false
+printf 'pear\napple\npear\nfig\n' > fruit
+check cat "pear
+apple
+pear
+fig" cat fruit
+check sort "apple
+fig
+pear
+pear" sort fruit
+check "sort | uniq -c" "1 apple
+1 fig
+2 pear" sh -c 'sort fruit | uniq -c'
+check "wc -l" "4" sh -c 'wc -l < fruit'
+check head "pear" head -n 1 fruit
+check tail "fig" tail -n 1 fruit
+check cut "ea" sh -c 'head -n 1 fruit | cut -c 2-3'
+printf 'a\nb\n' > c1
+printf 'b\nc\n' > c2
+check comm "$(printf 'a\n\t\tb\n\tc')" comm c1 c2
+check paste "$(printf 'a\tb\nb\tc')" paste c1 c2
+check tr "PEAR" sh -c 'head -n 1 fruit | tr a-z A-Z'
+check od " 61 62 0a" sh -c 'printf "ab\n" | od -An -tx1 | tr -s " "'
+check dd "pe" sh -c 'dd if=fruit bs=1 count=2 2>/dev/null'
+check tee "hi" sh -c 'echo hi | tee t1 >/dev/null && cat t1'
+check env "FOO=bar" env -i FOO=bar /bin/env
+
+# Files and directories.
+check "mkdir -p, ls" "f" sh -c 'mkdir -p d/e && touch d/e/f && ls d/e'
+check "cp, cmp" "" sh -c 'cp fruit f2 && cmp fruit f2'
+check mv "f3" sh -c 'mv f2 f3 && ls f2 2>/dev/null; ls f3'
+check "ln, links" "2" field 2 sh -c 'ln fruit hard && ls -l hard'
+status "ln -s" 0 sh -c 'ln -s fruit soft && test -h soft'
+check "chmod, ls -l" "-rw-r-----" field 1 sh -c 'chmod 640 fruit && ls -l fruit'
+check "chown, ls -n" "100 100" sh -c 'chown 100:100 fruit && set -- $(ls -n fruit) && echo $3 $4'
+check chgrp "0" sh -c 'chgrp 0 fruit && set -- $(ls -n fruit) && echo $4'
+status mkfifo 0 sh -c 'mkfifo fifo && test -p fifo'
+status du 0 du -s d
+check "rm -r" "gone" sh -c 'rm -r d && test ! -d d && echo gone'
+check rmdir "" sh -c 'mkdir x && rmdir x'
+check pwd "$work" pwd
+
+# Times: touch -t through utimensat, as ls -l shows them.
+check "touch -t" "Jan 1 2010" sh -c 'touch -t 201001011200 t1 && set -- $(ls -l t1) && echo $6 $7 $8'
+check "touch -r" "Jan 1 2010" sh -c 'touch -r t1 t2 && set -- $(ls -l t2) && echo $6 $7 $8'
+
+# The mount table and statvfs.
+check "mnttab root" "vd0 / ext2fs" sh -c 'set -- $(head -n 1 /etc/mnttab) && echo $1 $2 $3'
+check "df -P /" "/" sh -c 'set -- $(df -P / | tail -n 1) && echo $6'
+check "df -P /dev" "/dev" sh -c 'set -- $(df -P /dev | tail -n 1) && echo $6'
+status "df blocks" 0 sh -c 'set -- $(df -P / | tail -n 1) && test "$2" -gt 0 && test "$4" -gt 0'
+
+# Devices, the terminal and processes.
+check "ls -l console" "c 1, 0" sh -c 'set -- $(ls -l /dev/console) && echo ${1%${1#?}} $5 $6'
+check "ls -l null" "2, 0" sh -c 'set -- $(ls -l /dev/null) && echo $5 $6'
+check "tty console" "/dev/console" sh -c 'tty </dev/console'
+status "tty not" 1 sh -c 'tty </dev/null'
+status "nice -n 5" 0 nice -n 5 true
+status "nice -n -5, root" 0 nice -n -5 true
+check "nice runs it" "ran" nice -n 19 sh -c 'echo ran'
+check "id -u" "0" id -u
+check "uname -s" "Belka" uname -s
+status date 0 date -u +%Y
+status sleep 0 sleep 1
+status who 0 who
+
+cd /
+rm -rf "$work"
+echo "utiltest: $pass passed, $fail failures"
+exit $fail

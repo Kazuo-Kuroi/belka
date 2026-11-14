@@ -3,14 +3,15 @@
 # Created: 2026-11-14
 # SPDX-License-Identifier: MIT
 #
-# The system programs on the root image (tools/mkroot.sh), all linked
-# statically against mlibc:
+# The system programs on the root image (tools/mkroot.sh), linked
+# statically against mlibc, and the utilities, most linked dynamically:
 #
 #   /sbin/init          NetBSD's (contrib/netbsd/sbin/init)
 #   /sbin/reboot, halt  Belka's (usr/sbin/reboot), through uadmin
 #   /usr/libexec/getty  Belka's (usr/sbin/getty)
 #   /usr/bin/login      NetBSD's (contrib/netbsd/usr.bin/login)
 #   /bin/sh, /bin/mksh  mksh R59c (contrib/mksh)
+#   /bin/ls, cat, ...  ksenon-utils (contrib/ksenon-utils), below
 #
 # The imported programs build over a small compat library of the BSD
 # interfaces mlibc lacks (usr/lib/compat), with NetBSD's getttyent and
@@ -158,18 +159,68 @@ sys-progs: $(SYS_PROGS)
 
 .PHONY: sys-progs
 
+# ksenon-utils, the 45 System V-style utilities (contrib/ksenon-utils,
+# its belka branch): built with their own flags (strict POSIX-2001/XSI)
+# and their own library, libxn, with lib/plat_belka.c, against mlibc
+# alone, without the compat library (see below for linking). cp and ln
+# are mv, chgrp is chown, and [ is test, as hard links on the image.
+XN              := contrib/ksenon-utils
+XN_OBJ          := $(SYS_OBJ)/xn
+XN_DIR          := $(SYS_DIR)/xn
+XN_CFLAGS       := -std=c99 -pedantic -D_POSIX_C_SOURCE=200112L \
+                   -D_XOPEN_SOURCE=600 -O2 -g -Wall -Wextra -Wshadow \
+                   -Wstrict-prototypes -Wmissing-prototypes -nostdinc \
+                   -isystem $(SYSROOT)/usr/include -isystem $(CC_INCLUDE) \
+                   -fno-stack-protector -fno-pic -fno-pie -I$(XN)/include
+XN_LIBSRCS      := getopt mode util walk plat_belka
+XN_PROGS        := basename cat chmod chown cmp comm cut date dd df dirname \
+                   du echo env expr false head id ls mkdir mkfifo mv nice \
+                   od paste printf pwd rm rmdir sleep sort tail tee test \
+                   touch tr true tty uname uniq wc who
+XN_LIB          := $(XN_DIR)/libxn.a
+XN_BINS         := $(addprefix $(XN_DIR)/,$(XN_PROGS))
+
+$(XN_OBJ)/%.o: $(XN)/lib/%.c $(XN)/include/xn.h $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(XN_CFLAGS) -c -o $@ $<
+
+$(XN_OBJ)/cmd/%.o: $(XN)/cmd/%.c $(XN)/include/xn.h $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(XN_CFLAGS) -c -o $@ $<
+
+$(XN_LIB): $(patsubst %,$(XN_OBJ)/%.o,$(XN_LIBSRCS))
+	@mkdir -p $(dir $@)
+	rm -f $@
+	ar rcs $@ $^
+
+# Linked dynamically against libc.so.1, as ksenon-utils' own Makefile
+# does, but for mv (and so cp and ln), which is static so that it still
+# runs while the shared libraries are being moved.
+$(XN_BINS): $(XN_DIR)/%: $(XN_OBJ)/cmd/%.o $(XN_LIB) $(MLIBC) \
+                $(MLIBC_SHARED) $(PROGRAM_BEGIN) $(PROGRAM_END) $(LD_DEPS)
+	$(if $(filter mv,$*),$(LINK_PROGRAM) $(LIBC_CRT0) $(PROGRAM_BEGIN) $< \
+	    $(XN_LIB) $(MLIBC),$(call LINK_DYNAMIC,$(DYN_INTERP),) \
+	    $(LIBC_CRT0) $(PROGRAM_BEGIN) $< $(XN_LIB) $(SYSLIB)/libc.so) \
+	    $(LIBC_RTLIB) $(PROGRAM_END) $(LIBC_CRTN)
+
+xn-progs: $(XN_BINS)
+
+.PHONY: xn-progs
+
 # The root images (tools/mkroot.sh): for "run", kept between boots and
 # made again when what goes in changes; for "test-boot", made afresh
 # for each boot.
 ROOT_IMG        := build/root-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
-ROOT_DEPS       := $(SYS_PROGS) $(MKPASSWD) tools/mkroot.sh \
+ROOT_DEPS       := $(SYS_PROGS) $(XN_BINS) $(LIBC_SOS) $(MKPASSWD) \
+                   tools/mkroot.sh \
                    $(wildcard etc/* etc/defaults/*)
 
 $(ROOT_IMG): $(ROOT_DEPS)
-	sh tools/mkroot.sh $@ $(SYS_DIR) $(MKPASSWD)
+	sh tools/mkroot.sh $@ $(SYS_DIR) $(MKPASSWD) $(LIBC_SODIR)
 
-MKROOT_TEST     = sh tools/mkroot.sh -t $(ROOT_TEST_IMG) $(SYS_DIR) $(MKPASSWD)
+MKROOT_TEST     = sh tools/mkroot.sh -t $(ROOT_TEST_IMG) $(SYS_DIR) $(MKPASSWD) \
+                  $(LIBC_SODIR)
 
 root-image: $(ROOT_IMG)
 

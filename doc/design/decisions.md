@@ -1482,8 +1482,60 @@ Recorded 2026-11-07.
   not marked secure, and the test user logged in to a shell with the
   user's IDs, home and name; then it halts. The run must show that and
   the console's getty, and the image must pass `e2fsck` afterwards.
-- **Not yet:** a utility set (no `ls` or `cat`), `rc.d`, a shadow
-  password file, utmp, `revoke`, `setlogin`, setting the host name.
+- **Not yet:** `rc.d`, a shadow password file, utmp, `revoke`,
+  `setlogin`, setting the host name. (The utilities came the same day;
+  see below.)
+
+## Utilities (2026-11-14)
+
+- **ksenon-utils,** the Ksenon system's own 45 System V-style
+  utilities (C99, POSIX-2001/XSI, MIT), are `/bin`'s: the
+  `contrib/ksenon-utils` submodule, on that repository's `belka` branch,
+  which adds `lib/plat_belka.c` (the mount table and device numbers).
+  They build with their own strict flags and their own `libxn`, against
+  mlibc alone, not the compat library. As their own Makefile does, all
+  but `mv` (and so `cp` and `ln`) are linked dynamically against
+  `libc.so.1`; `mv` is static, so that it runs while the libraries are
+  being moved. Their suite needs `grep`, `sed` and `awk`, so it runs on
+  GNU/Linux; on Belka, `usr/tests/utiltest.sh` (only the utilities and
+  the shell) runs from the boot test.
+- **Calls they brought:** `statvfs` and `fstatvfs` (UnixWare's 103 and
+  104; `<sys/statvfs.h>`, System V's struct with `f_basetype`, its
+  fields 64 bits wide), `utime` (30) and `utimensat` (Belka's 227:
+  nanoseconds, `UTIME_NOW`, `UTIME_OMIT`, `AT_SYMLINK_NOFOLLOW`; the
+  owner or the superuser sets any times, anyone who may write sets them
+  to now), `nice` (34) and `stime` (25).
+- **Nice values** are System V's, 0 to 39 with `NZERO` 20, per process
+  and inherited by `fork`. A process's LWPs share one time-share job,
+  whose weight index is 40 less the nice value, so the default stays at
+  index 20 and each step is about ten percent of the processor. Only the
+  superuser lowers it; `nice()` returns the new value less `NZERO`.
+- **The mount table is the kernel's,** as Solaris made it: devfs serves
+  `/dev/mnttab`, made afresh from the mount list on each read, in System
+  V's format (special, mount point, type, options, time, by tabs), and
+  `/etc/mnttab` on the image is a symbolic link to it. Each `struct vfs`
+  records its device (ext2 names it; others give their type), mount
+  point and time, and `VFS_RDONLY`, which `statvfs` reports as
+  `ST_RDONLY`. The console now has a device number of its own (major 1).
+- **mlibc** has the sysdeps, and `ttyname` from the device number
+  (`/dev/console`, `/dev/pts/N`), which `tty` uses and which login needs
+  to see that the console is marked secure; `clock_settime` sets the
+  time through `stime`, to the nearest second.
+- **The link-editor read its arguments out of order** on a glibc host:
+  glibc's `getopt()` permutes `argv`, so positional options (`-z
+  allextract`, `-B static`) came to apply to nothing. Its option string
+  now begins with `+`. That had left mlibc's regex functions out of
+  `libc.so.1`, which the utilities found.
+- **Tests:** `utiltest.sh` checks text tools, files, links, modes and
+  owners, times set by `touch -t`, the mount table and `df`, device
+  numbers in `ls -l`, `tty`, `nice`, and more. Making `utimensat` ignore
+  the modification time makes it fail.
+
+## Terminal descriptions (decided 2026-11-14)
+
+- **terminfo, not termcap,** when curses and full-screen programs come:
+  System V's compiled database, as SVR4 and UnixWare had and as curses
+  expects. Belka's getty needs neither.
 
 ## File systems
 

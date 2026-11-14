@@ -6,3 +6,7 @@
 	path = contrib/illumos-ld
 	url = https://github.com/Kazuo-Kuroi/illumos-ld.git
 	branch = main
+[submodule "contrib/ksenon-utils"]
+	path = contrib/ksenon-utils
+	url = git@github.com:Kazuo-Kuroi/ksenon-utils.git
+	branch = belka

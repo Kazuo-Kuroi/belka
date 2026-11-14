@@ -13,8 +13,9 @@ Design decisions are recorded in
 Requirements: GNU make, GCC or Clang, GNU binutils, GNU m4, `xorriso`,
 `curl`, QEMU, and OVMF; for the C library, muon (0.7 or later) and
 samurai. See [doc/qemu-setup.md](doc/qemu-setup.md). Run `git
-submodule update --init` first: the link-editor and the C library are
-submodules.
+submodule update --init` first: the link-editor, the C library and the
+utilities are submodules (the utilities' repository is reached over
+ssh).
 
 ```sh
 make                    # build build/amd64-gcc/belka
@@ -37,8 +38,10 @@ The system programs are built statically against mlibc and put on an
 ext2 root image by `tools/mkroot.sh` (it needs `fakeroot`): NetBSD's
 `init` and `login` (`contrib/netbsd`), mksh as `/bin/sh`
 (`contrib/mksh`), and Belka's own `getty` and `reboot`/`halt`
-(`usr/sbin`), over a small compat library (`usr/lib/compat`); `/etc`
-comes from `etc/`. `make sys-progs` builds the programs and `make
+(`usr/sbin`), over a small compat library (`usr/lib/compat`), and in
+`/bin` the Ksenon utilities, `ls`, `cat`, `cp` and the rest
+(`contrib/ksenon-utils`, mostly linked dynamically); `/etc` comes from
+`etc/`. `make sys-progs` builds the programs and `make
 root-image` the image. A normal boot (no `selftest` on the kernel
 command line) mounts that image as root and starts `/sbin/init`.
 

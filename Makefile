@@ -475,7 +475,7 @@ test-reboot: $(REBOOT_ISO) $(LIBC_BINS)
 # usr/tests/boottest run from /etc/rc.local on the test root image. It
 # halts through uadmin, which must leave the image clean; the console
 # must have shown init's getty.
-test-boot: $(BOOT_ISO) $(ROOT_DEPS) $(SYS_DIR)/boottest
+test-boot: $(BOOT_ISO) $(ROOT_DEPS) $(SYS_DIR)/boottest usr/tests/utiltest.sh
 	$(MKROOT_TEST)
 	QEMU_EXPECT="boottest: 0 failures$$(printf '\nlogin: ')" \
 	    sh tools/qemu-test.sh pass $(BUILD)/test-boot-serial.log \

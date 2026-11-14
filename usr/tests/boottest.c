@@ -10,7 +10,8 @@
  * NetBSD's init, Belka's getty, NetBSD's login and mksh.
  *
  * It checks that it runs as root under init (process 1) with /dev
- * mounted; that an orphan goes to init; and, on a pseudo-terminal, that
+ * mounted; that an orphan goes to init; that the utilities work
+ * (usr/tests/utiltest.sh); and, on a pseudo-terminal, that
  * getty and login turn away a wrong password, refuse root on a line
  * /etc/ttys does not mark secure, and log the test user in with the
  * right password, to a shell with the user's IDs, home and name. Then
@@ -193,6 +194,21 @@ test_orphan(void)
         close(p[0]);
 }
 
+/* The utilities, by usr/tests/utiltest.sh: it must find no failures. */
+static void
+test_utilities(void)
+{
+        pid_t pid;
+        int status = -1;
+
+        if ((pid = fork()) == 0) {
+                execl("/bin/sh", "sh", "/usr/tests/utiltest.sh", (char *)NULL);
+                _exit(127);
+        }
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 /* Logins through getty and login on a pseudo-terminal. */
 static void
 test_login(const char *user, const char *password, const char *uid,
@@ -242,6 +258,7 @@ main(int argc, char **argv)
         setvbuf(stdout, NULL, _IONBF, 0);
         test_setting();
         test_orphan();
+        test_utilities();
         test_login(argv[1], argv[2], argv[3], argv[4]);
         printf("boottest: %d failures\n", failures);
         /* Let init start the console's getty, then stop the system. */

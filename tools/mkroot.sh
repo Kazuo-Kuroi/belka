@@ -7,7 +7,8 @@
 # Build a root file system image (ext2) that boots to init and logins:
 #
 #   /sbin/init, reboot, halt    /usr/libexec/getty    /usr/bin/login
-#   /bin/sh (mksh), /bin/mksh   /etc from the tree's etc/
+#   /bin/sh (mksh), /bin/mksh   /bin/ls, cat, cp ... (ksenon-utils)
+#   /etc from the tree's etc/, with /etc/mnttab a link to /dev/mnttab
 #   /dev (devfs is mounted on it), /tmp, /root
 #
 # Everything is owned by root, and login is set-user-ID, through
@@ -17,7 +18,10 @@
 # password hashed with mkpasswd) and an /etc/rc.local that runs
 # /usr/tests/boottest in the background as the system comes up.
 #
-# usage: mkroot.sh [-t] image sysdir mkpasswd
+# The utilities but mv are dynamic, so /usr/lib64 gets the runtime
+# linker and libc.so.1 from libdir.
+#
+# usage: mkroot.sh [-t] image sysdir mkpasswd libdir
 #
 
 set -eu
@@ -27,13 +31,14 @@ if [ "${1:-}" = -t ]; then
         test=1
         shift
 fi
-if [ $# -ne 3 ]; then
-        echo "usage: $0 [-t] image sysdir mkpasswd" >&2
+if [ $# -ne 4 ]; then
+        echo "usage: $0 [-t] image sysdir mkpasswd libdir" >&2
         exit 1
 fi
 img=$1
 sys=$2
 mkpasswd=$3
+libdir=$4
 MKE2FS=${MKE2FS:-/sbin/mke2fs}
 FAKEROOT=${FAKEROOT:-fakeroot}
 STRIP=${STRIP:-strip}
@@ -42,7 +47,7 @@ src=$(mktemp -d)
 trap 'rm -rf "$src"' EXIT
 
 mkdir -p "$src/bin" "$src/sbin" "$src/usr/bin" "$src/usr/libexec" \
-    "$src/usr/tests" "$src/etc/defaults" "$src/dev" "$src/tmp" \
+    "$src/usr/tests" "$src/usr/lib64" "$src/etc/defaults" "$src/dev" "$src/tmp" \
     "$src/root" "$src/home"
 
 install_prog() {        # program destination
@@ -56,12 +61,35 @@ install_prog login usr/bin/login
 install_prog mksh bin/mksh
 ln "$src/bin/mksh" "$src/bin/sh"
 
+# The utilities (ksenon-utils): cp and ln are mv, chgrp is chown, [ is
+# test.
+for prog in "$sys"/xn/*; do
+        name=${prog##*/}
+        case $name in
+        *.a)    continue ;;
+        esac
+        # GNU strip mangles the illumos link-editor's dynamic objects.
+        if [ "$name" = mv ]; then
+                install_prog "xn/$name" "bin/$name"
+        else
+                cp "$prog" "$src/bin/$name"
+        fi
+done
+ln "$src/bin/mv" "$src/bin/cp"
+ln "$src/bin/mv" "$src/bin/ln"
+ln "$src/bin/chown" "$src/bin/chgrp"
+ln "$src/bin/test" "$src/bin/["
+cp "$libdir/ld.so.1" "$libdir/libc.so.1" "$src/usr/lib64/"
+
 for f in rc rc.conf ttys passwd group shells defaults/rc.conf; do
         cp "etc/$f" "$src/etc/$f"
 done
+# The mount table is the kernel's (devfs).
+ln -s ../dev/mnttab "$src/etc/mnttab"
 
 if [ $test -eq 1 ]; then
         install_prog boottest usr/tests/boottest
+        cp usr/tests/utiltest.sh "$src/usr/tests/utiltest.sh"
         hash=$("$mkpasswd" belka-test '$sha1$24680$belkatst$')
         echo "test:$hash:100:100:Boot test:/home/test:/bin/sh" \
             >> "$src/etc/passwd"
@@ -84,5 +112,5 @@ $FAKEROOT sh -c '
         if [ -d "$src/home/test" ]; then
                 chown 100:100 "$src/home/test"
         fi
-        "$2" -q -F -t ext2 -b 4096 -N 4096 -L belkaroot -d "$src" "$3" 64M
+        "$2" -q -F -t ext2 -b 4096 -N 4096 -L belkaroot -d "$src" "$3" 128M
 ' sh "$src" "$MKE2FS" "$img"
