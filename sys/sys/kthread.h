@@ -89,6 +89,7 @@ struct kthread {
         struct kthread  *kt_jobnext;    /* other threads of the job */
         int             kt_tsboost;     /* handed-off mutexes held (TS) */
         uint64_t        kt_ticks;       /* ticks spent running */
+        uint64_t        kt_uticks;      /* of them, in user mode */
         uint64_t        kt_lastrun;     /* lbolt when its last turn ended */
 
         /* Run queue linkage. */
@@ -157,7 +158,7 @@ int mutex_inherited_pri(const struct kthread *);
 void sched_init(void);
 void sched_cpu_init(struct cpu_info *, struct kthread *);
 void sched_idle(void) __dead;
-void sched_tick(void);
+void sched_tick(int);
 void sched_preempt_check(void);
 void swtch(int);
 void cpu_switch_md(struct kthread *, struct kthread *);

@@ -31,18 +31,30 @@ sys_exit(const uint64_t *args, uint64_t *rv __unused)
         proc_exit(CLD_EXITED, (int)(args[0] & 0xff));
 }
 
+static void
+wait_found(siginfo_t *si, const struct proc *c, int code, int data)
+{
+        si->si_signo = SIGCHLD;
+        si->si_code = code;
+        si->si_pid = c->p_pid;
+        si->si_status = data;
+}
+
 /*
  * Wait for a child matching idtype and id to exit, or, as options ask,
- * to stop or continue. Returns 0 with its process id (0 if WNOHANG and
- * nothing has happened yet), code, and status. A signal ends the wait
- * with EINTR, or ERESTART if its handler asked for restarts; a stop and
- * continue of the waiter just goes back to waiting.
+ * to stop or continue. Returns 0 with *si as waitsys() reports it:
+ * SIGCHLD, the code, process id, and status, and for an exit the
+ * child's processor time; all zero if WNOHANG and nothing has happened
+ * yet. A signal ends the wait with EINTR, or ERESTART if its handler
+ * asked for restarts; a stop and continue of the waiter just goes back
+ * to waiting.
  */
 static int
-wait_common(int idtype, pid_t id, int options, pid_t *pidp, int *codep,
-    int *datap)
+wait_common(int idtype, pid_t id, int options, siginfo_t *si)
 {
         struct proc *p = curproc;
+
+        memset(si, 0, sizeof(*si));
 
         if (idtype != P_PID && idtype != P_PGID && idtype != P_ALL)
                 return EINVAL;
@@ -61,9 +73,8 @@ wait_common(int idtype, pid_t id, int options, pid_t *pidp, int *codep,
                                 continue;
                         found = 1;
                         if (c->p_stat == SZOMB && (options & WEXITED) != 0) {
-                                *pidp = c->p_pid;
-                                *codep = c->p_wcode;
-                                *datap = c->p_wdata;
+                                wait_found(si, c, c->p_wcode, c->p_wdata);
+                                proc_zombie_times(c, si);
                                 if ((options & WNOWAIT) != 0)
                                         mutex_unlock(&proctree_lock);
                                 else
@@ -73,18 +84,14 @@ wait_common(int idtype, pid_t id, int options, pid_t *pidp, int *codep,
                         if (c->p_stat == SZOMB)
                                 continue;
                         if (c->p_wstop && (options & WSTOPPED) != 0) {
-                                *pidp = c->p_pid;
-                                *codep = CLD_STOPPED;
-                                *datap = c->p_stopsig;
+                                wait_found(si, c, CLD_STOPPED, c->p_stopsig);
                                 if ((options & WNOWAIT) == 0)
                                         c->p_wstop = 0;
                                 mutex_unlock(&proctree_lock);
                                 return 0;
                         }
                         if (c->p_wcont && (options & WCONTINUED) != 0) {
-                                *pidp = c->p_pid;
-                                *codep = CLD_CONTINUED;
-                                *datap = SIGCONT;
+                                wait_found(si, c, CLD_CONTINUED, SIGCONT);
                                 if ((options & WNOWAIT) == 0)
                                         c->p_wcont = 0;
                                 mutex_unlock(&proctree_lock);
@@ -97,7 +104,6 @@ wait_common(int idtype, pid_t id, int options, pid_t *pidp, int *codep,
                 }
                 if ((options & WNOHANG) != 0) {
                         mutex_unlock(&proctree_lock);
-                        *pidp = 0;
                         return 0;
                 }
                 /*
@@ -125,15 +131,15 @@ wait_common(int idtype, pid_t id, int options, pid_t *pidp, int *codep,
 int
 sys_wait(const uint64_t *args __unused, uint64_t *rv)
 {
-        pid_t pid;
-        int code, data, error;
+        siginfo_t si;
+        int error;
 
-        if ((error = wait_common(P_ALL, 0, WEXITED | WTRAPPED, &pid, &code,
-            &data)) != 0)
+        if ((error = wait_common(P_ALL, 0, WEXITED | WTRAPPED, &si)) != 0)
                 return error;
-        rv[0] = (uint64_t)pid;
-        rv[1] = code == CLD_EXITED ? (uint64_t)(data & 0xff) << 8 :
-            (uint64_t)(data & 0x7f);
+        rv[0] = (uint64_t)si.si_pid;
+        rv[1] = si.si_code == CLD_EXITED ?
+            (uint64_t)(si.si_status & 0xff) << 8 :
+            (uint64_t)(si.si_status & 0x7f);
         return 0;
 }
 
@@ -142,19 +148,11 @@ int
 sys_waitsys(const uint64_t *args, uint64_t *rv __unused)
 {
         siginfo_t si;
-        pid_t pid;
-        int code = 0, data = 0, error;
+        int error;
 
         if ((error = wait_common((int)args[0], (pid_t)args[1], (int)args[3],
-            &pid, &code, &data)) != 0)
+            &si)) != 0)
                 return error;
-        memset(&si, 0, sizeof(si));
-        if (pid != 0) {
-                si.si_signo = SIGCHLD;
-                si.si_code = code;
-                si.si_pid = pid;
-                si.si_status = data;
-        }
         if (args[2] != 0)
                 error = copyout(&si, (void *)(uintptr_t)args[2], sizeof(si));
         return error;

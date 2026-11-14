@@ -319,6 +319,20 @@ proc_wait(pid_t pid, int *codep, int *datap)
 }
 
 /*
+ * A zombie's processor time, with that of the children it reaped, as
+ * its SIGCHLD and waitsys() report it: user and system, in ticks.
+ */
+void
+proc_zombie_times(const struct proc *c, siginfo_t *si)
+{
+        uint64_t all = c->p_ticks + c->p_cticks;
+        uint64_t user = c->p_uticks + c->p_cuticks;
+
+        si->si_utime = (int64_t)user;
+        si->si_stime = (int64_t)(all - user);
+}
+
+/*
  * Reap a zombie child for wait: collect its status and free it.
  * proctree_lock is held and is released.
  */
@@ -327,6 +341,7 @@ proc_reap_locked(struct proc *c)
 {
         /* The parent's children's time, as times() reports it. */
         c->p_parent->p_cticks += c->p_ticks + c->p_cticks;
+        c->p_parent->p_cuticks += c->p_uticks + c->p_cuticks;
         proc_unlink(c);
         mutex_unlock(&proctree_lock);
         proc_free(c);
@@ -394,6 +409,7 @@ proc_exit(int code, int data)
          */
         s = spin_lock(&p->p_siglock);
         p->p_ticks += curthread->kt_ticks;
+        p->p_uticks += curthread->kt_uticks;
         p->p_lwps = NULL;
         p->p_nlwp = 0;
         curthread->kt_sigpend = 0;

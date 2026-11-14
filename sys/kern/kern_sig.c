@@ -528,6 +528,7 @@ sig_child_exit(struct proc *child, int code, int data)
         si.si_code = code;
         si.si_pid = child->p_pid;
         si.si_status = data;
+        proc_zombie_times(child, &si);
         sigtoproc(pp, SIGCHLD, &si);
         return nowait;
 }

@@ -84,7 +84,7 @@ rlimit_cpu_check(void)
         if (p->p_cpucheck != 0)
                 p->p_cpucheck = lbolt + HZ;
         mutex_unlock(&p->p_lock);
-        secs = proc_ticks(p) / HZ;
+        secs = proc_ticks(p, NULL) / HZ;
         if (lim.rlim_max != RLIM_INFINITY && secs >= lim.rlim_max)
                 psignal(p, SIGKILL);
         else if (lim.rlim_cur != RLIM_INFINITY && secs >= lim.rlim_cur)
@@ -143,30 +143,40 @@ sys_setrlimit(const uint64_t *args, uint64_t *rv __unused)
         return 0;
 }
 
+static void
+ticks_to_rt(uint64_t ticks, struct rusage_time *rt)
+{
+        rt->tv_sec = (int64_t)(ticks / HZ);
+        rt->tv_usec = (int64_t)(ticks % HZ) * (1000000 / HZ);
+}
+
 /*
  * getrusage(who, struct rusage *), Belka's own: the processor time of
  * the process (RUSAGE_SELF) or of its reaped children
- * (RUSAGE_CHILDREN), all as user time; the other fields are zero.
+ * (RUSAGE_CHILDREN), user and system; the other fields are zero.
  */
 int
 sys_getrusage(const uint64_t *args, uint64_t *rv __unused)
 {
         struct proc *p = curproc;
         struct rusage ru;
-        uint64_t ticks;
+        uint64_t all, user;
 
         switch ((int)args[0]) {
         case RUSAGE_SELF:
-                ticks = proc_ticks(p);
+                all = proc_ticks(p, &user);
                 break;
         case RUSAGE_CHILDREN:
-                ticks = p->p_cticks;
+                mutex_lock(&proctree_lock);
+                all = p->p_cticks;
+                user = p->p_cuticks;
+                mutex_unlock(&proctree_lock);
                 break;
         default:
                 return EINVAL;
         }
         memset(&ru, 0, sizeof(ru));
-        ru.ru_utime.tv_sec = (int64_t)(ticks / HZ);
-        ru.ru_utime.tv_usec = (int64_t)(ticks % HZ) * (1000000 / HZ);
+        ticks_to_rt(user, &ru.ru_utime);
+        ticks_to_rt(all - user, &ru.ru_stime);
         return copyout(&ru, (void *)(uintptr_t)args[1], sizeof(ru));
 }

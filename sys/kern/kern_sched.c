@@ -467,13 +467,14 @@ sched_recompute(struct kthread *kt)
 }
 
 /*
- * Clock tick on every processor, from the timer interrupt: let the
- * running thread's class account for the tick, charge its time slice
- * unless the class is unsliced, and on one processor per tick, in
- * rotation, redistribute time-share credit.
+ * Clock tick on every processor, from the timer interrupt, which came
+ * from user mode if user is set: charge the tick to the running thread
+ * as user or system time, let its class account for it, charge its
+ * time slice unless the class is unsliced, and on one processor per
+ * tick, in rotation, redistribute time-share credit.
  */
 void
-sched_tick(void)
+sched_tick(int user)
 {
         struct cpu_info *ci = curcpu();
         struct schedcpu *sc = &ci->ci_sched;
@@ -492,6 +493,8 @@ sched_tick(void)
         }
 
         kt->kt_ticks++;
+        if (user)
+                kt->kt_uticks++;
         (void)thread_lock(kt);
         cl = kt->kt_class;
         if (cl != NULL && cl->cl_tick != NULL)

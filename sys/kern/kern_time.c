@@ -9,9 +9,11 @@
  * clock_getres() (Belka's, 210 and 211: UnixWare 2 has no POSIX
  * clocks), times() (UnixWare's 43), and sched_yield() (212).
  *
- * Processor time is counted in clock ticks, all of it as user time: a
- * process's is the ticks of the LWPs that have exited (p_ticks) and of
- * those still running (their kt_ticks).
+ * Processor time is counted in clock ticks: each tick is charged to the
+ * thread it interrupts, as user time if it came from user mode and as
+ * system time otherwise. A process's is the ticks of the LWPs that
+ * have exited (p_ticks, p_uticks) and of those still running (their
+ * kt_ticks, kt_uticks).
  */
 
 #include <stddef.h>
@@ -29,19 +31,28 @@
 
 #include <machine/md_var.h>
 
-/* The processor time of p's LWPs, exited and live, in ticks. */
+/*
+ * The processor time of p's LWPs, exited and live, in ticks; *utp, if
+ * not NULL, gets the part of it spent in user mode.
+ */
 uint64_t
-proc_ticks(struct proc *p)
+proc_ticks(struct proc *p, uint64_t *utp)
 {
-        uint64_t t;
+        uint64_t t, ut;
         int s = spin_lock(&p->p_siglock);
 
         t = p->p_ticks;
+        ut = p->p_uticks;
         for (struct lwp *l = p->p_lwps; l != NULL; l = l->l_next) {
-                if (l->l_kthread != NULL)
+                if (l->l_kthread != NULL) {
                         t += l->l_kthread->kt_ticks;
+                        ut += l->l_kthread->kt_uticks;
+                }
         }
         spin_unlock(&p->p_siglock, s);
+        /* A tick on another processor may land between the two reads. */
+        if (utp != NULL)
+                *utp = ut < t ? ut : t;
         return t;
 }
 
@@ -70,7 +81,7 @@ sys_clock_gettime(const uint64_t *args, uint64_t *rv __unused)
                 ns_to_ts(gethrtime(), &ts);
                 break;
         case CLOCK_PROCESS_CPUTIME_ID:
-                ns_to_ts(proc_ticks(curproc) * (NANOSEC / HZ), &ts);
+                ns_to_ts(proc_ticks(curproc, NULL) * (NANOSEC / HZ), &ts);
                 break;
         case CLOCK_THREAD_CPUTIME_ID:
                 ns_to_ts(curthread->kt_ticks * (NANOSEC / HZ), &ts);
@@ -115,12 +126,16 @@ sys_times(const uint64_t *args, uint64_t *rv)
 {
         struct proc *p = curproc;
         struct tms t;
+        uint64_t all, user;
         int error;
 
-        t.tms_utime = (int64_t)proc_ticks(p);
-        t.tms_stime = 0;
-        t.tms_cutime = (int64_t)p->p_cticks;
-        t.tms_cstime = 0;
+        all = proc_ticks(p, &user);
+        t.tms_utime = (int64_t)user;
+        t.tms_stime = (int64_t)(all - user);
+        mutex_lock(&proctree_lock);
+        t.tms_cutime = (int64_t)p->p_cuticks;
+        t.tms_cstime = (int64_t)(p->p_cticks - p->p_cuticks);
+        mutex_unlock(&proctree_lock);
         if ((error = copyout(&t, (void *)(uintptr_t)args[0], sizeof(t))) != 0)
                 return error;
         rv[0] = lbolt;

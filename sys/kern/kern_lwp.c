@@ -230,6 +230,7 @@ lwp_exit(void)
         p->p_nlwp--;
         p->p_lwpleaving++;
         p->p_ticks += curthread->kt_ticks;
+        p->p_uticks += curthread->kt_uticks;
         zombie = (l->l_flags & (LW_DETACHED | LW_DESTROY)) == 0 &&
             (p->p_lwpflags & PL_SINGLE) == 0;
         /*
@@ -492,16 +493,19 @@ sys_lwpself(const uint64_t *args __unused, uint64_t *rv)
         return 0;
 }
 
-/* _lwp_info(struct lwpinfo *): time used, as far as it is kept. */
+/* _lwp_info(struct lwpinfo *): the calling LWP's user and system time. */
 int
 sys_lwpinfo(const uint64_t *args, uint64_t *rv __unused)
 {
         struct lwpinfo li;
-        uint64_t ticks = curthread->kt_ticks;
+        uint64_t user = curthread->kt_uticks;
+        uint64_t sys = curthread->kt_ticks - user;
 
         memset(&li, 0, sizeof(li));
-        li.lwp_utime_sec = (int64_t)(ticks / HZ);
-        li.lwp_utime_nsec = (int64_t)(ticks % HZ) * (1000000000 / HZ);
+        li.lwp_utime_sec = (int64_t)(user / HZ);
+        li.lwp_utime_nsec = (int64_t)(user % HZ) * (1000000000 / HZ);
+        li.lwp_stime_sec = (int64_t)(sys / HZ);
+        li.lwp_stime_nsec = (int64_t)(sys % HZ) * (1000000000 / HZ);
         return copyout(&li, (void *)(uintptr_t)args[0], sizeof(li));
 }
 

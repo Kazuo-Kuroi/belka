@@ -387,7 +387,7 @@ intr_dispatch(struct trapframe *tf)
                 lapic_eoi();
                 if (ci == &cpu_info_primary)
                         clock();
-                sched_tick();
+                sched_tick((tf->tf_cs & SEL_RPL_MASK) == SEL_UPL);
                 break;
         case IPI_RESCHED_VECTOR:
                 ci->ci_sched.sc_want_resched = 1;

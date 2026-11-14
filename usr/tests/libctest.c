@@ -394,6 +394,101 @@ burn_cpu(long ms)
         } while (cpu_ms() - c0 < ms && mono_ms() - t0 < 20000);
 }
 
+/*
+ * Spend about ms of processor time in the kernel: copies out of
+ * /dev/zero, a megabyte at a time.
+ */
+static void
+burn_sys(long ms)
+{
+        static char buf[1 << 20];
+        struct tms t0, t;
+        long w0 = mono_ms();
+        int fd = open("/dev/zero", O_RDONLY);
+
+        if (fd < 0)
+                return;
+        times(&t0);
+        do {
+                if (read(fd, buf, sizeof(buf)) != (ssize_t)sizeof(buf))
+                        break;
+                times(&t);
+        } while ((t.tms_stime - t0.tms_stime) * 10 < ms &&
+            mono_ms() - w0 < 20000);
+        close(fd);
+}
+
+static long
+tv_ticks(const struct timeval *tv)
+{
+        return tv->tv_sec * 100 + tv->tv_usec / 10000;
+}
+
+/*
+ * User and system time apart: spinning counts as user time, copying in
+ * the kernel as system time, for this process (times, getrusage), for a
+ * reaped child (times, getrusage), and for the child wait4 returns.
+ */
+static void
+test_cpu_split(void)
+{
+        struct tms t0, t1, t2;
+        struct rusage ru;
+        int status;
+        pid_t pid;
+
+        times(&t0);
+        burn_cpu(200);
+        times(&t1);
+        burn_sys(200);
+        times(&t2);
+        if (t1.tms_utime - t0.tms_utime < 16 ||
+            (t1.tms_stime - t0.tms_stime) * 4 > t1.tms_utime - t0.tms_utime ||
+            t2.tms_stime - t1.tms_stime < 16 ||
+            (t2.tms_utime - t1.tms_utime) * 4 > t2.tms_stime - t1.tms_stime)
+                printf("libctest: cpu split: user %ld+%ld system %ld+%ld\n",
+                    (long)(t1.tms_utime - t0.tms_utime),
+                    (long)(t2.tms_utime - t1.tms_utime),
+                    (long)(t1.tms_stime - t0.tms_stime),
+                    (long)(t2.tms_stime - t1.tms_stime));
+        CHECK(t1.tms_utime - t0.tms_utime >= 16);
+        CHECK((t1.tms_stime - t0.tms_stime) * 4 <=
+            t1.tms_utime - t0.tms_utime);
+        CHECK(t2.tms_stime - t1.tms_stime >= 16);
+        CHECK((t2.tms_utime - t1.tms_utime) * 4 <=
+            t2.tms_stime - t1.tms_stime);
+
+        /* getrusage agrees with times, give or take the ticks since. */
+        CHECK(getrusage(RUSAGE_SELF, &ru) == 0);
+        CHECK(tv_ticks(&ru.ru_utime) >= (long)t2.tms_utime &&
+            tv_ticks(&ru.ru_utime) - (long)t2.tms_utime < 50);
+        CHECK(tv_ticks(&ru.ru_stime) >= (long)t2.tms_stime &&
+            tv_ticks(&ru.ru_stime) - (long)t2.tms_stime < 50);
+
+        /* A child's: wait4 reports its own, times its parent's total. */
+        times(&t0);
+        pid = fork();
+        if (pid == 0) {
+                burn_cpu(100);
+                burn_sys(200);
+                _exit(0);
+        }
+        memset(&ru, 0, sizeof(ru));
+        CHECK(pid > 0 && wait4(pid, &status, 0, &ru) == pid &&
+            WIFEXITED(status));
+        times(&t1);
+        if (tv_ticks(&ru.ru_utime) < 8 || tv_ticks(&ru.ru_stime) < 16)
+                printf("libctest: cpu split: child user %ld system %ld\n",
+                    tv_ticks(&ru.ru_utime), tv_ticks(&ru.ru_stime));
+        CHECK(tv_ticks(&ru.ru_utime) >= 8 && tv_ticks(&ru.ru_stime) >= 16);
+        CHECK(tv_ticks(&ru.ru_utime) < tv_ticks(&ru.ru_stime));
+        CHECK(t1.tms_cutime - t0.tms_cutime == tv_ticks(&ru.ru_utime));
+        CHECK(t1.tms_cstime - t0.tms_cstime == tv_ticks(&ru.ru_stime));
+        CHECK(getrusage(RUSAGE_CHILDREN, &ru) == 0 &&
+            tv_ticks(&ru.ru_utime) == (long)t1.tms_cutime &&
+            tv_ticks(&ru.ru_stime) == (long)t1.tms_cstime);
+}
+
 /* The clocks, sleeping, processor time, and sched_yield(). */
 static void
 test_clocks(void)
@@ -473,6 +568,7 @@ test_clocks(void)
         CHECK(t1.tms_cutime - t0.tms_cutime >= 8);
 
         CHECK(sched_yield() == 0);
+        test_cpu_split();
 }
 
 static volatile int got_sigpipe;
@@ -1057,8 +1153,9 @@ test_rlimits(void)
                 long ticks;
 
                 CHECK(getrusage(RUSAGE_CHILDREN, &ru) == 0 &&
-                    ru.ru_utime.tv_sec >= 2 && ru.ru_utime.tv_usec >= 0 &&
-                    ru.ru_utime.tv_usec < 1000000);
+                    tv_ticks(&ru.ru_utime) + tv_ticks(&ru.ru_stime) >= 200 &&
+                    ru.ru_utime.tv_usec >= 0 && ru.ru_utime.tv_usec < 1000000 &&
+                    ru.ru_stime.tv_usec >= 0 && ru.ru_stime.tv_usec < 1000000);
                 times(&tms);
                 CHECK(getrusage(RUSAGE_SELF, &ru) == 0);
                 ticks = ru.ru_utime.tv_sec * 100 + ru.ru_utime.tv_usec / 10000;

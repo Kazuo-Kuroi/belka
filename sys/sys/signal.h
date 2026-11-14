@@ -76,6 +76,8 @@ typedef struct siginfo {
                         int32_t _uid;
                         int32_t _status;        /* SIGCHLD */
                         int32_t _pad;
+                        int64_t _utime;         /* SIGCHLD, exited: ticks */
+                        int64_t _stime;
                 } _proc;
                 struct {
                         uint64_t _addr;         /* faults */
@@ -87,6 +89,8 @@ typedef struct siginfo {
 #define si_pid          _data._proc._pid
 #define si_uid          _data._proc._uid
 #define si_status       _data._proc._status
+#define si_utime        _data._proc._utime
+#define si_stime        _data._proc._stime
 #define si_addr         _data._fault._addr
 
 /* si_code: sent by a process (kill), or by the kernel for a reason. */

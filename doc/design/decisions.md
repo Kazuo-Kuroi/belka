@@ -1378,6 +1378,35 @@ Recorded 2026-11-07.
   control), packet mode, BSD-style `/dev/ptyXX`, and an init and login
   that set up sessions on terminals.
 
+## Processor time (2026-11-14)
+
+- **Sampled at the clock tick,** in the System V manner: each tick is
+  charged to the thread it interrupts, as user time if the interrupted
+  code was in user mode (`%cs` at privilege 3) and as system time
+  otherwise, interrupt handling included. A thread keeps `kt_ticks` and
+  `kt_uticks`; a process keeps the same for its exited LWPs and for its
+  reaped children. The resolution is the tick (10 ms); precise
+  accounting at kernel entry and exit was not needed yet.
+- **Reported by** `times`, `getrusage`, `_lwp_info`, and, for an exited
+  child, the `si_utime` and `si_stime` of the `SIGCHLD` and `waitsys`
+  `siginfo_t` (clock ticks; the child's own time with that of the
+  children it reaped). The C library's `wait3` and `wait4` fill
+  `ru_utime` and `ru_stime` from there; the other `rusage` fields are
+  zero. Stopped and continued children report no time.
+- **The CPU limit and the CPU-time clocks** count user and system time
+  together.
+- **Tests:** `libctest` spins (user time) and copies from `/dev/zero`
+  (system time), and checks each lands on its side in `times`,
+  `getrusage` and `wait4`. Counting every tick as user time makes it
+  fail.
+
+## Init (decided 2026-11-14)
+
+- **BSD-style init and rc,** not System V's `inittab` and run levels:
+  `/etc/rc` with `rc.conf` and `rc.d` scripts, single user and multi
+  user only. NetBSD's `init` and rc system may be imported (their BSD
+  licences, kept with the code) rather than written afresh.
+
 ## File systems
 
 1. **tmpfs**, for testing.
