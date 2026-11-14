@@ -1,0 +1,64 @@
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-14
+# SPDX-License-Identifier: MIT
+#
+# A session at the serial console, for tools/condrive (make
+# test-console): log in as root on the console, which /etc/ttys marks
+# secure; use the shell as a person would, with line editing, ^C and job
+# control; log out and back in; and halt.
+
+expect login:\x20 60000
+send root\r
+expect #\x20 15000
+
+# /etc/profile, and the console as the terminal.
+send echo "<$PATH>"\r
+expect </sbin:/usr/sbin:/bin:/usr/bin>
+send tty\r
+expect /dev/console
+send echo $((6 * 7))\r
+expect 42
+
+# Line editing: ^P twice brings back the line before last.
+send a=5\r
+send echo $((a * 111))\r
+expect 555
+send a=7\r
+send \x10\x10\r
+expect 777
+
+# ^C stops a command in the foreground; the shell carries on. (/bin/sleep:
+# mksh's own sleep is built in, and runs in the shell itself.)
+send /bin/sleep 30\r
+sleep 1000
+send \x03
+expect #\x20
+send echo "st=$?"\r
+expect st=130
+
+# ^Z stops it (mksh names the signal, from mlibc's strsignal); fg
+# continues it; ^C ends it.
+send /bin/sleep 30\r
+sleep 1000
+send \x1a
+expect SIGTSTP
+send jobs\r
+expect /bin/sleep 30
+send fg\r
+expect /bin/sleep 30
+sleep 500
+send \x03
+send echo "done-$((1 + 1))"\r
+expect done-2
+
+# Out, and in again: init starts a new getty.
+send exit\r
+expect login:\x20 15000
+send root\r
+expect #\x20 15000
+send ls -l /etc/mnttab\r
+expect -> ../dev/mnttab
+
+# Stop the system.
+send halt\r
+expect halted 30000

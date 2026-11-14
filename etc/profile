@@ -1,0 +1,18 @@
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-14
+# SPDX-License-Identifier: MIT
+#
+# /etc/profile: read by every login shell before the user's own
+# ~/.profile.
+
+PATH=/bin:/usr/bin
+if [ "$(id -u)" -eq 0 ]; then
+        PATH=/sbin:/usr/sbin:$PATH
+fi
+export PATH
+
+: "${TERM:=vt100}"
+export TERM
+
+umask 022

@@ -81,7 +81,7 @@ ln "$src/bin/chown" "$src/bin/chgrp"
 ln "$src/bin/test" "$src/bin/["
 cp "$libdir/ld.so.1" "$libdir/libc.so.1" "$src/usr/lib64/"
 
-for f in rc rc.conf ttys passwd group shells defaults/rc.conf; do
+for f in rc rc.conf ttys passwd group shells profile defaults/rc.conf; do
         cp "etc/$f" "$src/etc/$f"
 done
 # The mount table is the kernel's (devfs).

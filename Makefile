@@ -414,6 +414,9 @@ ext2-images: $(LIBC_BINS)
 # A normal boot to a login prompt on the serial console, with the root
 # image; "root" has no password. "run-selftest" boots the self-tests.
 run: $(ISO) $(ROOT_IMG)
+	@# A boot that did not end in halt leaves the image dirty, which the
+	@# kernel mounts read-only; repair it here, as Belka has no fsck yet.
+	$(E2FSCK) -p $(ROOT_IMG) || [ $$? -le 1 ]
 	$(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_IMG)) -cdrom $(ISO) \
 	    -serial mon:stdio
 
@@ -482,7 +485,26 @@ test-boot: $(BOOT_ISO) $(ROOT_DEPS) $(SYS_DIR)/boottest usr/tests/utiltest.sh
 	    $(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_TEST_IMG)) -cdrom $(BOOT_ISO)
 	$(E2FSCK) -fn $(ROOT_TEST_IMG)
 
-test-all: test test-fault test-apfault test-stack test-uaf test-reboot test-boot
+# A session at the console, typed through a socket by tools/condrive
+# (usr/tests/console.script), on a fresh copy of the normal root image:
+# root's login on the console, line editing, ^C, job control, logging
+# out and in, and halt, which must leave the image clean.
+CONDRIVE        := build/tools/condrive
+ROOT_CON_IMG    := build/root-console-$(TOOLCHAIN)$(LDSUFFIX).img
+
+$(CONDRIVE): tools/condrive.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -O2 -Wall -o $@ tools/condrive.c
+
+test-console: $(BOOT_ISO) $(ROOT_DEPS) $(CONDRIVE) usr/tests/console.script \
+                tools/console-test.sh
+	sh tools/mkroot.sh $(ROOT_CON_IMG) $(SYS_DIR) $(MKPASSWD) $(LIBC_SODIR)
+	sh tools/console-test.sh $(CONDRIVE) usr/tests/console.script \
+	    $(BUILD)/test-console-serial.log \
+	    $(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_CON_IMG)) -cdrom $(BOOT_ISO)
+	$(E2FSCK) -fn $(ROOT_CON_IMG)
+
+test-all: test test-fault test-apfault test-stack test-uaf test-reboot test-boot test-console
 
 clean:
 	rm -rf $(BUILD)
