@@ -1,0 +1,12 @@
+mksh
+====
+
+The MirBSD Korn Shell, release R59c, from https://github.com/MirBSD/mksh
+(tag mksh-R59c, commit 8b6f1b53521283f667b0b7644899feaddaf08d71), under
+the MirOS licence in each file's header. It is Belka's /bin/sh.
+
+Only the sources the shell is built from are here, unchanged; its
+Build.sh and test suite are not. Belka builds it without Build.sh (see
+mk/userland.mk): the configuration is usr/lib/compat/mksh-config.h, the
+option tables are made by tools/mksh-genopt.awk and the signal names by
+tools/mksh-signames.sh.
