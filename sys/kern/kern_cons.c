@@ -12,9 +12,11 @@
  *
  * Processes reach the console through cons_vnode(), a private vnode
  * outside any file system that proc_spawn() opens on descriptors 0 to 2
- * until there are device special files. Writes go out through printf,
- * whose lock keeps them from interleaving with kernel messages within a
- * chunk; reads see end of file, since there is no console input yet.
+ * until there are device special files. It is a terminal (cons_tty, see
+ * kern/tty.c): the line discipline processes what is written and goes
+ * out through cnwrite(), under printf's lock, so that a write does not
+ * interleave with kernel messages within a chunk; the device driver
+ * passes what it receives to cons_input().
  */
 
 #include <stddef.h>
@@ -25,10 +27,13 @@
 #include <sys/stat.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
+#include <sys/tty.h>
 #include <sys/uio.h>
 #include <sys/vnode.h>
 
 static struct consdev *cn_tab;
+static struct tty cons_tty;
+static int cons_tty_ready;
 
 void
 cninit(struct consdev *cp)
@@ -45,6 +50,14 @@ cnputc(int c)
         if (c == '\n')
                 cn_tab->cn_putc(cn_tab, '\r');
         cn_tab->cn_putc(cn_tab, c);
+}
+
+/* Write one character as it is (cnwrite(), under printf's lock). */
+void
+cnputc_raw(int c)
+{
+        if (cn_tab != NULL)
+                cn_tab->cn_putc(cn_tab, c);
 }
 
 /* Wait until everything written to the console has left the device. */
@@ -74,28 +87,46 @@ cons_close(struct vnode *vp __unused, int flags __unused,
 }
 
 static int
-cons_read(struct vnode *vp __unused, struct uio *uio __unused,
-    int ioflag __unused, struct cred *cr __unused)
+cons_read(struct vnode *vp __unused, struct uio *uio, int ioflag,
+    struct cred *cr __unused)
 {
-        return 0;
+        return tty_read(&cons_tty, uio, ioflag);
 }
 
 static int
-cons_write(struct vnode *vp __unused, struct uio *uio, int ioflag __unused,
+cons_write(struct vnode *vp __unused, struct uio *uio, int ioflag,
     struct cred *cr __unused)
 {
-        char buf[CONS_CHUNK];
+        return tty_write(&cons_tty, uio, ioflag);
+}
 
-        while (uio->uio_resid > 0) {
-                size_t n = uio->uio_resid < CONS_CHUNK ?
-                    (size_t)uio->uio_resid : CONS_CHUNK;
-                int error = uiomove(buf, n, UIO_WRITE, uio);
+static int
+cons_ioctl(struct vnode *vp __unused, unsigned long cmd, uint64_t arg,
+    int flag, struct cred *cr)
+{
+        return tty_ioctl(&cons_tty, cmd, arg, flag, cr);
+}
 
-                if (error != 0)
-                        return error;
-                printf("%.*s", (int)n, buf);
-        }
-        return 0;
+static int
+cons_poll(struct vnode *vp __unused, short events, short *reventsp,
+    struct pollhead **phpp, struct cred *cr __unused)
+{
+        return tty_poll(&cons_tty, events, reventsp, phpp);
+}
+
+/* The terminal's output: as it is, the discipline has processed it. */
+static void
+cons_output(struct tty *tp __unused, const char *buf, size_t n)
+{
+        cnwrite(buf, n);
+}
+
+/* A character the console device received. */
+void
+cons_input(int c)
+{
+        if (cons_tty_ready)
+                tty_input(&cons_tty, c);
 }
 
 static int
@@ -231,7 +262,7 @@ static const struct vnodeops cons_vnodeops = {
         cons_setattr, cons_access, cons_lookup, cons_create, cons_name1,
         cons_link, cons_rename, cons_mkdir, cons_name1, cons_readdir,
         cons_symlink, cons_readlink, cons_fsync, cons_inactive,
-        cons_putpage, cons_reclaim, cons_getpage, fs_poll
+        cons_putpage, cons_reclaim, cons_getpage, cons_poll, cons_ioctl
 };
 
 static struct vnode cons_vn;
@@ -245,6 +276,9 @@ struct vnode *
 cons_vnode(void)
 {
         if (!cons_vn_ready) {
+                tty_init(&cons_tty);
+                cons_tty.t_output = cons_output;
+                cons_tty_ready = 1;
                 vn_init(&cons_vn, NULL, VCHR, &cons_vnodeops, NULL);
                 VN_HOLD(&cons_vn);      /* never released */
                 cons_vn_ready = 1;

@@ -644,9 +644,9 @@ Recorded 2026-11-07.
   and `pgrpsys` (getpgrp, setpgrp, getsid, setsid, getpgid, setpgid).
   exec resets caught signals and clears both SIGCHLD flags, as in
   UnixWare.
-- **Not yet:** `/proc` tracing, core files, terminals and orphaned process groups,
-  and SIGXFSZ on EFBIG. (Permission to signal came with credentials,
-  2026-11-13.)
+- **Not yet:** `/proc` tracing, core files, terminal job control
+  (`SIGTTIN`, `SIGTTOU`) and orphaned process groups, and SIGXFSZ on
+  EFBIG. (Permission to signal came with credentials, 2026-11-13.)
 
 ## LWPs (2026-11-08)
 
@@ -769,10 +769,9 @@ Recorded 2026-11-07.
   call into the library. `setitimer` exists only as `alarm` needs it:
   `ITIMER_REAL` without an interval, in whole seconds, through the
   `alarm` call; there are no interval timers yet.
-- **Not yet:** terminals and `termios` with the System V values. (The
-  `*at` calls, `chown`, `poll`, named FIFOs and resource limits came on
-  2026-11-12, `ppoll`, `pselect` with a mask and `getrusage` on
-  2026-11-13; see below.)
+- **Later:** the `*at` calls, `chown`, `poll`, named FIFOs and resource
+  limits came on 2026-11-12; `ppoll`, `pselect` with a mask,
+  `getrusage`, and terminals with `termios` on 2026-11-13; see below.
 
 ## POSIX threads (2026-11-09)
 
@@ -1261,6 +1260,59 @@ Recorded 2026-11-07.
 - **Not yet:** a login, `/etc/passwd`, and an init that drops
   privilege, so everything else still runs as the superuser; mount
   options (`nosuid`); `setreuid`; privileges finer than uid 0.
+
+## Terminals (2026-11-13)
+
+- **ABI:** System V's `termios` (four 32-bit mode words, as UnixWare's
+  `tcflag_t` was 32 bits, and `NCCS` 19 control characters) and the
+  older `termio` (16-bit words, a line byte, `NCC` 8), with System V's
+  flag values, `c_cc` indexes (`VMIN` and `VTIME` share slots 4 and 5
+  with `VEOF` and `VEOL`), and speeds (`CBAUD` 017, up to `B38400`).
+  ioctls: `TCGETA`/`TCSETA`/`W`/`F`, `TCGETS`/`TCSETS`/`W`/`F`,
+  `TCSBRK`, `TCXONC`, `TCFLSH`, `TIOCGWINSZ`/`TIOCSWINSZ`,
+  `TIOCGPGRP`/`TIOCSPGRP`, `TIOCGSID`, `TIOCSTI`, and for any file
+  `FIONBIO`, `FIOCLEX`, `FIONCLEX` (handled in `ioctl` itself) and
+  `FIONREAD`. `TIOCSCTTY`, which UnixWare lacks, takes Solaris's
+  number, `tIOC|132`. `tools/abicheck` checks all of them against
+  mlibc's.
+- **ioctl** reaches a vnode through a new, last `vop_ioctl`; file
+  systems leave it NULL, which is `ENOTTY`.
+- **Line discipline** (`kern/tty.c`, Belka's own): `c_iflag` input
+  mapping and `IXON`/`IXANY`; `ISIG` sends `SIGINT`, `SIGQUIT`, or
+  `SIGTSTP` to the foreground group and flushes input unless `NOFLSH`;
+  canonical lines with `VERASE`, `VKILL`, and with `IEXTEN` `VWERASE`
+  and `VLNEXT`, a read returning at most one line, `VEOF` ending a line
+  unread (an empty one reads as end of file); otherwise `VMIN` and
+  `VTIME` in the four POSIX combinations (`VTIME` from the read with
+  `VMIN` 0, else from each character). Echo with `ECHOE`, `ECHOK`,
+  `ECHOKE`, `ECHONL`, `ECHOCTL`; output with `OPOST`, `ONLCR`, `OCRNL`,
+  `ONOCR`, `OLCUC`, and stopping. Modes leaving canonical mode pass on a
+  half-edited line. `O_NONBLOCK` reads and writes give `EAGAIN`,
+  `O_NDELAY` reads 0.
+- **The console** is a terminal: its vnode routes read, write, ioctl
+  and poll to it, output goes out raw under printf's lock (`cnwrite`),
+  and the 16550 now takes input by interrupt (ISA IRQ 4, enabled in
+  `configure()`) into it. Kernel messages still go to the device
+  directly. Defaults: `ICRNL IXON IMAXBEL`, `OPOST ONLCR`, `CS8 CREAD`
+  at `B38400`, `ISIG ICANON ECHO ECHOE ECHOK ECHOKE ECHOCTL IEXTEN`,
+  and the usual control characters (`^C`, `^\`, DEL, `^U`, `^D`, `^Z`,
+  `^S`/`^Q`, `^W`, `^V`), 24 by 80.
+- **The C library:** Belka's ABI has its own `termios.h` and
+  `ioctls.h`; mlibc's generic `termios.h` and `sys/ioctl.h` now define
+  Linux's ioctl numbers only when the ABI has not. `tcgetattr`,
+  `tcsetattr` (`TCSANOW`, `TCSADRAIN`, `TCSAFLUSH` pick the `TCSETS`
+  form), `tcflush`, `tcdrain`, `tcflow`, `tcsendbreak` and the window
+  size calls are the ioctls; `isatty` asks for `TCGETA`.
+- **Tests:** `ttytest` (mlibc) types on the console with `TIOCSTI`, echo
+  off, and checks lines and editing, end of file, the four `VMIN`/`VTIME`
+  cases, `O_NONBLOCK`, the signal characters and `NOFLSH`, `SIGWINCH`,
+  stopped output, `TCGETA`/`TCSETA`, and flushing. Serial input through
+  the interrupt was checked by hand, feeding characters to QEMU's serial
+  port; the automatic tests' serial port is a file, with no input.
+- **Not yet:** controlling terminals allocated on open, `SIGTTIN` and
+  `SIGTTOU`, `SIGHUP` on hang-up, pseudo-terminals, more than one
+  terminal, fill and delay characters, and `VDISCARD`, `VREPRINT` and
+  `VDSUSP`.
 
 ## File systems
 

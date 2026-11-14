@@ -44,6 +44,7 @@
 
 #define CONSOLE_IOBASE  0x3f8   /* COM1 */
 #define CONSOLE_SPEED   115200
+#define CONSOLE_IRQ     4       /* COM1 */
 
 /*
  * The QEMU isa-debug-exit device. Writing v makes QEMU exit with status
@@ -728,6 +729,8 @@ configure(void)
 {
         boottime_sec = rtc_time_of_day();
         pci_init();
+        /* Console input, for the console terminal. */
+        (void)ns16550_intr_attach(&console_softc, CONSOLE_IRQ, cons_input);
 }
 
 /*

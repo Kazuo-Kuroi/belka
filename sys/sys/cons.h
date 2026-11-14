@@ -13,6 +13,8 @@
 #ifndef _SYS_CONS_H_
 #define _SYS_CONS_H_
 
+#include <stddef.h>
+
 struct consdev {
         void    (*cn_putc)(struct consdev *, int);
         void    (*cn_flush)(struct consdev *);  /* may be NULL */
@@ -23,6 +25,9 @@ struct consdev {
 void cninit(struct consdev *);
 void cnputc(int);
 void cnflush(void);
+void cnputc_raw(int);
+void cnwrite(const char *, size_t);
+void cons_input(int);
 
 struct vnode;
 struct vnode *cons_vnode(void);

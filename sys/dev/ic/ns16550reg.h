@@ -30,6 +30,8 @@
 #define LCR_8BITS       0x03
 #define LCR_DLAB        0x80
 
+#define IER_RXRDY       0x01    /* received data, or a FIFO timeout */
+
 #define MCR_DTR         0x01
 #define MCR_RTS         0x02
 #define MCR_OUT2        0x08

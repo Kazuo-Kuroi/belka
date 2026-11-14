@@ -526,7 +526,7 @@ static const struct vnodeops fifo_vnodeops = {
         fifo_setattr, fifo_access, fifo_lookup, fifo_create, fifo_name1,
         fifo_link, fifo_rename, fifo_mkdir, fifo_name1, fifo_readdir,
         fifo_symlink, fifo_readlink, fifo_fsync, fifo_inactive,
-        fifo_putpage, fifo_reclaim, fifo_getpage, fifo_poll
+        fifo_putpage, fifo_reclaim, fifo_getpage, fifo_poll, NULL
 };
 
 /* A new fifonode with no ends open, its vnode unreferenced. */

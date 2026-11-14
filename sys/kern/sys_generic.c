@@ -36,6 +36,7 @@
 #include <sys/synch.h>
 #include <sys/sysent.h>
 #include <sys/systm.h>
+#include <sys/termios.h>
 #include <sys/uio.h>
 #include <sys/vfs.h>
 #include <sys/vnode.h>
@@ -395,16 +396,38 @@ sys_fcntl(const uint64_t *args, uint64_t *rv)
         return error;
 }
 
-/* No device has ioctls yet; nothing is a terminal. */
+/*
+ * ioctl(fd, cmd, arg): FIONBIO, FIOCLEX, and FIONCLEX here, for any
+ * file; everything else goes to the vnode (a terminal), with arg as
+ * given and the caller's credentials. Files have no ioctls: ENOTTY.
+ */
 int
 sys_ioctl(const uint64_t *args, uint64_t *rv __unused)
 {
         struct file *fp = fd_get(curproc, (int)args[0]);
+        unsigned long cmd = (unsigned long)args[1];
+        int32_t on;
+        int error;
 
         if (fp == NULL)
                 return EBADF;
+        if (cmd == FIOCLEX || cmd == FIONCLEX) {
+                error = 0;
+                (void)fd_cloexec(curproc, (int)args[0], cmd == FIOCLEX);
+        } else if (cmd == FIONBIO) {
+                if ((error = copyin((const void *)(uintptr_t)args[2], &on,
+                    sizeof(on))) == 0) {
+                        if (on != 0)
+                                fp->f_flag |= FNONBLOCK;
+                        else
+                                fp->f_flag &= ~FNONBLOCK;
+                }
+        } else {
+                error = VOP_IOCTL(fp->f_vnode, cmd, args[2], fp->f_flag,
+                    CRED());
+        }
         frele(fp);
-        return ENOTTY;
+        return error;
 }
 
 /* getdents(fd, buf, nbytes): the native struct dirent records. */

@@ -5,12 +5,15 @@
  */
 
 /*
- * Polled console driver for 16550-compatible UARTs.
+ * Console driver for 16550-compatible UARTs: output is polled; input
+ * comes by interrupt, once ns16550_intr_attach() has been called, and
+ * goes to the input function given.
  */
 
 #include <stdint.h>
 
 #include <sys/cons.h>
+#include <sys/intr.h>
 
 #include <machine/cpufunc.h>
 
@@ -87,5 +90,42 @@ ns16550_cninit(struct ns16550_softc *sc, uint16_t iobase, unsigned int bps)
 
         sc->sc_present = 1;
         cninit(&sc->sc_cons);
+        return 0;
+}
+
+/* Take every received character to the input function. */
+static int
+ns16550_intr(void *arg)
+{
+        struct ns16550_softc *sc = arg;
+        int claimed = 0;
+
+        while ((inb(sc->sc_iobase + COM_LSR) & LSR_RXRDY) != 0) {
+                int c = inb(sc->sc_iobase + COM_DATA);
+
+                claimed = 1;
+                if (sc->sc_input != NULL)
+                        sc->sc_input(c);
+        }
+        return claimed;
+}
+
+/*
+ * Take received characters by interrupt, on ISA irq, to input (called
+ * from the interrupt thread). Returns 0, or -1 if there is no UART or
+ * the interrupt cannot be attached.
+ */
+int
+ns16550_intr_attach(struct ns16550_softc *sc, int irq, void (*input)(int))
+{
+        if (sc->sc_present == 0)
+                return -1;
+        sc->sc_input = input;
+        if (intr_establish(irq, INTR_ISA, ns16550_intr, sc, sc->sc_cons.cn_name)
+            == NULL)
+                return -1;
+        while ((inb(sc->sc_iobase + COM_LSR) & LSR_RXRDY) != 0)
+                (void)inb(sc->sc_iobase + COM_DATA);
+        outb(sc->sc_iobase + COM_IER, IER_RXRDY);
         return 0;
 }

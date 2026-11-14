@@ -711,9 +711,9 @@ kill_one(struct proc *t, void *arg)
  * the caller may signal: ESRCH if none matched, EPERM if none could be.
  */
 static int
-kill_group(int all, pid_t pgid, int sig, const siginfo_t *si)
+kill_group(int all, pid_t pgid, int sig, const siginfo_t *si, struct cred *cr)
 {
-        struct killarg ka = { all, pgid, sig, si, CRED(), 0, 0, 0 };
+        struct killarg ka = { all, pgid, sig, si, cr, 0, 0, 0 };
 
         mutex_lock(&proctree_lock);
         ka.ka_sid = curproc->p_sid;
@@ -737,6 +737,30 @@ pgid_one(struct proc *t, void *arg)
                 pf->pf_found = 1;
 }
 
+/* Whether process group pgid exists in session sid. */
+int
+pgrp_in_session(pid_t pgid, pid_t sid)
+{
+        struct pgfind pf = { pgid, sid, 0 };
+
+        mutex_lock(&proctree_lock);
+        proc_iterate_locked(pgid_one, &pf);
+        mutex_unlock(&proctree_lock);
+        return pf.pf_found;
+}
+
+/* A signal from the kernel to every process of group pgid (a terminal). */
+void
+pgsignal(pid_t pgid, int sig)
+{
+        siginfo_t si;
+
+        memset(&si, 0, sizeof(si));
+        si.si_signo = sig;
+        si.si_code = SI_USER;
+        (void)kill_group(0, pgid, sig, &si, kcred);
+}
+
 /* kill(pid, sig) */
 int
 sys_kill(const uint64_t *args, uint64_t *rv __unused)
@@ -755,11 +779,11 @@ sys_kill(const uint64_t *args, uint64_t *rv __unused)
         si.si_pid = p->p_pid;
         si.si_uid = (int32_t)CRED()->cr_ruid;
         if (pid == 0)
-                return kill_group(0, p->p_pgid, sig, &si);
+                return kill_group(0, p->p_pgid, sig, &si, CRED());
         if (pid == -1)
-                return kill_group(1, 0, sig, &si);
+                return kill_group(1, 0, sig, &si, CRED());
         if (pid < -1)
-                return kill_group(0, -pid, sig, &si);
+                return kill_group(0, -pid, sig, &si, CRED());
         mutex_lock(&proctree_lock);
         t = proc_find_locked(pid);
         if (t == NULL || t->p_stat == SZOMB || (t->p_flags & P_SYSTEM) != 0) {

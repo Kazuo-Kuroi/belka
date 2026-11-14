@@ -214,6 +214,7 @@ selftest_proc(void)
         char *dyntest[] = { "dyntest", NULL };
         char *dyntest_pie[] = { "dyntest-pie", NULL };
         char *credtest[] = { "credtest", "/p", NULL };
+        char *ttytest[] = { "ttytest", NULL };
         size_t used1, used2, zone0[NPROCZONES];
         int zones_ok = 1;
 
@@ -239,6 +240,7 @@ selftest_proc(void)
         CHECK(run("/p/bin/dyntest", dyntest, CLD_EXITED, 0));
         CHECK(run("/p/bin/dyntest-pie", dyntest_pie, CLD_EXITED, 0));
         CHECK(run("/p/bin/credtest", credtest, CLD_EXITED, 0));
+        CHECK(run("/p/bin/ttytest", ttytest, CLD_EXITED, 0));
         test_kernel_signal();
         CHECK(proc_wait(12345, &(int){ 0 }, &(int){ 0 }) == ECHILD);
 

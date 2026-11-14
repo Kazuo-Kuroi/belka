@@ -373,6 +373,26 @@ vprintf(const char *fmt, va_list ap)
         return count;
 }
 
+/*
+ * Write n characters to the console as they are, with no newline
+ * expansion (a terminal's output processing has done that), under the
+ * lock that keeps printf() calls whole.
+ */
+void
+cnwrite(const char *buf, size_t n)
+{
+        int s = 0, locked = 0;
+
+        if (panicstr == NULL && !smp_halting()) {
+                s = spin_lock(&prf_lock);
+                locked = 1;
+        }
+        for (size_t i = 0; i < n; i++)
+                cnputc_raw((unsigned char)buf[i]);
+        if (locked)
+                spin_unlock(&prf_lock, s);
+}
+
 int
 printf(const char *fmt, ...)
 {

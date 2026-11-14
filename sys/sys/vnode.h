@@ -175,6 +175,9 @@ struct vnodeops {
                     struct cred *);
         int     (*vop_poll)(struct vnode *, short, short *,
                     struct pollhead **, struct cred *);
+        /* Device control; NULL (as for files) is ENOTTY. */
+        int     (*vop_ioctl)(struct vnode *, unsigned long, uint64_t, int,
+                    struct cred *);
 };
 
 #define VOP_OPEN(vpp, f, cr)            (*(vpp))->v_op->vop_open(vpp, f, cr)
@@ -204,6 +207,9 @@ struct vnodeops {
 #define VOP_GETPAGE(vp, off, ppp, cr)   (vp)->v_op->vop_getpage(vp, off, ppp, cr)
 #define VOP_POLL(vp, ev, rev, php, cr) \
         (vp)->v_op->vop_poll(vp, ev, rev, php, cr)
+#define VOP_IOCTL(vp, cmd, arg, f, cr) \
+        ((vp)->v_op->vop_ioctl != NULL ? \
+        (vp)->v_op->vop_ioctl(vp, cmd, arg, f, cr) : ENOTTY)
 
 /* Statistics of the global vnode cache. */
 struct vn_stats {

@@ -23,8 +23,10 @@ struct ns16550_softc {
         struct consdev  sc_cons;
         uint16_t        sc_iobase;
         int             sc_present;
+        void            (*sc_input)(int);       /* received characters */
 };
 
 int ns16550_cninit(struct ns16550_softc *, uint16_t, unsigned int);
+int ns16550_intr_attach(struct ns16550_softc *, int, void (*)(int));
 
 #endif /* _DEV_IC_NS16550VAR_H_ */

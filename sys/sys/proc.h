@@ -241,6 +241,8 @@ void sig_nudge_lwp(struct lwp *);
 void sig_nudge_all(struct proc *);
 k_sigset_t sig_mask_from_user(const sigset_t *);
 void psignal(struct proc *, int);
+void pgsignal(pid_t, int);
+int pgrp_in_session(pid_t, pid_t);
 void trapsignal(int, int, uint64_t);
 void sig_userret(void);
 int sig_restart(int);
