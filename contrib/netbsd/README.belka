@@ -1,0 +1,29 @@
+Files from NetBSD
+=================
+
+These files are from the NetBSD source tree, branch netbsd-10, commit
+a6a6e416dbc433befb1723794fbb058811e3ab64 (2026-10-31), taken from
+https://github.com/NetBSD/src. Each keeps its own copyright notice and
+licence (BSD-style: the three-clause University of California licence,
+the two-clause NetBSD Foundation licence, or public domain for SHA-1).
+The paths are NetBSD's.
+
+    sbin/init/                  init(8)
+    usr.bin/login/              login(1), without PAM (login.c, common.c)
+    include/ttyent.h            )
+    lib/libc/gen/getttyent.c    ) /etc/ttys, for init and login
+    lib/libc/stdio/fparseln.c   )
+    lib/libcrypt/crypt-sha1.c   )
+    lib/libcrypt/hmac.c         ) crypt(3)'s "$sha1$" scheme, for login
+    lib/libcrypt/hmac_sha1.c    )
+    lib/libcrypt/crypt.h        )
+    common/lib/libc/hash/sha1/sha1.c, sys/sys/sha1.h   SHA-1
+
+They are built over mlibc with Belka's compat library (usr/lib/compat),
+which supplies the BSD interfaces mlibc lacks; see mk/userland.mk.
+Belka's changes to these files are kept as separate commits, each
+marked in the file.
+
+Not imported: NetBSD's bcrypt and its helpers in libcrypt, which carry
+a four-clause licence with an advertising clause, and the rc.d system,
+which Belka's minimal /etc/rc does not use yet.
