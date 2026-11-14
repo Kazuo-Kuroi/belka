@@ -197,6 +197,7 @@ struct proc {
 };
 
 extern struct proc proc0;
+extern struct proc *initproc;
 extern struct mutex proctree_lock;
 
 /* The process of the running thread: process 0 for kernel threads. */
@@ -231,6 +232,7 @@ void lwp_rendezvous_done(void);
 void proc_reap_locked(struct proc *);
 void proc_zombie_times(const struct proc *, siginfo_t *);
 int proc_spawn(const char *, char *const[], char *const[], pid_t *);
+int proc_spawn_init(const char *, char *const[], char *const[], pid_t *);
 int proc_wait(pid_t, int *, int *);
 /* kern_time.c */
 uint64_t proc_ticks(struct proc *, uint64_t *);

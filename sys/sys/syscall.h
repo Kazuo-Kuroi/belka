@@ -54,6 +54,7 @@
 #define SYS_getgid      47
 #define SYS_signal      48
 #define SYS_ioctl       54
+#define SYS_uadmin      55
 #define SYS_fsync       58
 #define SYS_execve      59
 #define SYS_umask       60

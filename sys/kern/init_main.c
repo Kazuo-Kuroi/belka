@@ -14,6 +14,7 @@
 #include <sys/cred.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
+#include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/smp.h>
 #include <sys/systm.h>
@@ -21,6 +22,9 @@
 #include <sys/vfs.h>
 #include <sys/vnode.h>
 
+#include <fs/ext2fs/ext2fs.h>
+
+#include <machine/bootinfo.h>
 #include <machine/intr.h>
 #include <machine/param.h>
 
@@ -36,11 +40,48 @@ static const char copyright[] =
     "Copyright (c) 2026 Setsuna Software L.C. All rights reserved.";
 
 /*
+ * A normal boot: the root file system is ext2 on the disk the command
+ * line names (root=vdN; vd0 if none), devfs goes on /dev, and
+ * /sbin/init (or init=path) runs as process 1, in single-user mode if
+ * the command line says "single". Process 1 never exits.
+ */
+static void
+start_init(void)
+{
+        static char init_name[] = "init", single[] = "-s";
+        static char path_env[] = "PATH=/sbin:/bin:/usr/sbin:/usr/bin";
+        char dev[16] = "vd0", path[MAXPATHLEN] = "/sbin/init";
+        char *argv[] = { init_name, NULL, NULL };
+        char *envp[] = { path_env, NULL };
+        struct ext2fs_args args = { dev, 0 };
+        int code, data, error;
+        pid_t pid;
+
+        (void)boot_option_value("root", dev, sizeof(dev));
+        (void)boot_option_value("init", path, sizeof(path));
+        if (boot_option("single"))
+                argv[1] = single;
+        if ((error = vfs_mountroot("ext2fs", &args)) != 0)
+                panic("cannot mount the root file system from %s: "
+                    "error %d", dev, error);
+        if ((error = vfs_mount("devfs", "/dev", NULL)) != 0)
+                printf("init: cannot mount devfs on /dev: error %d\n",
+                    error);
+        if ((error = proc_spawn_init(path, argv, envp, &pid)) != 0)
+                panic("cannot start %s: error %d", path, error);
+        if (pid != 1)
+                panic("%s started as process %d, not 1", path, (int)pid);
+        (void)proc_wait(pid, &code, &data);
+        panic("%s exited (code %d, status %d)", path, code, data);
+}
+
+/*
  * Entered from machine-dependent startup on the bootstrap processor,
  * with the console working and boot information collected.
  *
- * Only the self-tests exist so far; subsystem initialisation is added
- * here in dependency order as each subsystem arrives.
+ * Subsystems are started in dependency order. With "selftest" on the
+ * command line the kernel then runs its self-tests on a tmpfs root and
+ * halts; otherwise it starts init.
  */
 void
 main(void)
@@ -67,7 +108,6 @@ main(void)
         spl0();
         configure();
 
-        /* tmpfs is the root until a disk file system can be mounted. */
         pvn_sysinit();
         vn_sysinit();
         binit();
@@ -76,6 +116,9 @@ main(void)
         as_init();
         cred_init();
         proc_init();
+        if (!boot_option("selftest"))
+                start_init();
+
         if (vfs_mountroot("tmpfs", NULL) != 0)
                 panic("cannot mount the root file system");
 

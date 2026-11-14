@@ -48,6 +48,7 @@
 #define USER_PRI        PRI_KERNEL      /* until the thread joins TS */
 
 struct proc proc0;
+struct proc *initproc;                 /* process 1, once it runs */
 struct mutex proctree_lock;
 
 static struct proc *pidhash[PIDHASH];
@@ -231,9 +232,9 @@ spawn_start(void *arg)
  * process 0, with the console on descriptors 0 to 2 and the root as its
  * current directory. A program that cannot be run exits with 127.
  */
-int
-proc_spawn(const char *path, char *const argv[], char *const envp[],
-    pid_t *pidp)
+static int
+spawn(const char *path, char *const argv[], char *const envp[], pid_t *pidp,
+    int isinit)
 {
         struct spawn *sp;
         struct execargs *ea;
@@ -279,13 +280,34 @@ proc_spawn(const char *path, char *const argv[], char *const envp[],
         lwp_newthread(l, spawn_start, sp);
         lwp_join_ts(l, NULL);
         mutex_lock(&proctree_lock);
-        /* A process the kernel starts leads a session of its own. */
-        p->p_pgid = p->p_sid = p->p_pid;
+        /*
+         * A process the kernel starts leads a session of its own; init
+         * stays in process 0's and makes its own with setsid().
+         */
+        if (!isinit)
+                p->p_pgid = p->p_sid = p->p_pid;
         p->p_stat = SRUN;
+        if (isinit)
+                initproc = p;
         mutex_unlock(&proctree_lock);
         *pidp = p->p_pid;
         lwp_run(l);
         return 0;
+}
+
+int
+proc_spawn(const char *path, char *const argv[], char *const envp[],
+    pid_t *pidp)
+{
+        return spawn(path, argv, envp, pidp, 0);
+}
+
+/* The same for init: orphans go to it from the moment it runs. */
+int
+proc_spawn_init(const char *path, char *const argv[], char *const envp[],
+    pid_t *pidp)
+{
+        return spawn(path, argv, envp, pidp, 1);
 }
 
 /*
@@ -375,9 +397,9 @@ proc_exit(int code, int data)
         struct proc *p = l->l_proc;
         struct as *as;
         struct vnode *cdir;
-        struct proc *c, *zombies = NULL;
+        struct proc *c, *heir, *zombies = NULL;
         pid_t pgids[EXIT_PGIDS];
-        int s, nowait, npgids = 0;
+        int s, nowait, npgids = 0, heir_zombie = 0;
 
         /* The other LWPs go first; if another LWP is ending us, just go. */
         if (proc_single(1) != 0)
@@ -423,13 +445,24 @@ proc_exit(int code, int data)
 
         mutex_lock(&proctree_lock);
         /*
-         * Orphans go to process 0, which reaps them as they exit. Our
-         * group and our children's may be orphaned now (see below).
+         * Orphans go to init, which waits for them, or, until there is
+         * one (and in a self-test boot), to process 0, which reaps them
+         * as they exit. Init hears of zombies among them by SIGCHLD.
+         * Our group and our children's may be orphaned now (see below).
          */
         pgids[npgids++] = p->p_pgid;
+        heir = initproc != NULL && initproc != p ? initproc : NULL;
         while ((c = p->p_children) != NULL) {
                 p->p_children = c->p_sibling;
                 exit_note_pgid(pgids, &npgids, c->p_pgid);
+                if (heir != NULL) {
+                        c->p_parent = heir;
+                        c->p_sibling = heir->p_children;
+                        heir->p_children = c;
+                        if (c->p_stat == SZOMB)
+                                heir_zombie = 1;
+                        continue;
+                }
                 c->p_parent = &proc0;
                 c->p_flags |= P_NOWAIT;
                 if (c->p_stat == SZOMB) {
@@ -440,6 +473,8 @@ proc_exit(int code, int data)
                 c->p_sibling = proc0.p_children;
                 proc0.p_children = c;
         }
+        if (heir_zombie)
+                sv_broadcast(&heir->p_waitsv);
         p->p_wcode = code;
         p->p_wdata = data;
         p->p_stat = SZOMB;
@@ -450,6 +485,8 @@ proc_exit(int code, int data)
         if (nowait)
                 proc_unlink(p);
         mutex_unlock(&proctree_lock);
+        if (heir_zombie)
+                psignal(heir, SIGCHLD);
         for (int i = 0; i < npgids; i++)
                 pgrp_orphan_check(pgids[i]);
 

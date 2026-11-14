@@ -770,6 +770,35 @@ boot_option(const char *word)
 }
 
 /*
+ * The value of a "name=value" word in the command line, copied to buf
+ * (at most len - 1 bytes, NUL-terminated). Returns 1 if there is one.
+ */
+int
+boot_option_value(const char *name, char *buf, size_t len)
+{
+        const char *p = bootinfo.bi_cmdline;
+        size_t nlen = strlen(name), n;
+
+        if (nlen == 0 || len == 0)
+                return 0;
+        while (*p != '\0') {
+                while (*p == ' ')
+                        p++;
+                if (strncmp(p, name, nlen) == 0 && p[nlen] == '=') {
+                        p += nlen + 1;
+                        for (n = 0; p[n] != ' ' && p[n] != '\0' &&
+                            n + 1 < len; n++)
+                                buf[n] = p[n];
+                        buf[n] = '\0';
+                        return 1;
+                }
+                while (*p != ' ' && *p != '\0')
+                        p++;
+        }
+        return 0;
+}
+
+/*
  * Stop the system. Rebooting is not implemented yet, so every function
  * halts.
  */

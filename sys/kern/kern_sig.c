@@ -644,8 +644,10 @@ kill_one(struct proc *t, void *arg)
 {
         struct killarg *ka = arg;
 
+        /* kill(-1, sig) leaves init alone, as System V does. */
         if (t->p_stat == SZOMB || t->p_stat == SIDL ||
-            (!ka->ka_all && t->p_pgid != ka->ka_pgid))
+            (!ka->ka_all && t->p_pgid != ka->ka_pgid) ||
+            (ka->ka_all && t == initproc))
                 return;
         ka->ka_found = 1;
         if (!sig_permitted(ka->ka_cred, ka->ka_sid, t, ka->ka_sig))

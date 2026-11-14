@@ -60,6 +60,20 @@ vfs_syncall(void)
         mutex_unlock(&vfs_mutex);
 }
 
+/*
+ * The last write-back before the system stops (uadmin A_SHUTDOWN):
+ * with vfs_shutting_down set, each file system also records that it
+ * was left clean, as an unmount would, though files are still open.
+ */
+int vfs_shutting_down;
+
+void
+vfs_shutdown(void)
+{
+        vfs_shutting_down = 1;
+        vfs_syncall();
+}
+
 void
 vfs_init(void)
 {

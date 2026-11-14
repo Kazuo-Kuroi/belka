@@ -161,7 +161,9 @@ tty_open(struct tty *tp, int flags)
 {
         struct proc *p = curproc;
 
-        if ((flags & FNOCTTY) != 0 || curlwp == NULL || p->p_pid != p->p_sid)
+        /* Init, process 1, never has a controlling terminal. */
+        if ((flags & FNOCTTY) != 0 || curlwp == NULL ||
+            p->p_pid != p->p_sid || p == initproc)
                 return;
         mutex_lock(&tty_list_lock);
         mutex_lock(&tp->t_lock);

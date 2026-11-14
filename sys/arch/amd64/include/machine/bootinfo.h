@@ -13,6 +13,7 @@
 #ifndef _MACHINE_BOOTINFO_H_
 #define _MACHINE_BOOTINFO_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <machine/param.h>
@@ -101,5 +102,8 @@ void limine_boot_release(void);
 
 /* Return nonzero if word appears as a whole word in the command line. */
 int boot_option(const char *);
+
+/* The value of a "name=value" word in the command line, if there is one. */
+int boot_option_value(const char *, char *, size_t);
 
 #endif /* _MACHINE_BOOTINFO_H_ */

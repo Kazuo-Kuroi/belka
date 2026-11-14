@@ -77,6 +77,8 @@ extern struct vfs *rootvfs;
 void vfs_init(void);
 int vfs_mountroot(const char *, const void *);
 void vfs_syncall(void);
+void vfs_shutdown(void);
+extern int vfs_shutting_down;   /* the last sync: leave them clean */
 int vfs_mount(const char *, const char *, const void *);
 int vfs_unmount(const char *);
 int vfs_statvfs_path(const char *, struct statvfs *);

@@ -548,8 +548,13 @@ ext2fs_sync(struct vfs *vfsp, struct cred *cr __unused)
 
         vn_flush_vfs(vfsp);
         mutex_lock(&em->em_lock);
-        if (em->em_dirty)
+        /* The system is stopping: clean, as on unmount. */
+        if (vfs_shutting_down && !em->em_ronly) {
+                em->em_sb->s_state |= EXT2_VALID_FS;
                 error = ext2fs_sbupdate(em);
+        } else if (em->em_dirty) {
+                error = ext2fs_sbupdate(em);
+        }
         mutex_unlock(&em->em_lock);
         if (error == 0)
                 error = bflush(em->em_dev);

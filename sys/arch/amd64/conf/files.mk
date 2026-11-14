@@ -38,6 +38,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_syscall.c \
                    sys/kern/kern_synch.c \
                    sys/kern/kern_timeout.c \
+                   sys/kern/kern_uadmin.c \
                    sys/kern/sched_rt.c \
                    sys/kern/sched_ts.c \
                    sys/kern/subr_blkdev.c \

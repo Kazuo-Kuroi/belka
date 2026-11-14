@@ -142,25 +142,25 @@ iso: $(ISO)
 ISO_DEPS        := $(KERNEL) $(LIMINE_DIR)/.stamp tools/mkiso.sh $(DISK)
 
 $(ISO): $(ISO_DEPS)
-	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 3 "" $@
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 3 "selftest" $@
 
 $(TEST_ISO): $(ISO_DEPS)
-	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit" $@
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "selftest debugexit" $@
 
 $(FAULT_ISO): $(ISO_DEPS)
-	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testfault" $@
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "selftest debugexit testfault" $@
 
 $(APFAULT_ISO): $(ISO_DEPS)
-	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testapfault" $@
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "selftest debugexit testapfault" $@
 
 $(STACK_ISO): $(ISO_DEPS)
-	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit teststack" $@
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "selftest debugexit teststack" $@
 
 $(UAF_ISO): $(ISO_DEPS)
-	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testuaf" $@
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "selftest debugexit testuaf" $@
 
 $(REBOOT_ISO): $(ISO_DEPS)
-	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "debugexit testreboot" $@
+	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 0 "selftest debugexit testreboot" $@
 
 
 $(MKDISK): tools/mkdisk.c

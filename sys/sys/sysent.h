@@ -47,6 +47,8 @@ sy_call_t sys_lwp_addr_wait, sys_lwp_addr_wake;
 /* fs/fifofs/fifo_vnops.c */
 sy_call_t sys_pipe, sys_mknod, sys_chown, sys_lchown, sys_poll;
 sy_call_t sys_getrlimit, sys_setrlimit, sys_getrusage, sys_pollsys;
+/* kern_uadmin.c */
+sy_call_t sys_uadmin;
 /* kern_itimer.c */
 sy_call_t sys_alarm, sys_setitimer, sys_getitimer;
 /* kern_time.c */
