@@ -32,6 +32,7 @@
 #include <sys/signal.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
+#include <sys/tty.h>
 #include <sys/vnode.h>
 #include <sys/wait.h>
 
@@ -332,6 +333,23 @@ proc_reap_locked(struct proc *c)
 }
 
 /*
+ * The process groups whose orphaning an exit checks, at most: ours and
+ * those of up to EXIT_PGIDS - 1 children (distinct ones; later ones
+ * beyond that go unchecked).
+ */
+#define EXIT_PGIDS      32
+
+static void
+exit_note_pgid(pid_t *pgids, int *n, pid_t pgid)
+{
+        for (int i = 0; i < *n; i++)
+                if (pgids[i] == pgid)
+                        return;
+        if (*n < EXIT_PGIDS)
+                pgids[(*n)++] = pgid;
+}
+
+/*
  * End the calling process: code is CLD_EXITED with an exit status, or
  * CLD_KILLED with a signal.
  */
@@ -343,13 +361,17 @@ proc_exit(int code, int data)
         struct as *as;
         struct vnode *cdir;
         struct proc *c, *zombies = NULL;
-        int s, nowait;
+        pid_t pgids[EXIT_PGIDS];
+        int s, nowait, npgids = 0;
 
         /* The other LWPs go first; if another LWP is ending us, just go. */
         if (proc_single(1) != 0)
                 lwp_exit();
         sig_cancel_alarm(p);
         fd_close_all(p);
+        /* A session leader's terminal is let go (SIGHUP). */
+        if (p->p_pid == p->p_sid)
+                tty_session_end(p->p_sid);
         mutex_lock(&p->p_lock);
         cdir = p->p_cdir;
         p->p_cdir = NULL;
@@ -384,9 +406,14 @@ proc_exit(int code, int data)
         lwp_free_zombies(p);
 
         mutex_lock(&proctree_lock);
-        /* Orphans go to process 0, which reaps them as they exit. */
+        /*
+         * Orphans go to process 0, which reaps them as they exit. Our
+         * group and our children's may be orphaned now (see below).
+         */
+        pgids[npgids++] = p->p_pgid;
         while ((c = p->p_children) != NULL) {
                 p->p_children = c->p_sibling;
+                exit_note_pgid(pgids, &npgids, c->p_pgid);
                 c->p_parent = &proc0;
                 c->p_flags |= P_NOWAIT;
                 if (c->p_stat == SZOMB) {
@@ -407,6 +434,8 @@ proc_exit(int code, int data)
         if (nowait)
                 proc_unlink(p);
         mutex_unlock(&proctree_lock);
+        for (int i = 0; i < npgids; i++)
+                pgrp_orphan_check(pgids[i]);
 
         /* Orphaned zombies were already off the hash's other lists. */
         while (zombies != NULL) {

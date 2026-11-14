@@ -26,11 +26,19 @@
  * stopped by VSTOP or TCXONC waits for VSTART or TCXONC again. There
  * are no fill or delay characters.
  *
- * The foreground process group is set with TIOCSPGRP, to a group of
- * the caller's session, which the terminal then belongs to; a session
- * leader can take it with TIOCSCTTY. There is no controlling-terminal
- * allocation on open, and no SIGTTIN or SIGTTOU for background
- * processes yet. TIOCSTI puts a character on the input as if received.
+ * Job control (POSIX): a session leader with no controlling terminal
+ * that opens one belonging to no session, without O_NOCTTY, makes it
+ * its own (tty_open), or takes it with TIOCSCTTY; TIOCSPGRP sets the
+ * foreground group, one of the session's. A process of a background
+ * group of that session that reads it gets SIGTTIN, and one that writes
+ * with TOSTOP or changes the modes SIGTTOU, sent to its group, and the
+ * call is made again once it continues; an orphaned group gets EIO
+ * instead, as does a read with SIGTTIN held or ignored. VSUSP does not
+ * stop an orphaned group. When the leader exits (tty_session_end) or
+ * the line hangs up (tty_hangup), the foreground group gets SIGHUP and
+ * SIGCONT and the session loses the terminal; after a hang-up reads
+ * see end of file and writes fail with EIO. TIOCSTI puts a character on
+ * the input as if received.
  */
 
 #include <stddef.h>
@@ -38,6 +46,7 @@
 
 #include <sys/cred.h>
 #include <sys/errno.h>
+#include <sys/file.h>
 #include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/signal.h>
@@ -62,17 +71,37 @@ static size_t tty_readable(const struct tty *);
 static int tty_sleep(struct tty *, struct sv *);
 static void tty_signal(struct tty *, int);
 static int tty_setmodes(struct tty *, const struct termios *, int);
+static int tty_bgcheck(struct tty *, int);
+static int tty_outroom(struct tty *);
 
-/* Modes a new terminal starts with. */
+/*
+ * Every terminal, for the controlling terminal of a session. The first
+ * tty_init(), the console's at start-up, sets the lock up.
+ */
+static struct mutex tty_list_lock;
+static int tty_list_ready;
+static struct tty *tty_list;
+
+/* Modes a new terminal starts with; it joins the list of terminals. */
 void
 tty_init(struct tty *tp)
 {
         struct termios *t = &tp->t_termios;
 
+        memset(tp, 0, sizeof(*tp));
         mutex_init(&tp->t_lock, "tty");
         sv_init(&tp->t_insv, "ttyin");
         sv_init(&tp->t_outsv, "ttyout");
+        sv_init(&tp->t_roomsv, "ttyroom");
         pollhead_init(&tp->t_ph);
+        if (!tty_list_ready) {
+                mutex_init(&tty_list_lock, "ttylist");
+                tty_list_ready = 1;
+        }
+        mutex_lock(&tty_list_lock);
+        tp->t_next = tty_list;
+        tty_list = tp;
+        mutex_unlock(&tty_list_lock);
         memset(t, 0, sizeof(*t));
         t->c_iflag = BRKINT | ICRNL | IXON | IMAXBEL;
         t->c_oflag = OPOST | ONLCR;
@@ -94,6 +123,207 @@ tty_init(struct tty *tp)
         t->c_cc[VLNEXT] = CTRL('v');
         tp->t_winsize.ws_row = 24;
         tp->t_winsize.ws_col = 80;
+}
+
+/* Take a terminal off the list, before its driver frees it. */
+void
+tty_destroy(struct tty *tp)
+{
+        struct tty **link;
+
+        mutex_lock(&tty_list_lock);
+        for (link = &tty_list; *link != NULL; link = &(*link)->t_next) {
+                if (*link == tp) {
+                        *link = tp->t_next;
+                        break;
+                }
+        }
+        mutex_unlock(&tty_list_lock);
+}
+
+/* Whether session sid has a controlling terminal. tty_list_lock held. */
+static int
+tty_session_has(pid_t sid)
+{
+        for (struct tty *tp = tty_list; tp != NULL; tp = tp->t_next)
+                if (tp->t_sid == sid)
+                        return 1;
+        return 0;
+}
+
+/*
+ * The device was opened with file flags flags: a session leader with
+ * no controlling terminal, opening one that is nobody's without
+ * O_NOCTTY, makes it its own, with its group in the foreground (SVR4).
+ */
+void
+tty_open(struct tty *tp, int flags)
+{
+        struct proc *p = curproc;
+
+        if ((flags & FNOCTTY) != 0 || curlwp == NULL || p->p_pid != p->p_sid)
+                return;
+        mutex_lock(&tty_list_lock);
+        mutex_lock(&tp->t_lock);
+        if (tp->t_sid == 0 && !tp->t_hungup && !tty_session_has(p->p_sid)) {
+                tp->t_sid = p->p_sid;
+                tp->t_pgrp = p->p_pgid;
+        }
+        mutex_unlock(&tp->t_lock);
+        mutex_unlock(&tty_list_lock);
+}
+
+/* SIGHUP, then SIGCONT, to a group that lost its terminal. */
+static void
+tty_hup_signal(pid_t pgrp)
+{
+        if (pgrp > 0) {
+                pgsignal(pgrp, SIGHUP);
+                pgsignal(pgrp, SIGCONT);
+        }
+}
+
+/*
+ * The line went (a pseudo-terminal's master was closed): reads see end
+ * of file and writes fail with EIO from now on; the foreground group
+ * and the session leader's group get SIGHUP and SIGCONT, and the
+ * session loses its controlling terminal.
+ */
+void
+tty_hangup(struct tty *tp)
+{
+        pid_t pgrp, sid;
+
+        mutex_lock(&tp->t_lock);
+        tp->t_hungup = 1;
+        tty_flush_input(tp);
+        tp->t_stopped = 0;
+        pgrp = tp->t_pgrp;
+        sid = tp->t_sid;
+        tp->t_pgrp = tp->t_sid = 0;
+        sv_broadcast(&tp->t_insv);
+        sv_broadcast(&tp->t_outsv);
+        sv_broadcast(&tp->t_roomsv);
+        mutex_unlock(&tp->t_lock);
+        pollwakeup(&tp->t_ph);
+        tty_hup_signal(pgrp);
+        if (sid > 0 && sid != pgrp)
+                tty_hup_signal(sid);
+}
+
+/*
+ * The leader of session sid exits: its controlling terminal is let go,
+ * and the foreground group gets SIGHUP and SIGCONT (POSIX).
+ */
+void
+tty_session_end(pid_t sid)
+{
+        for (;;) {
+                pid_t pgrp = -1;
+
+                mutex_lock(&tty_list_lock);
+                for (struct tty *tp = tty_list; tp != NULL; tp = tp->t_next) {
+                        mutex_lock(&tp->t_lock);
+                        if (tp->t_sid == sid) {
+                                pgrp = tp->t_pgrp;
+                                tp->t_sid = tp->t_pgrp = 0;
+                        }
+                        mutex_unlock(&tp->t_lock);
+                        if (pgrp != -1)
+                                break;
+                }
+                mutex_unlock(&tty_list_lock);
+                if (pgrp == -1)
+                        return;
+                tty_hup_signal(pgrp);
+        }
+}
+
+/* The controlling terminal of session sid, held, for /dev/tty; or NULL. */
+struct vnode *
+tty_ctty_vnode(pid_t sid)
+{
+        struct vnode *vp = NULL;
+
+        if (sid == 0)
+                return NULL;
+        mutex_lock(&tty_list_lock);
+        for (struct tty *tp = tty_list; tp != NULL; tp = tp->t_next) {
+                if (tp->t_sid == sid && tp->t_vnode != NULL &&
+                    vn_get(tp->t_vnode, tp->t_vnode->v_number)) {
+                        vp = tp->t_vnode;
+                        break;
+                }
+        }
+        mutex_unlock(&tty_list_lock);
+        return vp;
+}
+
+/*
+ * Wait until the input queue has room for a character from the device
+ * (a pseudo-terminal's master writes this way): 0, EAGAIN if nonblock,
+ * EIO after a hang-up, or EINTR or ERESTART for a signal.
+ */
+int
+tty_wait_room(struct tty *tp, int nonblock)
+{
+        int error = 0;
+
+        mutex_lock(&tp->t_lock);
+        while (tp->t_incount + tp->t_linelen + 1 >= TTY_INQ &&
+            !tp->t_hungup) {
+                if (nonblock) {
+                        error = EAGAIN;
+                        break;
+                }
+                if ((error = tty_sleep(tp, &tp->t_roomsv)) != 0)
+                        break;
+        }
+        if (error == 0 && tp->t_hungup)
+                error = EIO;
+        mutex_unlock(&tp->t_lock);
+        return error;
+}
+
+/*
+ * Job control: a process of a background group of the terminal's own
+ * session that reads it (sig SIGTTIN), or writes it with TOSTOP or
+ * changes its modes (SIGTTOU), stops its group with sig and has the
+ * call made again when it continues. Returns 0 to go on, or the error:
+ * ERESTART (or EINTR, for a handler without SA_RESTART); EIO when the
+ * group is orphaned and could never be continued, or for a read with
+ * SIGTTIN held or ignored. A write or a mode change with SIGTTOU held
+ * or ignored goes on. Called without t_lock.
+ */
+static int
+tty_bgcheck(struct tty *tp, int sig)
+{
+        struct proc *p = curproc;
+        pid_t sid, pgrp;
+        int r;
+
+        if (curlwp == NULL)
+                return 0;
+        mutex_lock(&tp->t_lock);
+        sid = tp->t_sid;
+        pgrp = tp->t_pgrp;
+        mutex_unlock(&tp->t_lock);
+        if (sid == 0 || p->p_sid != sid || p->p_pgid == pgrp)
+                return 0;
+        if (sig_held_or_ignored(sig))
+                return sig == SIGTTIN ? EIO : 0;
+        if (pgrp_orphaned(p->p_pgid, NULL))
+                return EIO;
+        pgsignal(p->p_pgid, sig);
+        r = sig_sleep_check();
+        return r == 2 ? ERESTART : sig_restart(EINTR);
+}
+
+/* Whether the device has room for a chunk of output. t_lock is held. */
+static int
+tty_outroom(struct tty *tp)
+{
+        return tp->t_outspace == NULL || tp->t_outspace(tp) >= 2 * TTY_CHUNK;
 }
 
 /* Whether c is the control character in slot i (not disabled). */
@@ -267,8 +497,12 @@ tty_signal(struct tty *tp, int sig)
         mutex_lock(&tp->t_lock);
         pgrp = tp->t_pgrp;
         mutex_unlock(&tp->t_lock);
-        if (pgrp > 0)
+        if (pgrp > 0) {
+                /* A group nothing could continue is not stopped. */
+                if (sig == SIGTSTP && pgrp_orphaned(pgrp, NULL))
+                        return;
                 pgsignal(pgrp, sig);
+        }
 }
 
 /* A character from the device. */
@@ -417,10 +651,15 @@ tty_read(struct tty *tp, struct uio *uio, int ioflag)
         int64_t id = 0;
         int timing = 0, error = 0;
 
+        if ((error = tty_bgcheck(tp, SIGTTIN)) != 0)
+                return error;
         mutex_lock(&tp->t_lock);
         /* Wait for something to read, as the mode says. */
         for (;;) {
                 size_t avail = tty_readable(tp);
+
+                if (tp->t_hungup)
+                        goto out;               /* end of file */
                 size_t want = t->c_cc[VMIN];
                 long vtime = (long)t->c_cc[VTIME] * HZ / 10;
 
@@ -493,6 +732,7 @@ tty_read(struct tty *tp, struct uio *uio, int ioflag)
                 if (done)
                         break;
         }
+        sv_broadcast(&tp->t_roomsv);
 out:
         mutex_unlock(&tp->t_lock);
         if (timing)
@@ -506,13 +746,19 @@ tty_write(struct tty *tp, struct uio *uio, int ioflag)
         char buf[TTY_CHUNK];
         int error = 0;
 
+        if ((tp->t_termios.c_lflag & TOSTOP) != 0 &&
+            (error = tty_bgcheck(tp, SIGTTOU)) != 0)
+                return error;
         while (uio->uio_resid > 0) {
                 size_t n = uio->uio_resid < TTY_CHUNK ?
                     (size_t)uio->uio_resid : TTY_CHUNK;
 
-                /* Wait for output to be started before taking any. */
+                /*
+                 * Wait for output to be started, and for the device to
+                 * have room, before taking any.
+                 */
                 mutex_lock(&tp->t_lock);
-                while (tp->t_stopped) {
+                while (!tp->t_hungup && (tp->t_stopped || !tty_outroom(tp))) {
                         if ((ioflag & IO_NONBLOCK) != 0) {
                                 error = EAGAIN;
                                 break;
@@ -520,6 +766,8 @@ tty_write(struct tty *tp, struct uio *uio, int ioflag)
                         if ((error = tty_sleep(tp, &tp->t_outsv)) != 0)
                                 break;
                 }
+                if (error == 0 && tp->t_hungup)
+                        error = EIO;
                 if (error == 0 &&
                     (error = uiomove(buf, n, UIO_WRITE, uio)) == 0)
                         tty_out(tp, buf, n);
@@ -573,6 +821,22 @@ tty_ioctl(struct tty *tp, unsigned long cmd, uint64_t arg, int flag,
         char c;
 
         (void)flag;
+        /* Changing the modes from the background stops the group. */
+        switch (cmd) {
+        case TCSETS:
+        case TCSETSW:
+        case TCSETSF:
+        case TCSETA:
+        case TCSETAW:
+        case TCSETAF:
+        case TCSBRK:
+        case TCXONC:
+        case TCFLSH:
+        case TIOCSPGRP:
+                if ((error = tty_bgcheck(tp, SIGTTOU)) != 0)
+                        return error;
+                break;
+        }
         switch (cmd) {
         case TCGETS:
                 mutex_lock(&tp->t_lock);

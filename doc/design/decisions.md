@@ -644,9 +644,9 @@ Recorded 2026-11-07.
   and `pgrpsys` (getpgrp, setpgrp, getsid, setsid, getpgid, setpgid).
   exec resets caught signals and clears both SIGCHLD flags, as in
   UnixWare.
-- **Not yet:** `/proc` tracing, core files, terminal job control
-  (`SIGTTIN`, `SIGTTOU`) and orphaned process groups, and SIGXFSZ on
-  EFBIG. (Permission to signal came with credentials, 2026-11-13.)
+- **Not yet:** `/proc` tracing, core files, and SIGXFSZ on EFBIG.
+  (Permission to signal came with credentials, 2026-11-13; terminal job
+  control and orphaned process groups on 2026-11-14.)
 
 ## LWPs (2026-11-08)
 
@@ -1309,10 +1309,74 @@ Recorded 2026-11-07.
   stopped output, `TCGETA`/`TCSETA`, and flushing. Serial input through
   the interrupt was checked by hand, feeding characters to QEMU's serial
   port; the automatic tests' serial port is a file, with no input.
-- **Not yet:** controlling terminals allocated on open, `SIGTTIN` and
-  `SIGTTOU`, `SIGHUP` on hang-up, pseudo-terminals, more than one
-  terminal, fill and delay characters, and `VDISCARD`, `VREPRINT` and
-  `VDSUSP`.
+- **Not yet:** fill and delay characters, and `VDISCARD`, `VREPRINT` and
+  `VDSUSP`. (Job control and pseudo-terminals came on 2026-11-14,
+  below.)
+
+## Job control and pseudo-terminals (2026-11-14)
+
+- **Controlling terminal:** a session leader with none that opens a
+  terminal belonging to no session, without `O_NOCTTY`, makes it its
+  own with its group in the foreground (SVR4), or takes it with
+  `TIOCSCTTY`. The terminal records its session and foreground group
+  (`t_sid`, `t_pgrp`); a list of every terminal finds a session's. The
+  kernel's own session (0) never has one, so the processes the kernel
+  starts are not subject to job control.
+- **Background access** (POSIX): a read by a process of a background
+  group of the terminal's session sends `SIGTTIN` to its group, and a
+  write with `TOSTOP`, or `tcsetattr`, `tcflush`, `tcflow`, `tcdrain`,
+  `tcsendbreak` and `tcsetpgrp`, sends `SIGTTOU`. The call then ends
+  with `ERESTART`, so it is made again once the group continues (or
+  `EINTR` for a handler without `SA_RESTART`). An orphaned group gets
+  `EIO` instead, as does a read with `SIGTTIN` held or ignored; a write
+  with `SIGTTOU` held or ignored goes on. `VSUSP` does not stop an
+  orphaned group.
+- **SIGHUP:** when a session leader exits, its terminal's foreground
+  group gets `SIGHUP` and `SIGCONT` and the session loses the terminal.
+  A hang-up (a pseudo-terminal's master closed) does the same for the
+  foreground group and the leader's group, and from then on reads see
+  end of file and writes fail with `EIO`.
+- **Orphaned process groups** (POSIX): an exit that orphans a group
+  with a stopped member, its own group or a child's (up to 32 distinct
+  groups checked per exit), sends each member `SIGHUP` and `SIGCONT`.
+  A group is orphaned when no live member has a parent in another group
+  of the same session; process 0 is in session 0, so a group of another
+  session whose members' parents are gone is orphaned.
+- **ioctl numbers** for pseudo-terminals are System V's: `ISPTM`
+  (`('P'<<8)|1`) and `UNLKPT` (`('P'<<8)|2`).
+- **devfs**, mounted on `/dev` (once; until there are device files on
+  disk): `console`, `null`, `zero`, `tty` (the caller's controlling
+  terminal, opened in its own right; `ENXIO` if none), `ptmx`, and
+  `pts/N`. Device numbers (`<sys/mkdev.h>`, System V's names) put the
+  major in the high 32 bits; the majors are Belka's. Device vnodes share
+  `spec_*` operations, with their owner and mode in a `struct specattr`.
+  `vn_openat` lets `VOP_OPEN` put another vnode in its place, which
+  `ptmx` and `tty` do.
+- **Pseudo-terminals** (`kern/tty_pty.c`), after System V's ptm and pts
+  (up to 64): opening `ptmx` makes a pair and opens its master; the
+  slave, a full terminal with the line discipline, may be opened once
+  `UNLKPT` was given, and belongs to the real user and group that opened
+  the master, mode 0620, so `grantpt` has nothing to do. The slave's
+  output goes into a 4 KB buffer the master reads (a full one makes the
+  slave's writes wait, `t_outspace`); what the master writes is the
+  slave's input, waiting for room. Closing the last master file hangs
+  the slave up; with every slave file closed, the master reads end of
+  file. ioctls on the master other than `ISPTM`, `UNLKPT` and
+  `FIONREAD` are the slave terminal's (modes, window size). A pair goes
+  when neither vnode is referenced, and its name leaves the name cache.
+- **The C library:** `posix_openpt` opens `/dev/ptmx`; `unlockpt` is
+  `UNLKPT`; `ptsname` checks `ISPTM` and makes `/dev/pts/N` from the
+  master's minor number.
+- **Tests:** `ptytest` (mlibc) checks devfs, a pair both ways with echo,
+  raw mode and the window size, end of file on either side, a session
+  leader taking its controlling terminal on open, `/dev/tty`, `SIGTTIN`,
+  `SIGTTOU` with `TOSTOP`, `EIO` with `SIGTTIN` ignored, `^C` through
+  the master, `SIGHUP` on hang-up and on the leader's exit, and `SIGHUP`
+  with `SIGCONT` for an orphaned group with a stopped member. With the
+  stop signals disabled in the kernel it fails, as it should.
+- **Not yet:** `SIGHUP` on a real line's carrier loss (no modem
+  control), packet mode, BSD-style `/dev/ptyXX`, and an init and login
+  that set up sessions on terminals.
 
 ## File systems
 

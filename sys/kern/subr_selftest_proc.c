@@ -215,6 +215,7 @@ selftest_proc(void)
         char *dyntest_pie[] = { "dyntest-pie", NULL };
         char *credtest[] = { "credtest", "/p", NULL };
         char *ttytest[] = { "ttytest", NULL };
+        char *ptytest[] = { "ptytest", NULL };
         size_t used1, used2, zone0[NPROCZONES];
         int zones_ok = 1;
 
@@ -227,6 +228,9 @@ selftest_proc(void)
         /* Dynamic programs find the shared C library in /usr/lib64. */
         CHECK(vn_mkdir("/usr", 0755) == 0);
         CHECK(vn_symlink("/p/usr/lib64", "/usr/lib64") == 0);
+        /* The device names. */
+        CHECK(vn_mkdir("/dev", 0755) == 0);
+        CHECK(vfs_mount("devfs", "/dev", NULL) == 0);
 
         CHECK(run("/p/bin/hello", hello, CLD_EXITED, 0));
         CHECK(run("/p/bin/segv", segv, CLD_KILLED, SIGSEGV));
@@ -241,6 +245,7 @@ selftest_proc(void)
         CHECK(run("/p/bin/dyntest-pie", dyntest_pie, CLD_EXITED, 0));
         CHECK(run("/p/bin/credtest", credtest, CLD_EXITED, 0));
         CHECK(run("/p/bin/ttytest", ttytest, CLD_EXITED, 0));
+        CHECK(run("/p/bin/ptytest", ptytest, CLD_EXITED, 0));
         test_kernel_signal();
         CHECK(proc_wait(12345, &(int){ 0 }, &(int){ 0 }) == ECHILD);
 

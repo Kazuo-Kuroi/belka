@@ -25,10 +25,12 @@
 
 extern const struct vfsops tmpfs_vfsops;
 extern const struct vfsops ext2fs_vfsops;
+extern const struct vfsops devfs_vfsops;
 
 const struct vfssw vfssw[] = {
         { "tmpfs", &tmpfs_vfsops },
         { "ext2fs", &ext2fs_vfsops },
+        { "devfs", &devfs_vfsops },
         { NULL, NULL }
 };
 

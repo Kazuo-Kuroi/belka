@@ -43,6 +43,8 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/sys_generic.c \
                    sys/kern/sys_poll.c \
                    sys/kern/tty.c \
+                   sys/kern/tty_pty.c \
+                   sys/kern/spec_vnops.c \
                    sys/kern/vfs_bio.c \
                    sys/kern/vfs_dnlc.c \
                    sys/kern/vfs_lookup.c \
@@ -59,6 +61,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/fs/ext2fs/ext2fs_vnops.c \
                    sys/fs/fifofs/fifo_vnops.c \
                    sys/fs/tmpfs/tmpfs_vfsops.c \
+                   sys/fs/devfs/devfs.c \
                    sys/fs/tmpfs/tmpfs_vnops.c \
                    sys/kern/subr_prf.c \
                    sys/kern/subr_selftest.c \

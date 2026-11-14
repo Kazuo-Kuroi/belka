@@ -73,9 +73,9 @@ cnflush(void)
 #define CONS_CHUNK      128
 
 static int
-cons_open(struct vnode **vpp __unused, int flags __unused,
-    struct cred *cr __unused)
+cons_open(struct vnode **vpp __unused, int flags, struct cred *cr __unused)
 {
+        tty_open(&cons_tty, flags);
         return 0;
 }
 
@@ -278,6 +278,7 @@ cons_vnode(void)
         if (!cons_vn_ready) {
                 tty_init(&cons_tty);
                 cons_tty.t_output = cons_output;
+                cons_tty.t_vnode = &cons_vn;
                 cons_tty_ready = 1;
                 vn_init(&cons_vn, NULL, VCHR, &cons_vnodeops, NULL);
                 VN_HOLD(&cons_vn);      /* never released */

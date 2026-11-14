@@ -749,6 +749,77 @@ pgrp_in_session(pid_t pgid, pid_t sid)
         return pf.pf_found;
 }
 
+/*
+ * Whether process group pgid is orphaned: no live member has a parent in
+ * another group of the same session (POSIX). One with no live members
+ * counts as orphaned. With stopped, whether a live member is stopped.
+ */
+struct orphan {
+        pid_t   o_pgid;
+        int     o_tied;         /* a member's parent keeps it */
+        int     o_members;
+        int     o_stopped;
+};
+
+static void
+orphan_one(struct proc *t, void *arg)
+{
+        struct orphan *o = arg;
+        struct proc *pp = t->p_parent;
+
+        if (t->p_pgid != o->o_pgid || t->p_stat == SZOMB ||
+            t->p_stat == SIDL)
+                return;
+        o->o_members++;
+        if (t->p_stopped)
+                o->o_stopped = 1;
+        if (pp != NULL && pp->p_pgid != t->p_pgid && pp->p_sid == t->p_sid)
+                o->o_tied = 1;
+}
+
+int
+pgrp_orphaned(pid_t pgid, int *stopped)
+{
+        struct orphan o = { pgid, 0, 0, 0 };
+
+        mutex_lock(&proctree_lock);
+        proc_iterate_locked(orphan_one, &o);
+        mutex_unlock(&proctree_lock);
+        if (stopped != NULL)
+                *stopped = o.o_stopped;
+        return !o.o_tied;
+}
+
+/*
+ * A process left group pgid, or its parent did: if that orphaned the
+ * group and a member is stopped, nothing could ever continue it, so
+ * each member gets SIGHUP and then SIGCONT (POSIX).
+ */
+void
+pgrp_orphan_check(pid_t pgid)
+{
+        int stopped;
+
+        if (pgid > 0 && pgrp_orphaned(pgid, &stopped) && stopped) {
+                pgsignal(pgid, SIGHUP);
+                pgsignal(pgid, SIGCONT);
+        }
+}
+
+/* Whether the calling LWP holds sig, or its process ignores it. */
+int
+sig_held_or_ignored(int sig)
+{
+        struct proc *p = curproc;
+        struct lwp *l = curlwp;
+        int s = spin_lock(&p->p_siglock);
+        int r = (l->l_sigmask & sigbit(sig)) != 0 ||
+            p->p_sigact[sig].ksa_handler == H_IGN;
+
+        spin_unlock(&p->p_siglock, s);
+        return r;
+}
+
 /* A signal from the kernel to every process of group pgid (a terminal). */
 void
 pgsignal(pid_t pgid, int sig)

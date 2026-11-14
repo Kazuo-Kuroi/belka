@@ -8,12 +8,16 @@
  * Terminals: the line discipline between a character device and the
  * programs that read and write it (see kern/tty.c).
  *
- * A driver fills in t_output and calls tty_init(); it passes received
- * characters to tty_input(), from its interrupt thread, and routes
- * read, write, ioctl, and poll on its vnode to tty_read(), tty_write(),
- * tty_ioctl(), and tty_poll().
+ * A driver calls tty_init(), fills in t_output (and t_outspace if its
+ * output has bounded room, and t_vnode, its device vnode), and passes
+ * received characters to tty_input(). It routes open, read, write,
+ * ioctl, and poll on its vnode to tty_open(), tty_read(), tty_write(),
+ * tty_ioctl(), and tty_poll(), calls tty_hangup() when the line goes,
+ * and tty_destroy() before freeing the tty.
  *
- * t_lock, a mutex, protects everything below it.
+ * t_lock, a mutex, protects everything below it but t_next, which
+ * tty_list_lock protects. t_lock is never held while proctree_lock is
+ * taken, nor the other way round.
  */
 
 #ifndef _SYS_TTY_H_
@@ -37,7 +41,8 @@
 struct tty {
         struct mutex    t_lock;
         struct sv       t_insv;         /* input came, or modes changed */
-        struct sv       t_outsv;        /* output was restarted */
+        struct sv       t_outsv;        /* output restarted, or has room */
+        struct sv       t_roomsv;       /* a read made room for input */
         struct pollhead t_ph;
         struct termios  t_termios;
         struct winsize  t_winsize;
@@ -49,18 +54,30 @@ struct tty {
         size_t          t_linelen;
         int             t_stopped;      /* output stopped (VSTOP) */
         int             t_lnext;        /* the next character is literal */
+        int             t_hungup;       /* the line went: EOF, EIO */
         pid_t           t_pgrp;         /* foreground process group */
         pid_t           t_sid;          /* its session */
 
         /* The device: write n characters as they are. */
         void            (*t_output)(struct tty *, const char *, size_t);
         void            *t_softc;
+        /* Room for output, if bounded (NULL: always room). */
+        size_t          (*t_outspace)(struct tty *);
+        struct vnode    *t_vnode;       /* the device, for /dev/tty */
+        struct tty      *t_next;        /* every terminal */
 };
 
 struct uio;
 struct cred;
+struct vnode;
 
 void    tty_init(struct tty *);
+void    tty_destroy(struct tty *);
+void    tty_open(struct tty *, int);
+void    tty_hangup(struct tty *);
+int     tty_wait_room(struct tty *, int);
+void    tty_session_end(pid_t);
+struct vnode *tty_ctty_vnode(pid_t);
 void    tty_input(struct tty *, int);
 int     tty_read(struct tty *, struct uio *, int);
 int     tty_write(struct tty *, struct uio *, int);
