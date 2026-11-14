@@ -14,9 +14,25 @@
  * handler, process groups, and the old signal interfaces.
  *
  * Exits with the number of failed checks.
+ *
+ * Built against mlibc; the System V signal(), contexts, and the raw
+ * result of a call through rawsys.h.
  */
 
-#include "lib/libt.h"
+#define _GNU_SOURCE             /* REG_* for rawsys.h, MAP_ANON */
+
+#include <errno.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <ucontext.h>
+#include <unistd.h>
+
+#include "rawsys.h"
 
 static int failures;
 
@@ -67,7 +83,7 @@ on_sig(int sig, siginfo_t *si, void *uc)
                 info_signo = si->si_signo;
                 info_code = si->si_code;
                 info_pid = si->si_pid;
-                info_addr = si->si_addr;
+                info_addr = (unsigned long)si->si_addr;
         }
         sigprocmask(SIG_BLOCK, NULL, &cur);
         masked_inside = sigismember(&cur, sig);
@@ -134,7 +150,10 @@ test_mask_order(void)
         CHECK(sigpending(&pend) == 0 && !sigismember(&pend, SIGUSR1));
 }
 
-/* SA_RESETHAND, and the old signal(), reset the handler on delivery. */
+/*
+ * SA_RESETHAND, and System V's signal(), reset the handler on delivery
+ * (mlibc's signal() is POSIX's, which need not).
+ */
 static void
 plain_handler(int sig)
 {
@@ -151,11 +170,11 @@ test_resethand(void)
         CHECK(catch(SIGUSR1, on_sig, SA_RESETHAND) == 0);
         CHECK(kill(getpid(), SIGUSR1) == 0 && hits == 1);
         CHECK(sigaction(SIGUSR1, NULL, &oa) == 0 && oa.sa_handler == SIG_DFL);
-        CHECK(signal(SIGUSR2, plain_handler) != SIG_ERR);
+        CHECK(rawsys_signal(SIGUSR2, plain_handler) != SIG_ERR);
         CHECK(kill(getpid(), SIGUSR2) == 0 && hits == 2);
-        CHECK(signal(SIGUSR2, SIG_IGN) == SIG_DFL);
+        CHECK(rawsys_signal(SIGUSR2, SIG_IGN) == SIG_DFL);
         CHECK(kill(getpid(), SIGUSR2) == 0 && hits == 2);       /* ignored */
-        CHECK(signal(SIGUSR2, SIG_DFL) == SIG_IGN);
+        CHECK(rawsys_signal(SIGUSR2, SIG_DFL) == SIG_IGN);
 }
 
 /*
@@ -165,12 +184,12 @@ test_resethand(void)
 static void
 on_segv(int sig, siginfo_t *si, void *uc)
 {
-        void *page = (void *)(si->si_addr & ~4095UL);
+        void *page = (void *)((unsigned long)si->si_addr & ~4095UL);
 
         hits++;
         last_sig = sig;
         info_code = si->si_code;
-        info_addr = si->si_addr;
+        info_addr = (unsigned long)si->si_addr;
         (void)uc;
         if (mmap(page, 4096, PROT_READ | PROT_WRITE,
             MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) != page)
@@ -231,14 +250,14 @@ test_fault_regs(void)
 static void
 test_alarm(void)
 {
-        long t0 = time();
+        time_t t0 = time(NULL);
 
         reset_counts();
         CHECK(catch(SIGALRM, on_sig, 0) == 0);
         CHECK(alarm(1) == 0);
         CHECK(pause() == -1 && errno == EINTR);
         CHECK(hits == 1 && last_sig == SIGALRM);
-        CHECK(time() - t0 <= 3);
+        CHECK(time(NULL) - t0 <= 3);
         CHECK(alarm(10) == 0);
         CHECK(alarm(0) >= 9);                   /* what was left */
 }
@@ -295,9 +314,7 @@ test_defaults(void)
 
         /* An unassigned system call raises SIGSYS. */
         if ((pid = fork()) == 0) {
-                long cf;
-
-                (void)__sysc_cf(250, 0, &cf);
+                (void)RAWSYS1(250, 0);
                 _exit(0);
         }
         CHECK(waitpid(pid, &status, 0) == pid && WIFSIGNALED(status) &&
@@ -381,7 +398,7 @@ test_stop(void)
         CHECK(waitpid(pid, &status, WSTOPPED | WNOHANG) == 0);
         CHECK(kill(pid, SIGCONT) == 0);
         CHECK(waitpid(pid, &status, WCONTINUED) == pid &&
-            status == WCONTFLG);
+            WIFCONTINUED(status));
         /* A stopped child still dies of SIGKILL. */
         CHECK(kill(pid, SIGTSTP) == 0);
         CHECK(waitpid(pid, &status, WSTOPPED) == pid && WIFSTOPPED(status) &&
@@ -447,19 +464,19 @@ test_context(void)
         static volatile int passes;
 
         passes = 0;
-        CHECK(getcontext(&uc) == 0);
+        CHECK(rawsys_getcontext(&uc) == 0);
         if (++passes < 3)
-                setcontext(&uc);
+                rawsys_setcontext(&uc);
         CHECK(passes == 3);
-        CHECK(getcontext(&bad) == 0);
+        CHECK(rawsys_getcontext(&bad) == 0);
         if (passes == 3) {
                 passes++;
                 bad.uc_mcontext.gregs[REG_RIP] = (greg_t)0xffff800000000000UL;
-                CHECK(setcontext(&bad) == -1 && errno == EINVAL);
+                CHECK(rawsys_setcontext(&bad) == EINVAL);
                 bad.uc_mcontext.gregs[REG_RIP] = 0;
                 bad.uc_mcontext.gregs[REG_FSBASE] =
                     (greg_t)0x8000000000000000UL;
-                CHECK(setcontext(&bad) == -1 && errno == EINVAL);
+                CHECK(rawsys_setcontext(&bad) == EINVAL);
         }
 }
 
@@ -490,7 +507,7 @@ test_fpu(void)
         reset_counts();
         for (int i = 0; i < 500; i++) {
                 /* signal() resets the handler at each delivery. */
-                if (signal(SIGUSR2, clobber_fp) == SIG_ERR)
+                if (rawsys_signal(SIGUSR2, clobber_fp) == SIG_ERR)
                         lost++;
                 after[0] = after[1] = 0;
                 __asm__ __volatile__(
@@ -583,8 +600,9 @@ test_pingpong(void)
 }
 
 int
-main(int argc, char **argv, char **envp __attribute__((__unused__)))
+main(int argc, char **argv)
 {
+        setvbuf(stdout, NULL, _IONBF, 0);
         /* "sigtest pause": wait for a signal from the kernel. */
         if (argc == 2 && strcmp(argv[1], "pause") == 0) {
                 for (;;)

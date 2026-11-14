@@ -759,10 +759,20 @@ Recorded 2026-11-07.
   statuses, `execve`, `abort`, handlers, masks and pending signals, a
   fault handled with `longjmp`, the clocks, and `uname`. The process
   self-test runs it.
-- **Not yet:** terminals and `termios` with the System V values, and
-  the libt test programs moving onto mlibc. (The `*at` calls, `chown`,
-  `poll`, named FIFOs and resource limits came on 2026-11-12, `ppoll`,
-  `pselect` with a mask and `getrusage` on 2026-11-13; see below.)
+- **The test programs** all build against mlibc (2026-11-13; they had a
+  small C library of their own, libt, until then). `usr/tests/rawsys.h`
+  gives those that test the kernel's own interfaces (LWPs and their
+  semaphores and address waits, `fork1`/`forkall`, contexts, the break,
+  System V `signal`, `sigwait`) inline system calls that return error
+  numbers and never touch `errno`, since an LWP made with `_lwp_create`
+  has no thread block of mlibc's (its `%fs` base is 0) and must not
+  call into the library. `setitimer` exists only as `alarm` needs it:
+  `ITIMER_REAL` without an interval, in whole seconds, through the
+  `alarm` call; there are no interval timers yet.
+- **Not yet:** terminals and `termios` with the System V values. (The
+  `*at` calls, `chown`, `poll`, named FIFOs and resource limits came on
+  2026-11-12, `ppoll`, `pselect` with a mask and `getrusage` on
+  2026-11-13; see below.)
 
 ## POSIX threads (2026-11-09)
 

@@ -11,9 +11,27 @@
  *
  * usage: utest dir, where dir holds bin/ with the other test programs
  * and is writable. Exits with the number of failed checks.
+ *
+ * Built against mlibc; the kernel's own interfaces (the raw result of a
+ * call, the break, the old wait, the private pointer) through rawsys.h.
  */
 
-#include "lib/libt.h"
+#define _GNU_SOURCE             /* REG_* for rawsys.h, MAP_ANON */
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/utsname.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "rawsys.h"
 
 static int failures;
 static const char *dir;
@@ -57,27 +75,27 @@ static void
 test_basics(void)
 {
         struct utsname u;
-        long cf = 0, r;
+        struct rawsys r;
 
         CHECK(getpid() > 0);
         CHECK(getppid() == 0);          /* started by the kernel */
         CHECK(write(1, "utest: start\n", 13) == 13);
         CHECK(uname(&u) == 0 && strcmp(u.sysname, "Belka") == 0 &&
             strcmp(u.machine, "amd64") == 0);
-        CHECK(time() > 1700000000L);
+        CHECK(time(NULL) > 1700000000L);
 
         /*
          * Errors come back with the carry flag set and errno in %rax. An
          * unassigned number also raises SIGSYS, ignored here.
          */
         CHECK(signal(SIGSYS, SIG_IGN) != SIG_ERR);
-        r = __sysc_cf(250, 0, &cf);
-        CHECK(cf == 1 && r == EINVAL);
+        r = RAWSYS1(250, 0);
+        CHECK(r.error == EINVAL);
         CHECK(signal(SIGSYS, SIG_DFL) == SIG_IGN);
-        r = __sysc_cf(SYS_close, 99, &cf);
-        CHECK(cf == 1 && r == EBADF);
-        r = __sysc_cf(SYS_getpid, 0, &cf);
-        CHECK(cf == 0 && r == getpid());
+        r = RAWSYS1(SYS_close, 99);
+        CHECK(r.error == EBADF);
+        r = RAWSYS0(SYS_getpid);
+        CHECK(r.error == 0 && r.rv == getpid());
 
         /* Bad pointers are EFAULT, user or kernel. */
         CHECK(write(1, (void *)16, 4) == -1 && errno == EFAULT);
@@ -92,10 +110,40 @@ test_basics(void)
 static char bss_block[100000];
 static int global = 1;
 
+/* The break, moved with the call itself (mlibc's heap is mapped). */
+extern char end[];
+static char *curbrk;
+
+static int
+brk_to(void *addr)
+{
+        int error = rawsys_brk(addr);
+
+        if (error != 0) {
+                errno = error;
+                return -1;
+        }
+        curbrk = addr;
+        return 0;
+}
+
+static void *
+sbrk_by(long incr)
+{
+        char *old;
+
+        if (curbrk == NULL)
+                curbrk = end;
+        old = curbrk;
+        if (incr != 0 && brk_to(old + incr) < 0)
+                return (void *)-1;
+        return old;
+}
+
 static void
 test_memory(void)
 {
-        char *base = sbrk(0), *p;
+        char *base = sbrk_by(0), *p;
         unsigned char *m;
         int ok = 1;
 
@@ -106,7 +154,7 @@ test_memory(void)
         memset(bss_block, 0x5a, sizeof(bss_block));
 
         /* brk grows and shrinks the heap. */
-        CHECK(sbrk(1 << 20) == base);
+        CHECK(sbrk_by(1 << 20) == base);
         p = base;
         for (int i = 0; i < (1 << 20); i += 4096)
                 p[i] = (char)(i >> 12);
@@ -114,9 +162,9 @@ test_memory(void)
         for (int i = 0; i < (1 << 20); i += 4096)
                 ok &= p[i] == (char)(i >> 12);
         CHECK(ok);
-        CHECK(brk(base + 4096) == 0);
-        CHECK(brk(base - 4096 * 1024) == -1 && errno == ENOMEM);
-        CHECK(sbrk(8192) == base + 4096);
+        CHECK(brk_to(base + 4096) == 0);
+        CHECK(brk_to(base - 4096 * 1024) == -1 && errno == ENOMEM);
+        CHECK(sbrk_by(8192) == base + 4096);
 
         /* Anonymous mmap, munmap, and mapping over a fixed address. */
         m = mmap(NULL, 256 * 1024, PROT_READ | PROT_WRITE,
@@ -236,10 +284,9 @@ test_fork(void)
         if ((pid = fork()) == 0)
                 _exit(9);
         {
-                long st = 0;
-                long r = __sysc2(SYS_wait, 0, 0, 0, &st);
+                struct rawsys r = RAWSYS0(SYS_wait);
 
-                CHECK(r == pid && (st >> 8) == 9);
+                CHECK(r.rv == pid && (r.rv2 >> 8) == 9);
         }
 }
 
@@ -319,11 +366,16 @@ null_write(void)
         *(volatile int *)0 = 1;
 }
 
+/*
+ * Written at run time, so that it stays in .data: a compiler may put an
+ * array it sees never written in .rodata, which shares the text segment.
+ */
 static void
 exec_data(void)
 {
-        static unsigned char code[] = { 0xc3 };         /* ret */
+        static unsigned char code[1];
 
+        *(volatile unsigned char *)code = 0xc3;         /* ret */
         ((void (*)(void))(void *)code)();
 }
 
@@ -368,6 +420,8 @@ recurse(int depth, int limit)
         volatile char frame[4096];
 
         frame[0] = (char)depth;
+        /* Its address escapes, so the whole frame is kept. */
+        __asm__ __volatile__("" : : "r"(frame) : "memory");
         if (depth < limit)
                 recurse(depth + 1, limit);
         frame[1] = frame[0];
@@ -414,22 +468,17 @@ static unsigned char readbuf[20000];
 static int
 dir_has(const char *d, const char *name)
 {
-        char buf[4096];
-        int fd = open(d, O_RDONLY, 0), found = 0;
-        long n;
+        DIR *dp = opendir(d);
+        struct dirent *de;
+        int found = 0;
 
-        if (fd < 0)
+        if (dp == NULL)
                 return 0;
-        while ((n = getdents(fd, buf, sizeof(buf))) > 0) {
-                for (long off = 0; off < n;) {
-                        struct dirent *de = (struct dirent *)(void *)(buf + off);
-
-                        if (strcmp(de->d_name, name) == 0)
-                                found = 1;
-                        off += de->d_reclen;
-                }
+        while ((de = readdir(dp)) != NULL) {
+                if (strcmp(de->d_name, name) == 0)
+                        found = 1;
         }
-        close(fd);
+        closedir(dp);
         return found;
 }
 
@@ -596,7 +645,11 @@ test_fpu(void)
         CHECK(got == fp_work(0.25, 3000000));
 }
 
-/* The LWP private pointer is the %fs base, inherited by fork. */
+/*
+ * The LWP private pointer is the %fs base, inherited by fork. mlibc's
+ * thread block is the %fs base too, so the test runs in a child, which
+ * makes no library call until it has put its own back.
+ */
 static void *tls_block[4];
 
 static void *
@@ -611,29 +664,41 @@ fs0(void)
 static void
 tls_child(void)
 {
-        _exit(fs0() == (void *)tls_block ? 0 : 1);
+        void *mine = fs0();     /* the thread block points at itself */
+        int set, seen, inherited;
+        pid_t pid;
+
+        failures = 0;
+        tls_block[0] = tls_block;
+        set = rawsys_lwp_private(tls_block) == 0;
+        seen = fs0() == (void *)tls_block;
+        if ((pid = fork1()) == 0)
+                rawsys_exit(fs0() == (void *)tls_block ? 0 : 1);
+        (void)rawsys_lwp_private(mine);
+        CHECK(set && seen);
+        CHECK(pid > 0 && waitpid(pid, &inherited, 0) == pid &&
+            WIFEXITED(inherited) && WEXITSTATUS(inherited) == 0);
+        fflush(stdout);
+        _exit(failures);
 }
 
 static void
 test_tls(void)
 {
-        int s;
+        int s = in_child(tls_child);
 
-        tls_block[0] = tls_block;
-        CHECK(lwp_private(tls_block) == 0);
-        CHECK(fs0() == (void *)tls_block);
-        s = in_child(tls_child);
         CHECK(WIFEXITED(s) && WEXITSTATUS(s) == 0);
 }
 
 int
-main(int argc, char **argv, char **envp __attribute__((__unused__)))
+main(int argc, char **argv)
 {
         if (argc != 2) {
                 printf("usage: utest dir\n");
                 return 100;
         }
         dir = argv[1];
+        setvbuf(stdout, NULL, _IONBF, 0);
         test_basics();
         test_memory();
         test_fork();

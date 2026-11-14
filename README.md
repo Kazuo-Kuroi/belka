@@ -40,11 +40,10 @@ checks both with `e2fsck -fn`, and `tools/check-ext2.sh` reads back
 with `debugfs` the files the kernel left. This needs e2fsprogs
 (`E2FSCK` and `DEBUGFS` name the programs).
 
-User-mode test programs live in `usr/tests`. Most use a tiny C library
-in `usr/tests/lib` and are built with the host compiler (`USER_CC`,
-default `HOSTCC`) against the kernel's own ABI headers. `libctest`,
-`threadtest` and `dyntest` are built against mlibc, the C library,
-which comes from the `contrib/mlibc` submodule (`git submodule update
+User-mode test programs live in `usr/tests`. All are built against
+mlibc, the C library, with `usr/tests/rawsys.h` for the kernel's own
+interfaces that they test directly (LWPs, contexts, the break). mlibc
+comes from the `contrib/mlibc` submodule (`git submodule update
 --init`); building it needs muon and samurai, C implementations of meson
 and ninja (`MUON` and `SAMU` name them), and its first configure
 fetches mlibc's own subprojects with git. mlibc is built with the

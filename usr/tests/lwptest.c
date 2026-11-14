@@ -14,9 +14,26 @@
  * private pointer.
  *
  * Exits with the number of failed checks.
+ *
+ * Built against mlibc, with the LWP calls from rawsys.h. The LWPs made
+ * here have no thread block of the C library's, so what they run makes
+ * no library call: only rawsys.h's calls, and signal sets the main
+ * thread built.
  */
 
-#include "lib/libt.h"
+#define _GNU_SOURCE             /* REG_* for rawsys.h, MAP_ANON */
+
+#include <errno.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "rawsys.h"
 
 static int failures;
 
@@ -237,7 +254,7 @@ test_addr(void)
         lwpid_t ids[NLWP], gone;
         struct sigaction sa;
         int woken = -1, total = 0;
-        long t0;
+        time_t t0;
 
         CHECK(_lwp_addr_wait(&w, 4, NULL) == EAGAIN);
         CHECK(_lwp_addr_wait(&w, 5, zero) == ETIMEDOUT);
@@ -245,9 +262,9 @@ test_addr(void)
         CHECK(_lwp_addr_wait((volatile int32_t *)((char *)&w + 1), 5,
             NULL) == EINVAL);
         CHECK(_lwp_addr_wait((volatile int32_t *)8, 0, NULL) == EFAULT);
-        t0 = time();
+        t0 = time(NULL);
         CHECK(_lwp_addr_wait(&w, 5, short_ts) == ETIMEDOUT);
-        CHECK(time() - t0 <= 1);
+        CHECK(time(NULL) - t0 <= 1);
         CHECK(_lwp_addr_wake(&w, 0, &woken) == 0 && woken == 0);
 
         /* Mutual exclusion through a lock that sleeps when contended. */
@@ -273,8 +290,8 @@ test_addr(void)
          * on one processor. If that fails, wake the rest, so that the
          * waits below end.
          */
-        t0 = time();
-        while (total < 3 && time() - t0 < 5) {
+        t0 = time(NULL);
+        while (total < 3 && time(NULL) - t0 < 5) {
                 if (_lwp_addr_wake(&gate, 1, &woken) == 0) {
                         CHECK(woken == 0 || woken == 1);
                         total += woken;
@@ -300,8 +317,8 @@ test_addr(void)
         intr_got = 0;
         CHECK(spawn_lwp(intr_waiter, NULL, 0, &ids[0]) == 0);
         /* Until it is in the wait when a signal comes; give it time under load. */
-        t0 = time();
-        while (!intr_got && time() - t0 < 5) {
+        t0 = time(NULL);
+        while (!intr_got && time(NULL) - t0 < 5) {
                 _lwp_kill(ids[0], SIGUSR1);
                 spin_ticks(200000);
         }
@@ -363,14 +380,13 @@ note_lwp(int sig)
         handled_in = _lwp_self();
 }
 
+static sigset_t usr1_set, usr2_set;     /* built by the main thread */
+
 static void
 blocker(void *arg)
 {
-        sigset_t set;
-
-        sigemptyset(&set);
-        sigaddset(&set, SIGUSR2);
-        sigprocmask(SIG_UNBLOCK, &set, NULL);   /* the one that takes it */
+        /* The one that takes it. */
+        (void)rawsys_sigprocmask(SIG_UNBLOCK, &usr2_set, NULL);
         while (!stop_spinning)
                 spin_ticks(1000);
         (void)arg;
@@ -383,6 +399,8 @@ test_signals(void)
         sigset_t set;
         lwpid_t id, gone;
 
+        sigemptyset(&usr2_set);
+        sigaddset(&usr2_set, SIGUSR2);
         memset(&sa, 0, sizeof(sa));
         sa.sa_handler = note_lwp;
         CHECK(sigaction(SIGUSR1, &sa, NULL) == 0);
@@ -424,12 +442,8 @@ static volatile int waited_sig;
 static void
 waiter(void *arg)
 {
-        sigset_t set;
-
         (void)arg;
-        sigemptyset(&set);
-        sigaddset(&set, SIGUSR1);
-        waited_sig = sigtimedwait(&set, NULL, NULL);
+        waited_sig = rawsys_sigtimedwait(&usr1_set, NULL, NULL);
 }
 
 static void
@@ -438,8 +452,10 @@ test_sigwait(void)
         sigset_t set;
         lwpid_t id, gone;
         int64_t ts[2] = { 0, 200000000 };
-        long t0;
+        time_t t0;
 
+        sigemptyset(&usr1_set);
+        sigaddset(&usr1_set, SIGUSR1);
         sigemptyset(&set);
         sigaddset(&set, SIGUSR1);
         CHECK(sigprocmask(SIG_BLOCK, &set, NULL) == 0);
@@ -449,13 +465,13 @@ test_sigwait(void)
         CHECK(kill(getpid(), SIGUSR1) == 0);
         CHECK(_lwp_wait(id, &gone) == 0);
         CHECK(waited_sig == SIGUSR1);
-        t0 = time();
-        CHECK(sigtimedwait(&set, NULL, ts) == -1 && errno == EAGAIN);
-        CHECK(time() - t0 <= 2);
+        t0 = time(NULL);
+        CHECK(rawsys_sigtimedwait(&set, NULL, ts) == -EAGAIN);
+        CHECK(time(NULL) - t0 <= 2);
         ts[1] = 0;
-        CHECK(sigtimedwait(&set, NULL, ts) == -1 && errno == EAGAIN);
+        CHECK(rawsys_sigtimedwait(&set, NULL, ts) == -EAGAIN);
         CHECK(kill(getpid(), SIGUSR1) == 0);
-        CHECK(sigtimedwait(&set, NULL, ts) == SIGUSR1);
+        CHECK(rawsys_sigtimedwait(&set, NULL, ts) == SIGUSR1);
         CHECK(sigprocmask(SIG_UNBLOCK, &set, NULL) == 0);
 }
 
@@ -482,7 +498,7 @@ exit_four(void *arg)
 {
         (void)arg;
         spin_ticks(1000000);
-        _exit(4);
+        rawsys_exit(4);
 }
 
 static void
@@ -491,8 +507,8 @@ exec_argtest(void *arg)
         char *argv[] = { "argtest", "one", "two words", NULL };
         char *envp[] = { "FOO=bar", "X=1", NULL };
 
-        execve((const char *)arg, argv, envp);
-        _exit(55);
+        (void)rawsys_execve((const char *)arg, argv, envp);
+        rawsys_exit(55);
 }
 
 static void
@@ -601,14 +617,14 @@ test_forks(void)
             WEXITSTATUS(s) == 0);
         if ((pid = forkall()) == 0) {
                 uint64_t before = spins;
-                long until = time() + 10;
+                time_t until = time(NULL) + 10;
 
                 /*
                  * The copies run on in the child, under the same ids;
                  * on one processor, perhaps only once this LWP's time
                  * slice is over.
                  */
-                while (spins == before && time() < until)
+                while (spins == before && time(NULL) < until)
                         continue;
                 _exit(_lwp_kill(a, 0) == 0 && _lwp_kill(b, 0) == 0 &&
                     spins != before ? 0 : 1);
@@ -639,8 +655,8 @@ toucher(void *arg)
                         touch_bad = 1;
         }
         for (int round = 0; round < 50; round++) {
-                char *m = mmap(NULL, 8192, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANON, -1, 0);
+                char *m = rawsys_mmap(NULL, 8192, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANON);
 
                 if (m == MAP_FAILED) {
                         touch_bad = 1;
@@ -650,7 +666,7 @@ toucher(void *arg)
                 spin_ticks(1000);
                 if (m[0] != (char)me || m[8191] != (char)me)
                         touch_bad = 1;
-                munmap(m, 8192);
+                (void)rawsys_munmap(m, 8192);
         }
 }
 
@@ -727,7 +743,7 @@ private_state(void *arg)
         double x = (double)(intptr_t)arg, acc = 0;
 
         block[0] = block;
-        if (lwp_private(block) != 0)
+        if (rawsys_lwp_private(block) != 0)
                 private_bad = 1;
         for (int i = 0; i < 2000000; i++) {
                 acc += x;
@@ -759,10 +775,11 @@ test_private(void)
 }
 
 int
-main(int argc, char **argv, char **envp __attribute__((__unused__)))
+main(int argc, char **argv)
 {
         const char *argtest = argc > 1 ? argv[1] : "/p/bin/argtest";
 
+        setvbuf(stdout, NULL, _IONBF, 0);
         test_create_wait();
         test_sema();
         test_addr();

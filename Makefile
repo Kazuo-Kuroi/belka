@@ -186,31 +186,6 @@ QEMU_FLAGS      := -machine q35,accel=kvm:tcg -cpu $(QEMU_CPU) -smp $(SMP) -m $(
                    -device virtio-blk-pci,drive=vd2,disable-legacy=on \
                    -display none -no-reboot
 
-# User-mode test programs, built with the host compiler against the
-# kernel's own ABI headers and a tiny C library (usr/tests/lib), and put
-# in /bin on both ext2 images.
-USER_CC         ?= $(HOSTCC)
-USER_DIR        := build/user$(LDSUFFIX)
-USER_OBJ        := build/user-obj
-USER_PROGS      := hello segv argtest utest sigtest lwptest
-USER_BINS       := $(addprefix $(USER_DIR)/,$(USER_PROGS))
-USER_CFLAGS     := -std=c99 -O2 -g -Wall -Wextra -Werror -ffreestanding \
-                   -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
-                   -Isys -Isys/arch/$(ARCH)/include
-USER_LIB        := $(USER_OBJ)/lib/crt0.o $(USER_OBJ)/lib/libt.o
-
-$(USER_OBJ)/%.o: usr/tests/%.c usr/tests/lib/libt.h
-	@mkdir -p $(dir $@)
-	$(USER_CC) $(USER_CFLAGS) -c -o $@ $<
-
-$(USER_OBJ)/%.o: usr/tests/%.S
-	@mkdir -p $(dir $@)
-	$(USER_CC) $(USER_CFLAGS) -c -o $@ $<
-
-$(USER_BINS): $(USER_DIR)/%: $(USER_OBJ)/%.o $(USER_LIB) $(LD_DEPS)
-	@mkdir -p $(USER_DIR)
-	$(LINK_PROGRAM) $(USER_LIB) $<
-
 # The C library: mlibc, from the contrib/mlibc submodule (the belka
 # branch of github.com/Kazuo-Kuroi/mlibc), built with muon and samurai
 # (C implementations of meson and ninja), with the same compiler as the
@@ -319,7 +294,9 @@ $(ABICHECK)/ok: tools/abicheck/kernel.c tools/abicheck/libc.c \
 	    tools/abicheck/libc.c
 	@touch $@
 
-# Programs built against mlibc. They are linked dynamically, and
+# The user-mode test programs, built against mlibc and put in /bin on
+# both ext2 images; usr/tests/rawsys.h gives them the kernel's own
+# interfaces where they test those. They are linked dynamically, and
 # libctest also statically (libctest-static); dyntest-pie is dyntest
 # as a position-independent program. dyntest also uses
 # libdt.so.1, a library of the tests' own, found through its run path
@@ -328,7 +305,8 @@ $(ABICHECK)/ok: tools/abicheck/kernel.c tools/abicheck/libc.c \
 # same way.
 LIBC_DIR        := build/user-libc-$(TOOLCHAIN)$(LDSUFFIX)
 LIBC_DBGDIR     := $(LIBC_DIR)-debug
-LIBC_PROGS      := libctest threadtest dyntest credtest
+LIBC_PROGS      := hello segv argtest utest sigtest lwptest libctest \
+                   threadtest dyntest credtest
 LIBC_SPROGS     := libctest-static
 LIBC_PIEPROGS   := dyntest-pie
 LIBC_DBGBINS    := $(addprefix $(LIBC_DBGDIR)/,$(LIBC_PROGS))
@@ -355,6 +333,7 @@ $(CRT_DIR)/%.o: usr/lib/crt/%.S
 	$(LIBC_CC) -c -o $@ $<
 
 LIBC_PROG_DEPS  := $(MLIBC) $(MLIBC_SHARED) $(ABICHECK)/ok \
+                   usr/tests/rawsys.h \
                    $(PROGRAM_BEGIN) $(PROGRAM_END) $(LD_DEPS)
 
 $(LIBC_DBGDIR)/%-static: usr/tests/%.c $(LIBC_PROG_DEPS)
@@ -405,9 +384,9 @@ $(LIBC_SODIR)/%.so.1: $(MLIBC_SO_BUILD)/%.so.1
 	    eval "$$($(SAMU) -t commands $*.so.1 | tail -1)" \
 	    -Wl,-s -o $(abspath $@)
 
-user-progs: $(USER_BINS) $(LIBC_BINS)
+user-progs: $(LIBC_BINS)
 
-EXT2_DIRS       = $(USER_DIR) $(LIBC_DIR) usr/lib64=$(LIBC_SODIR) \
+EXT2_DIRS       = $(LIBC_DIR) usr/lib64=$(LIBC_SODIR) \
                   lib=$(TESTLIB_DIR)
 
 # Every recipe that boots the kernel rebuilds the images first, since a
@@ -416,10 +395,10 @@ MKEXT2          = @mkdir -p build && \
                   sh tools/mkext2.sh $(EXT2_1K) 1024 $(EXT2_DIRS) && \
                   sh tools/mkext2.sh $(EXT2_4K) 4096 $(EXT2_DIRS)
 
-ext2-images: $(USER_BINS) $(LIBC_BINS)
+ext2-images: $(LIBC_BINS)
 	$(MKEXT2)
 
-run: $(ISO) $(DISK) $(USER_BINS) $(LIBC_BINS)
+run: $(ISO) $(DISK) $(LIBC_BINS)
 	$(MKEXT2)
 	$(QEMU) $(QEMU_FLAGS) -cdrom $(ISO) -serial mon:stdio
 
@@ -429,7 +408,7 @@ run: $(ISO) $(DISK) $(USER_BINS) $(LIBC_BINS)
 # address and expects the resulting panic; "test-apfault" does the same
 # on a secondary processor; "test-stack" and "test-uaf" check that stack
 # overflow and use after free are caught.
-test: $(TEST_ISO) $(USER_BINS) $(LIBC_BINS)
+test: $(TEST_ISO) $(LIBC_BINS)
 	$(MKEXT2)
 	sh tools/qemu-test.sh pass $(BUILD)/test-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(TEST_ISO)
@@ -439,27 +418,27 @@ test: $(TEST_ISO) $(USER_BINS) $(LIBC_BINS)
 	$(E2FSCK) -fn $(EXT2_4K)
 	sh tools/check-ext2.sh $(DEBUGFS) $(EXT2_1K) $(EXT2_4K)
 
-test-fault: $(FAULT_ISO) $(USER_BINS) $(LIBC_BINS)
+test-fault: $(FAULT_ISO) $(LIBC_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="panic: page fault" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-fault-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(FAULT_ISO)
 
-test-apfault: $(APFAULT_ISO) $(USER_BINS) $(LIBC_BINS)
+test-apfault: $(APFAULT_ISO) $(LIBC_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="panic: page fault" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-apfault-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(APFAULT_ISO)
 
 # A kernel stack overflow must hit the guard page and double fault.
-test-stack: $(STACK_ISO) $(USER_BINS) $(LIBC_BINS)
+test-stack: $(STACK_ISO) $(LIBC_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="double fault" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-stack-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(STACK_ISO)
 
 # A write to freed kmem must be caught when the object is reused.
-test-uaf: $(UAF_ISO) $(USER_BINS) $(LIBC_BINS)
+test-uaf: $(UAF_ISO) $(LIBC_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="modified after free" sh tools/qemu-test.sh panic \
 	    $(BUILD)/test-uaf-serial.log \
@@ -467,7 +446,7 @@ test-uaf: $(UAF_ISO) $(USER_BINS) $(LIBC_BINS)
 
 # A reboot through the ACPI reset register makes QEMU, run with
 # -no-reboot, exit with status 0.
-test-reboot: $(REBOOT_ISO) $(USER_BINS) $(LIBC_BINS)
+test-reboot: $(REBOOT_ISO) $(LIBC_BINS)
 	$(MKEXT2)
 	QEMU_EXPECT="rebooting" sh tools/qemu-test.sh reset \
 	    $(BUILD)/test-reboot-serial.log \

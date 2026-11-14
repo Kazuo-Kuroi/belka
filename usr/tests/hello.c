@@ -6,12 +6,12 @@
 
 /* The smallest user program: a line on the console and a clean exit. */
 
-#include "lib/libt.h"
+#include <stdio.h>
+#include <unistd.h>
 
 int
-main(int argc __attribute__((__unused__)), char **argv __attribute__((__unused__)),
-    char **envp __attribute__((__unused__)))
+main(void)
 {
-        printf("hello from user space, pid %d\n", getpid());
+        printf("hello from user space, pid %d\n", (int)getpid());
         return 0;
 }

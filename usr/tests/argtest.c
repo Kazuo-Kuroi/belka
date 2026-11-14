@@ -10,14 +10,22 @@
  * or 100 plus the number of failed checks.
  */
 
-#include "lib/libt.h"
+#define _DEFAULT_SOURCE         /* getauxval */
+
+#include <elf.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/auxv.h>
 
 extern char _start[];
 
 int
 main(int argc, char **argv, char **envp)
 {
-        unsigned long pagesz = 0, entry = 0, phdr = 0, phnum = 0;
+        unsigned long pagesz = getauxval(AT_PAGESZ);
+        unsigned long entry = getauxval(AT_ENTRY);
+        unsigned long phdr = getauxval(AT_PHDR);
+        unsigned long phnum = getauxval(AT_PHNUM);
         int bad = 0;
 
         if (argc != 3 || strcmp(argv[0], "argtest") != 0 ||
@@ -27,16 +35,6 @@ main(int argc, char **argv, char **envp)
         if (envp[0] == NULL || strcmp(envp[0], "FOO=bar") != 0 ||
             envp[1] == NULL || strcmp(envp[1], "X=1") != 0 || envp[2] != NULL)
                 bad++;
-        for (Elf64_auxv_t *a = __auxv; a->a_type != AT_NULL; a++) {
-                if (a->a_type == AT_PAGESZ)
-                        pagesz = a->a_val;
-                else if (a->a_type == AT_ENTRY)
-                        entry = a->a_val;
-                else if (a->a_type == AT_PHDR)
-                        phdr = a->a_val;
-                else if (a->a_type == AT_PHNUM)
-                        phnum = a->a_val;
-        }
         if (pagesz != 4096 || entry != (unsigned long)_start)
                 bad++;
         /* The program headers are ours, mapped where AT_PHDR says. */
