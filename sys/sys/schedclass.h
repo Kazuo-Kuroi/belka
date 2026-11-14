@@ -48,6 +48,10 @@
 /* Time-share weights are indexed 1 to TS_NWEIGHT; higher is favoured. */
 #define TS_NWEIGHT      40
 #define TS_DEFWEIGHT    20      /* NZERO */
+
+/* Nice values, System V's: 0 to 2 * NZERO - 1; weight TS_NWEIGHT - nice. */
+#define NZERO           20
+#define TS_NICEWEIGHT(n) (TS_NWEIGHT - (n))
 #define USEC_PER_TICK   10000
 
 struct kthread;
@@ -87,6 +91,7 @@ int64_t ts_weight(int);
 void ts_init(void);
 void ts_redistribute(void);
 int ts_join(struct kthread *, struct kthread *);
+int ts_setweight(struct kthread *, int);
 
 /* The effective priority from base, inheritance, and boost. */
 void sched_recompute(struct kthread *);

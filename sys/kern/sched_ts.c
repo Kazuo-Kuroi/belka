@@ -292,3 +292,29 @@ ts_redistribute(void)
         }
         spin_unlock(&wt_lock, s);
 }
+
+/*
+ * Give kt's job weight index windex (1 to TS_NWEIGHT), as a change of
+ * nice value does for every LWP of a process, which share one job.
+ * Returns -1 if kt is not time-shared or the index is out of range.
+ */
+int
+ts_setweight(struct kthread *kt, int windex)
+{
+        struct tsjob *job;
+        int s;
+
+        if (windex < 1 || windex > TS_NWEIGHT)
+                return -1;
+        s = thread_lock(kt);
+        if (kt->kt_class != &ts_class || (job = kt->kt_job) == NULL) {
+                thread_unlock(kt, s);
+                return -1;
+        }
+        (void)spin_lock(&wt_lock);
+        job->j_windex = windex;
+        job->j_weight = ts_weights[windex];
+        spin_unlock(&wt_lock, 0);
+        thread_unlock(kt, s);
+        return 0;
+}

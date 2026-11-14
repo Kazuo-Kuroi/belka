@@ -442,6 +442,10 @@ ext2fs_mount(struct vfs *vfsp, const void *data, struct cred *cr __unused)
         }
         vfsp->vfs_data = em;
         vfsp->vfs_bsize = em->em_bsize;
+        snprintf(vfsp->vfs_special, sizeof(vfsp->vfs_special), "%s",
+            dev->bd_name);
+        if (em->em_ronly)
+                vfsp->vfs_flag |= VFS_RDONLY;
         printf("ext2fs: %s: %u blocks of %u bytes, %u groups, %u inodes of "
             "%u bytes%s\n", dev->bd_name, sb->s_blocks_count, em->em_bsize,
             em->em_ngroups, sb->s_inodes_count, em->em_inodesize,

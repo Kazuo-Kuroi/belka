@@ -165,6 +165,7 @@ struct proc {
         struct vnode    *p_cdir;
         struct vnode    *p_rdir;        /* NULL: the system root */
         mode_t          p_cmask;
+        int             p_nice;         /* 0 to 2 * NZERO - 1 (p_lock) */
         vaddr_t         p_brkbase;
         size_t          p_brksize;
         struct rlimit   p_rlimit[RLIM_NLIMITS];

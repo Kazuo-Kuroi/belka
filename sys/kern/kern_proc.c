@@ -87,6 +87,7 @@ proc_init(void)
         crhold(kcred);
         proc0.p_cred = kcred;
         proc0.p_cmask = 022;
+        proc0.p_nice = NZERO;
         rlimit_init(&proc0);
         memcpy(proc0.p_comm, "sched", 6);
         sig_proc_init(&proc0, NULL);
@@ -152,6 +153,7 @@ proc_alloc(struct proc *parent)
         spinlock_init(&p->p_crlock, "cred");
         p->p_cred = cred_getproc(parent);
         p->p_cmask = parent->p_cmask;
+        p->p_nice = parent->p_nice;
         memcpy(p->p_rlimit, parent->p_rlimit, sizeof(p->p_rlimit));
         p->p_cpucheck = parent->p_cpucheck != 0 ? lbolt + 1 : 0;
         memcpy(p->p_comm, parent->p_comm, PSCOMSIZ);

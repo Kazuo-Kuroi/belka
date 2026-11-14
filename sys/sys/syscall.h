@@ -40,10 +40,13 @@
 #define SYS_getpid      20
 #define SYS_setuid      23
 #define SYS_getuid      24
+#define SYS_stime       25
 #define SYS_alarm       27
+#define SYS_utime       30
 #define SYS_fstat       28
 #define SYS_pause       29
 #define SYS_access      33
+#define SYS_nice        34
 #define SYS_sync        36
 #define SYS_kill        37
 #define SYS_pgrpsys     39
@@ -76,6 +79,8 @@
 #define SYS_sigaction   98
 #define SYS_sigpending  99
 #define SYS_context     100
+#define SYS_statvfs     103
+#define SYS_fstatvfs    104
 #define SYS_waitsys     107
 #define SYS_mmap        115
 #define SYS_mprotect    116
@@ -135,7 +140,8 @@
 #define SYS_faccessat   224
 #define SYS_pollsys     225
 #define SYS_getrusage   226
+#define SYS_utimensat   227
 
-#define NSYSCALL        227     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        228     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

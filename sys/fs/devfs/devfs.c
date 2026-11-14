@@ -14,6 +14,8 @@
  *   tty        opens the caller's controlling terminal (ENXIO if none)
  *   ptmx       opens the master of a new pseudo-terminal (kern/tty_pty.c)
  *   pts/       pts/N: each pseudo-terminal slave whose master is open
+ *   mnttab     the mount table, as text (vfs_mnttab); /etc/mnttab links
+ *              here, as Solaris makes the table the kernel's
  *
  * Its vnodes are private and static but for the console's and the
  * slaves', which belong to their drivers, so it is mounted once.
@@ -26,6 +28,7 @@
 #include <sys/cred.h>
 #include <sys/dirent.h>
 #include <sys/errno.h>
+#include <sys/kmem.h>
 #include <sys/mkdev.h>
 #include <sys/param.h>
 #include <sys/proc.h>
@@ -37,13 +40,14 @@
 #include <sys/vfs.h>
 #include <sys/vnode.h>
 
-enum { DV_ROOT, DV_PTS, DV_NULL, DV_ZERO, DV_TTY, DV_PTMX, DV_N };
+enum { DV_ROOT, DV_PTS, DV_NULL, DV_ZERO, DV_TTY, DV_PTMX, DV_MNTTAB, DV_N };
 
 static struct specattr dv_attr[DV_N];
 static struct vnode dv_vn[DV_N];
 static struct vfs *devfs_vfs;
 
-static const struct vnodeops devfs_dirops, devfs_memops, devfs_cloneops;
+static const struct vnodeops devfs_dirops, devfs_memops, devfs_cloneops,
+    devfs_mntops;
 
 /* The root's names, in order; NULL: the console's own vnode. */
 static const struct {
@@ -55,6 +59,7 @@ static const struct {
         { "zero", DV_ZERO },
         { "tty", DV_TTY },
         { "ptmx", DV_PTMX },
+        { "mnttab", DV_MNTTAB },
         { "pts", DV_PTS },
 };
 #define NNAMES  (sizeof(devfs_names) / sizeof(devfs_names[0]))
@@ -79,6 +84,7 @@ devfs_mount(struct vfs *vfsp, const void *data __unused,
                     &devfs_cloneops },
                 [DV_PTMX] = { VCHR, 0666, makedev(DEV_PTM_MAJOR, 0xffff),
                     &devfs_cloneops },
+                [DV_MNTTAB] = { VREG, 0444, 0, &devfs_mntops },
         };
 
         if (devfs_vfs != NULL)
@@ -346,6 +352,49 @@ clone_rw(struct vnode *vp __unused, struct uio *uio __unused,
 
 static const struct vnodeops devfs_cloneops = {
         clone_open, devfs_close, clone_rw, clone_rw, spec_getattr,
+        spec_setattr, spec_access, spec_lookup, spec_create, spec_name1,
+        spec_link, spec_rename, spec_mkdir, spec_name1, spec_readdir,
+        spec_symlink, spec_readlink, spec_fsync, devfs_inactive,
+        spec_putpage, spec_reclaim, spec_getpage, fs_poll, NULL
+};
+
+/* --- mnttab: the mount table, made afresh for each read. --- */
+
+static int
+mnt_read(struct vnode *vp __unused, struct uio *uio, int ioflag __unused,
+    struct cred *cr __unused)
+{
+        size_t len = vfs_mnttab(NULL, 0), room = len + 1;
+        char *buf;
+        int error = 0;
+
+        if (uio->uio_offset < 0)
+                return EINVAL;
+        buf = kmem_alloc(room, KM_SLEEP);
+        /* A mount since the first call may make it longer: cut it there. */
+        len = vfs_mnttab(buf, room);
+        if (len > room)
+                len = room;
+        if ((uint64_t)uio->uio_offset < len) {
+                size_t n = len - (size_t)uio->uio_offset;
+
+                if ((ssize_t)n > uio->uio_resid)
+                        n = (size_t)uio->uio_resid;
+                error = uiomove(buf + uio->uio_offset, n, UIO_READ, uio);
+        }
+        kmem_free(buf, room);
+        return error;
+}
+
+static int
+mnt_write(struct vnode *vp __unused, struct uio *uio __unused,
+    int ioflag __unused, struct cred *cr __unused)
+{
+        return EROFS;
+}
+
+static const struct vnodeops devfs_mntops = {
+        devfs_open, devfs_close, mnt_read, mnt_write, spec_getattr,
         spec_setattr, spec_access, spec_lookup, spec_create, spec_name1,
         spec_link, spec_rename, spec_mkdir, spec_name1, spec_readdir,
         spec_symlink, spec_readlink, spec_fsync, devfs_inactive,

@@ -33,6 +33,7 @@ sy_call_t sys_symlink, sys_readlink, sys_rename;
 sy_call_t sys_openat, sys_mknodat, sys_mkdirat, sys_unlinkat, sys_renameat;
 sy_call_t sys_linkat, sys_symlinkat, sys_readlinkat, sys_fstatat;
 sy_call_t sys_fchownat, sys_fchmodat, sys_faccessat;
+sy_call_t sys_statvfs, sys_fstatvfs, sys_utime, sys_utimensat;
 /* vm_mman.c */
 sy_call_t sys_brk, sys_mmap, sys_munmap, sys_mprotect;
 /* kern_sig.c */
@@ -47,12 +48,14 @@ sy_call_t sys_lwp_addr_wait, sys_lwp_addr_wake;
 /* fs/fifofs/fifo_vnops.c */
 sy_call_t sys_pipe, sys_mknod, sys_chown, sys_lchown, sys_poll;
 sy_call_t sys_getrlimit, sys_setrlimit, sys_getrusage, sys_pollsys;
+sy_call_t sys_nice;
 /* kern_uadmin.c */
 sy_call_t sys_uadmin;
 /* kern_itimer.c */
 sy_call_t sys_alarm, sys_setitimer, sys_getitimer;
 /* kern_time.c */
 sy_call_t sys_clock_gettime, sys_clock_getres, sys_times, sys_yield;
+sy_call_t sys_stime;
 /* kern_cred.c */
 sy_call_t sys_setuid, sys_seteuid, sys_setgid, sys_setegid, sys_getuid;
 sy_call_t sys_getgid, sys_getgroups, sys_setgroups;

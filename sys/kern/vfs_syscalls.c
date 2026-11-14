@@ -25,7 +25,9 @@
 #include <sys/stat.h>
 #include <sys/sysent.h>
 #include <sys/systm.h>
+#include <sys/time.h>
 #include <sys/uio.h>
+#include <sys/vfs.h>
 #include <sys/vnode.h>
 
 /*
@@ -589,4 +591,110 @@ sys_fchdir(const uint64_t *args, uint64_t *rv __unused)
         VN_HOLD(vp);
         frele(fp);
         return set_cdir(vp);
+}
+
+/* --- File system statistics and file times. --- */
+
+static int
+statvfs_out(struct vfs *vfsp, uint64_t ubuf)
+{
+        struct statvfs sv;
+        int error;
+
+        memset(&sv, 0, sizeof(sv));
+        if ((error = vfs_statvfs(vfsp, &sv)) != 0)
+                return error;
+        return copyout(&sv, (void *)(uintptr_t)ubuf, sizeof(sv));
+}
+
+/* statvfs(path, struct statvfs *) */
+int
+sys_statvfs(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct vnode *vp;
+        int error;
+
+        if ((error = upath_lookup(AT_FDCWD, args[0], FOLLOW, &vp)) != 0)
+                return error;
+        error = statvfs_out(vp->v_vfsp, args[1]);
+        VN_RELE(vp);
+        return error;
+}
+
+/* fstatvfs(fd, struct statvfs *) */
+int
+sys_fstatvfs(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        int error;
+
+        if (fp == NULL)
+                return EBADF;
+        if (fp->f_vnode->v_vfsp == NULL)        /* the console */
+                error = EINVAL;
+        else
+                error = statvfs_out(fp->f_vnode->v_vfsp, args[1]);
+        frele(fp);
+        return error;
+}
+
+/*
+ * utime(path, struct utimbuf *), UnixWare's 30: the access and
+ * modification times in seconds, or both now if the pointer is NULL.
+ */
+int
+sys_utime(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct timespec t[2];
+        struct vnode *vp;
+        int64_t ub[2];
+        int error;
+
+        if (args[1] != 0) {
+                if ((error = copyin((const void *)(uintptr_t)args[1], ub,
+                    sizeof(ub))) != 0)
+                        return error;
+                t[0] = (struct timespec){ ub[0], 0 };
+                t[1] = (struct timespec){ ub[1], 0 };
+        }
+        if ((error = upath_lookup(AT_FDCWD, args[0], FOLLOW, &vp)) != 0)
+                return error;
+        error = vn_utimes(vp, args[1] != 0 ? t : NULL);
+        VN_RELE(vp);
+        return error;
+}
+
+/*
+ * utimensat(dirfd, path, const struct timespec times[2], flag),
+ * Belka's own: nanoseconds, UTIME_NOW and UTIME_OMIT, and
+ * AT_SYMLINK_NOFOLLOW. A NULL path sets the times of dirfd's file.
+ */
+int
+sys_utimensat(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct timespec t[2];
+        struct vnode *vp;
+        int flag = (int)args[3], error;
+
+        if ((flag & ~AT_SYMLINK_NOFOLLOW) != 0)
+                return EINVAL;
+        if (args[2] != 0 && (error = copyin((const void *)(uintptr_t)args[2],
+            t, sizeof(t))) != 0)
+                return error;
+        if (args[1] == 0) {
+                struct file *fp = fd_get(curproc, (int)args[0]);
+
+                if (fp == NULL)
+                        return EBADF;
+                vp = fp->f_vnode;
+                VN_HOLD(vp);
+                frele(fp);
+        } else if ((error = upath_lookup((int)args[0], args[1],
+            (flag & AT_SYMLINK_NOFOLLOW) != 0 ? NO_FOLLOW : FOLLOW, &vp)) !=
+            0) {
+                return error;
+        }
+        error = vn_utimes(vp, args[2] != 0 ? t : NULL);
+        VN_RELE(vp);
+        return error;
 }

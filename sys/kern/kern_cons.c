@@ -24,6 +24,7 @@
 
 #include <sys/cons.h>
 #include <sys/errno.h>
+#include <sys/mkdev.h>
 #include <sys/stat.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
@@ -137,6 +138,8 @@ cons_getattr(struct vnode *vp __unused, struct vattr *va,
         va->va_type = VCHR;
         va->va_mode = 0620;
         va->va_nlink = 1;
+        va->va_rdev = makedev(DEV_CONS_MAJOR, 0);
+        va->va_nodeid = 1;
         va->va_blksize = CONS_CHUNK;
         return 0;
 }

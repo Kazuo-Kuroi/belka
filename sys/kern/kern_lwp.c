@@ -134,12 +134,14 @@ lwp_newthread(struct lwp *l, void (*fn)(void *), void *arg)
 /*
  * Put l's thread in time-sharing, in the job of leader (another LWP of
  * the process) if there is one, so that a process's LWPs share one
- * fair-share balance. The thread has not run yet.
+ * fair-share balance, at the weight of the process's nice value. The
+ * thread has not run yet.
  */
 void
 lwp_join_ts(struct lwp *l, struct lwp *leader)
 {
-        (void)kthread_setclass(l->l_kthread, SCHED_TS, TS_DEFWEIGHT);
+        (void)kthread_setclass(l->l_kthread, SCHED_TS,
+            TS_NICEWEIGHT(l->l_proc->p_nice));
         if (leader != NULL && leader->l_kthread != NULL)
                 (void)ts_join(l->l_kthread, leader->l_kthread);
 }
@@ -155,7 +157,8 @@ void
 lwp_user_start(void *arg __unused)
 {
         if (kthread_getclass(curthread) != SCHED_TS)
-                (void)kthread_setclass(curthread, SCHED_TS, TS_DEFWEIGHT);
+                (void)kthread_setclass(curthread, SCHED_TS,
+                    TS_NICEWEIGHT(curproc->p_nice));
         if (curthread->kt_sigpend)
                 sig_userret();
         user_enter(curlwp->l_tf);

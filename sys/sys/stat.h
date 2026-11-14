@@ -59,4 +59,11 @@ struct stat {
         int64_t         st_spare[4];
 };
 
+/*
+ * utimensat(): a tv_nsec that sets a time to now, or leaves it as it
+ * is; the C library's values.
+ */
+#define UTIME_NOW       ((1L << 30) - 1L)
+#define UTIME_OMIT      ((1L << 30) - 2L)
+
 #endif /* _SYS_STAT_H_ */

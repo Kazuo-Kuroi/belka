@@ -17,9 +17,11 @@
 #include <sys/errno.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
+#include <sys/param.h>
 #include <sys/pathname.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
+#include <sys/time.h>
 #include <sys/vfs.h>
 #include <sys/vnode.h>
 
@@ -81,6 +83,25 @@ vfs_init(void)
         dnlc_init();
 }
 
+/*
+ * Record a new mount for the mount table: where, when, and, unless the
+ * file system named its device in vfs_special, its type.
+ */
+static void
+vfs_note(struct vfs *vfsp, const char *path)
+{
+        struct timespec ts;
+        size_t len = strlen(path) + 1;
+
+        if (vfsp->vfs_special[0] == '\0')
+                snprintf(vfsp->vfs_special, sizeof(vfsp->vfs_special), "%s",
+                    vfssw[vfsp->vfs_fstype].vsw_name);
+        vfsp->vfs_mntpt = kmem_alloc(len, KM_SLEEP);
+        memcpy(vfsp->vfs_mntpt, path, len);
+        gethrestime(&ts);
+        vfsp->vfs_mtime = ts.tv_sec;
+}
+
 /* Make a file system of type fstype the root, and set rootdir. */
 int
 vfs_mountroot(const char *fstype, const void *data)
@@ -100,6 +121,7 @@ vfs_mountroot(const char *fstype, const void *data)
                 kmem_free(vfsp, sizeof(*vfsp));
                 return error;
         }
+        vfs_note(vfsp, "/");
         rootvfs = vfsp;
         printf("vfs: root is %s\n", fstype);
         return 0;
@@ -144,6 +166,7 @@ vfs_mount(const char *fstype, const char *path, const void *data)
                 VN_RELE(vp);
                 return error;
         }
+        vfs_note(vfsp, path);
         vfsp->vfs_vnodecovered = vp;            /* keeps our reference */
         vfsp->vfs_next = rootvfs->vfs_next;
         rootvfs->vfs_next = vfsp;
@@ -213,6 +236,7 @@ vfs_unmount(const char *path)
         covered->v_vfsmountedhere = NULL;
         mutex_unlock(&vfs_mutex);
         VN_RELE(covered);
+        kmem_free(vfsp->vfs_mntpt, strlen(vfsp->vfs_mntpt) + 1);
         kmem_free(vfsp, sizeof(*vfsp));
         return 0;
 }
@@ -252,7 +276,55 @@ vfs_statvfs_path(const char *path, struct statvfs *sp)
 
         if ((error = lookupname(path, FOLLOW, &vp)) != 0)
                 return error;
-        error = VFS_STATVFS(vp->v_vfsp, sp);
+        error = vfs_statvfs(vp->v_vfsp, sp);
         VN_RELE(vp);
         return error;
+}
+
+/* A file system's statistics, with the flags the generic layer keeps. */
+int
+vfs_statvfs(struct vfs *vfsp, struct statvfs *sp)
+{
+        int error;
+
+        if ((error = VFS_STATVFS(vfsp, sp)) != 0)
+                return error;
+        if ((vfsp->vfs_flag & VFS_RDONLY) != 0)
+                sp->f_flag |= ST_RDONLY;
+        return 0;
+}
+
+/*
+ * The mount table as text, System V's /etc/mnttab: a line per mounted
+ * file system, root first, of special, mount point, type, options and
+ * the time it was mounted, separated by tabs. Up to len bytes go into
+ * buf; returns the length of the whole table.
+ */
+size_t
+vfs_mnttab(char *buf, size_t len)
+{
+        size_t n = 0;
+
+        mutex_lock(&vfs_mutex);
+        for (struct vfs *vfsp = rootvfs; vfsp != NULL;
+            vfsp = vfsp->vfs_next) {
+                char line[VFS_SPECSZ + MAXPATHLEN + FSTYPSZ + 48];
+                int k;
+
+                k = snprintf(line, sizeof(line), "%s\t%s\t%s\t%s\t%jd\n",
+                    vfsp->vfs_special, vfsp->vfs_mntpt,
+                    vfssw[vfsp->vfs_fstype].vsw_name,
+                    (vfsp->vfs_flag & VFS_RDONLY) != 0 ? "ro" : "rw",
+                    (intmax_t)vfsp->vfs_mtime);
+                if (k < 0)
+                        continue;
+                if ((size_t)k >= sizeof(line))
+                        k = sizeof(line) - 1;
+                if (n < len)
+                        memcpy(buf + n, line,
+                            (size_t)k < len - n ? (size_t)k : len - n);
+                n += (size_t)k;
+        }
+        mutex_unlock(&vfs_mutex);
+        return n;
 }

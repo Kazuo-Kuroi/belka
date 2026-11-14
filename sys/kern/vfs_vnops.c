@@ -42,6 +42,7 @@
 #include <sys/pathname.h>
 #include <sys/stat.h>
 #include <sys/systm.h>
+#include <sys/time.h>
 #include <sys/uio.h>
 #include <sys/vfs.h>
 #include <sys/vnode.h>
@@ -665,5 +666,55 @@ vn_chown(struct vnode *vp, uid_t uid, gid_t gid)
                             ~(mode_t)(S_ISUID | S_ISGID);
                 }
         }
+        return VOP_SETATTR(vp, &va, cr);
+}
+
+/*
+ * Set vp's access and modification times. times[0] and times[1] are
+ * the new ones, each possibly UTIME_NOW or UTIME_OMIT; times NULL means
+ * both now. The owner and the superuser may set any times; anyone who
+ * may write the file may set both to now (System V's utime rule).
+ */
+int
+vn_utimes(struct vnode *vp, const struct timespec *times)
+{
+        struct cred *cr = CRED();
+        struct timespec now, t[2];
+        struct vattr va;
+        int error, bothnow;
+
+        gethrestime(&now);
+        for (int i = 0; i < 2; i++) {
+                t[i] = times != NULL ? times[i] :
+                    (struct timespec){ 0, UTIME_NOW };
+                if (t[i].tv_nsec == UTIME_NOW)
+                        t[i] = now;
+                else if (t[i].tv_nsec != UTIME_OMIT &&
+                    (t[i].tv_nsec < 0 || t[i].tv_nsec >= (long)NANOSEC))
+                        return EINVAL;
+        }
+        bothnow = times == NULL || (times[0].tv_nsec == UTIME_NOW &&
+            times[1].tv_nsec == UTIME_NOW);
+
+        va.va_mask = AT_ALL;
+        if ((error = VOP_GETATTR(vp, &va, cr)) != 0)
+                return error;
+        if (!CRED_ISROOT(cr) && cr->cr_uid != va.va_uid) {
+                if (!bothnow)
+                        return EPERM;
+                if ((error = VOP_ACCESS(vp, VWRITE, cr)) != 0)
+                        return error;
+        }
+        memset(&va, 0, sizeof(va));
+        if (t[0].tv_nsec != UTIME_OMIT) {
+                va.va_mask |= AT_ATIME;
+                va.va_atime = t[0];
+        }
+        if (t[1].tv_nsec != UTIME_OMIT) {
+                va.va_mask |= AT_MTIME;
+                va.va_mtime = t[1];
+        }
+        if (va.va_mask == 0)
+                return 0;
         return VOP_SETATTR(vp, &va, cr);
 }

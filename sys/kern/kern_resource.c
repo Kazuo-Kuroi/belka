@@ -35,6 +35,7 @@
 #include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/resource.h>
+#include <sys/schedclass.h>
 #include <sys/signal.h>
 #include <sys/sysent.h>
 #include <sys/systm.h>
@@ -179,4 +180,40 @@ sys_getrusage(const uint64_t *args, uint64_t *rv __unused)
         ticks_to_rt(user, &ru.ru_utime);
         ticks_to_rt(all - user, &ru.ru_stime);
         return copyout(&ru, (void *)(uintptr_t)args[1], sizeof(ru));
+}
+
+/*
+ * nice(incr), UnixWare's 34: add incr to the process's nice value, kept
+ * from 0 to 2 * NZERO - 1 (only the superuser may lower it), and give
+ * its LWPs the matching time-share weight. Returns the new value less
+ * NZERO, as System V's does.
+ */
+int
+sys_nice(const uint64_t *args, uint64_t *rv)
+{
+        struct proc *p = curproc;
+        int incr = (int)args[0], n;
+
+        if (incr < 0 && !CRED_ISROOT(CRED()))
+                return EPERM;
+        mutex_lock(&p->p_lock);
+        n = p->p_nice + (incr < -2 * NZERO ? -2 * NZERO :
+            incr > 2 * NZERO ? 2 * NZERO : incr);
+        if (n < 0)
+                n = 0;
+        if (n > 2 * NZERO - 1)
+                n = 2 * NZERO - 1;
+        p->p_nice = n;
+        mutex_unlock(&p->p_lock);
+        /* The LWPs share one job: setting the weight through one is enough. */
+        {
+                int s = spin_lock(&p->p_siglock);
+
+                if (p->p_lwps != NULL && p->p_lwps->l_kthread != NULL)
+                        (void)ts_setweight(p->p_lwps->l_kthread,
+                            TS_NICEWEIGHT(n));
+                spin_unlock(&p->p_siglock, s);
+        }
+        rv[0] = (uint64_t)(int64_t)(n - NZERO);
+        return 0;
 }

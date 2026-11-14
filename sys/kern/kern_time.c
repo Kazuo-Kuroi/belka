@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/cred.h>
 #include <sys/errno.h>
 #include <sys/kthread.h>
 #include <sys/param.h>
@@ -147,5 +148,25 @@ int
 sys_yield(const uint64_t *args __unused, uint64_t *rv __unused)
 {
         kthread_yield();
+        return 0;
+}
+
+/*
+ * stime(time_t), UnixWare's 25: the superuser sets the time of day, in
+ * seconds; the clock goes on from there (gethrestime). Since the
+ * high-resolution clock carries the fraction of a second, the time set
+ * is exact only to within one.
+ */
+int
+sys_stime(const uint64_t *args, uint64_t *rv __unused)
+{
+        int64_t t = (int64_t)args[0];
+
+        if (!CRED_ISROOT(CRED()))
+                return EPERM;
+        if (t < 0)
+                return EINVAL;
+        __atomic_store_n(&boottime_sec, t - (int64_t)(gethrtime() / NANOSEC),
+            __ATOMIC_RELAXED);
         return 0;
 }

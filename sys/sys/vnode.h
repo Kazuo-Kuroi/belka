@@ -275,6 +275,7 @@ int vn_statat(struct vnode *, const char *, int, struct vattr *);
 int vn_truncate(const char *, off_t);
 int vn_mknodat(struct vnode *, const char *, enum vtype, mode_t);
 int vn_chown(struct vnode *, uid_t, gid_t);
+int vn_utimes(struct vnode *, const struct timespec *);
 int vn_chmod(struct vnode *, mode_t);
 int vaccess(enum vtype, mode_t, uid_t, gid_t, int, struct cred *);
 
