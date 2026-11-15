@@ -18,6 +18,17 @@ The paths are NetBSD's.
     lib/libcrypt/hmac_sha1.c    )
     lib/libcrypt/crypt.h        )
     common/lib/libc/hash/sha1/sha1.c, sys/sys/sha1.h   SHA-1
+    lib/libterminfo/             terminfo(3), termcap(3): the terminal
+                                descriptions
+    usr.bin/tic/, infocmp/, tput/  their compiler, comparer, and tput
+    share/terminfo/terminfo      the descriptions (from ncurses; its
+                                MIT-style licence, see the file)
+    lib/libc/cdb/cdbw.c, common/lib/libc/cdb/cdbr.c, include/cdbw.h,
+    sys/sys/cdbr.h, common/lib/libc/stdlib/mi_vector_hash.c
+                                the constant database terminfo.cdb is
+    sys/sys/bitops.h, sys/sys/queue.h     NetBSD's headers they need
+    lib/libutil/efun.c, lib/libc/stdlib/reallocarr.c
+    bin/ed/                     ed(1); Belka builds it without DES
 
 They are built over mlibc with Belka's compat library (usr/lib/compat),
 which supplies the BSD interfaces mlibc lacks; see mk/userland.mk.
