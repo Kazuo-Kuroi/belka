@@ -69,9 +69,21 @@ typedef void (*sig_t)(int);
 #ifndef ALLPERMS
 #define ALLPERMS        07777
 #endif
+#define st_atimespec    st_atim         /* BSD's names for them */
+#define st_mtimespec    st_mtim
+#define st_ctimespec    st_ctim
+
+/* <utmpx.h>: the names of the records init writes (NetBSD's). */
+#define BOOT_MSG        "system boot"
+#define DOWN_MSG        "system down"
+#define RUNLVL_MSG      "run-level %c"
+#ifndef DOWN_TIME
+#define DOWN_TIME       11              /* NetBSD's: the system went down */
+#endif
 
 /* <paths.h> */
 #define _PATH_CONSTTY   "/dev/constty"
+#include <paths.h>               /* the compat one: utmpx paths */
 
 /* <stdio.h> */
 #define FPARSELN_UNESCESC       0x01

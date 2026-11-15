@@ -45,7 +45,10 @@ COMPAT_SRCS     := usr/lib/compat/db.c usr/lib/compat/misc.c \
                    $(NB)/common/lib/libc/cdb/cdbr.c \
                    $(NB)/common/lib/libc/stdlib/mi_vector_hash.c \
                    $(NB)/lib/libc/stdlib/reallocarr.c \
-                   $(NB)/lib/libutil/efun.c
+                   $(NB)/lib/libutil/efun.c \
+                   $(NB)/lib/libutil/loginx.c \
+                   $(NB)/lib/libutil/logoutx.c \
+                   $(NB)/lib/libutil/logwtmpx.c
 COMPAT_OBJS     := $(patsubst %.c,$(SYS_OBJ)/%.o,$(COMPAT_SRCS))
 COMPAT_LIB      := $(SYS_DIR)/libcompat.a
 
@@ -68,18 +71,21 @@ SYS_LINK        = $(LINK_PROGRAM) $(LIBC_CRT0) $(PROGRAM_BEGIN) $(1) \
 SYS_DEPS        := $(COMPAT_LIB) $(MLIBC) $(PROGRAM_BEGIN) $(PROGRAM_END) \
                    $(LD_DEPS)
 
-# init: no chroot, utmp or securelevel; asks for root's password before
-# a single-user shell if the console is not marked secure in /etc/ttys.
+# init: no chroot or securelevel; utmpx, but not the old utmp. It asks
+# for root's password before a single-user shell if the console is not
+# marked secure in /etc/ttys.
 INIT_OBJS       := $(SYS_OBJ)/init.o
 $(SYS_OBJ)/init.o: $(NB)/sbin/init/init.c $(COMPAT_HDRS) $(MLIBC)
 	@mkdir -p $(dir $@)
-	$(LIBC_CC) $(IMPORT_CFLAGS) -DALTSHELL -DSECURE -c -o $@ $<
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DALTSHELL -DSECURE -DSUPPORT_UTMPX -c -o $@ $<
 
 $(SYS_DIR)/init: $(INIT_OBJS) $(SYS_DEPS)
 	$(call SYS_LINK,$(INIT_OBJS))
 
-# login: no PAM, login classes, utmp, Kerberos or S/Key.
-LOGIN_CFLAGS    := -DNO_PW_AGING
+# login: utmpx (not the old utmp); no PAM, login classes, Kerberos or
+# S/Key.
+LOGIN_CFLAGS    := -DNO_PW_AGING -DSUPPORT_UTMPX -DNO_UT_SS -DUPDWTMPX_VOID \
+                   -DNO_LASTLOGX
 LOGIN_OBJS      := $(SYS_OBJ)/login.o $(SYS_OBJ)/login-common.o \
                    $(SYS_OBJ)/copyrightstr.o
 $(SYS_OBJ)/login.o: $(NB)/usr.bin/login/login.c $(COMPAT_HDRS) $(MLIBC)

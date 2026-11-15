@@ -17,10 +17,17 @@
 #include <pty.h>
 #include <utmp.h>
 
+#include <utmpx.h>
+
 __BEGIN_DECLS
 
 int logout(const char *);
 void logwtmp(const char *, const char *, const char *);
+
+/* The utmpx and wtmpx records (contrib/netbsd/lib/libutil). */
+void loginx(const struct utmpx *);
+int logoutx(const char *, int, int);
+void logwtmpx(const char *, const char *, const char *, int, int);
 
 /* efun(3), from NetBSD's libutil (contrib/netbsd/lib/libutil/efun.c). */
 void (*esetfunc(void (*)(int, const char *, ...)))(int, const char *, ...);

@@ -16,6 +16,8 @@ send echo "<$PATH>"\r
 expect </sbin:/usr/sbin:/bin:/usr/bin>
 send tty\r
 expect /dev/console
+send who\r
+expect root
 send echo $((6 * 7))\r
 expect 42
 
@@ -56,6 +58,9 @@ send exit\r
 expect login:\x20 15000
 send root\r
 expect #\x20 15000
+# One login on the console: init marked the last one dead (utmpx).
+send echo "n=$(who | wc -l | tr -d ' ')"\r
+expect n=1
 send ls -l /etc/mnttab\r
 expect -> ../dev/mnttab
 

@@ -49,7 +49,8 @@ trap 'rm -rf "$src"' EXIT
 
 mkdir -p "$src/bin" "$src/sbin" "$src/usr/bin" "$src/usr/libexec" \
     "$src/usr/tests" "$src/usr/lib64" "$src/etc/defaults" "$src/dev" \
-    "$src/proc" "$src/tmp" "$src/root" "$src/home"
+    "$src/proc" "$src/tmp" "$src/root" "$src/home" "$src/var/adm" \
+    "$src/var/tmp"
 
 install_prog() {        # program destination
         $STRIP --strip-debug -o "$src/$2" "$sys/$1"
@@ -119,7 +120,7 @@ $FAKEROOT sh -c '
         chmod 0755 "$src"/bin/* "$src"/sbin/* "$src"/usr/libexec/* \
             "$src"/usr/bin/*
         chmod 4555 "$src/usr/bin/login"
-        chmod 1777 "$src/tmp"
+        chmod 1777 "$src/tmp" "$src/var/tmp"
         chmod 0700 "$src/root"
         if [ -d "$src/home/test" ]; then
                 chown 100:100 "$src/home/test"

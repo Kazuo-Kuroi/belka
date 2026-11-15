@@ -11,13 +11,13 @@
  *
  * It checks that it runs as root under init (process 1) with /dev
  * mounted; that an orphan goes to init; that /proc reports processes;
- * that the utilities work
- * (usr/tests/utiltest.sh); and, on a pseudo-terminal, that
- * getty and login turn away a wrong password, refuse root on a line
- * /etc/ttys does not mark secure, and log the test user in with the
- * right password, to a shell with the user's IDs, home and name. Then
- * it halts the system with /sbin/halt, after giving init time to start
- * the console's getty.
+ * that the utilities work (usr/tests/utiltest.sh); on a
+ * pseudo-terminal, that getty and login turn away a wrong password,
+ * refuse root on a line /etc/ttys does not mark secure, and log the test
+ * user in with the right password, to a shell with the user's IDs, home
+ * and name, which who lists; and that utmpx and wtmpx have the records.
+ * Then it halts the system with /sbin/halt, after giving init time to
+ * start the console's getty.
  *
  * It prints "boottest: N failures"; the test run looks for 0.
  *
@@ -39,6 +39,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <utmpx.h>
 
 #include "../../sys/sys/procfs.h"
 
@@ -290,6 +291,48 @@ test_proc(void)
         CHECK(waitpid(pid, &status, 0) == pid);
 }
 
+/*
+ * The login records, after test_login: init's boot record and the
+ * console's getty in utmpx, and the test user's login, which login wrote
+ * to both utmpx and wtmpx.
+ */
+static void
+test_utmpx(const char *user)
+{
+        struct utmpx *ut;
+        int boot = 0, console = 0, mine = 0, inwtmp = 0;
+        FILE *fp;
+
+        setutxent();
+        while ((ut = getutxent()) != NULL) {
+                if (ut->ut_type == BOOT_TIME)
+                        boot = 1;
+                if (ut->ut_type == LOGIN_PROCESS &&
+                    strcmp(ut->ut_line, "console") == 0)
+                        console = 1;
+                if (ut->ut_type == USER_PROCESS &&
+                    strcmp(ut->ut_user, user) == 0 &&
+                    strncmp(ut->ut_line, "pts/", 4) == 0)
+                        mine = 1;
+        }
+        endutxent();
+        CHECK(boot);
+        CHECK(console);
+        CHECK(mine);
+
+        CHECK((fp = fopen("/var/adm/wtmpx", "r")) != NULL);
+        if (fp != NULL) {
+                struct utmpx rec;
+
+                while (fread(&rec, sizeof(rec), 1, fp) == 1)
+                        if (rec.ut_type == USER_PROCESS &&
+                            strcmp(rec.ut_user, user) == 0)
+                                inwtmp = 1;
+                fclose(fp);
+        }
+        CHECK(inwtmp);
+}
+
 /* The utilities, by usr/tests/utiltest.sh: it must find no failures. */
 static void
 test_utilities(void)
@@ -338,6 +381,10 @@ test_login(const char *user, const char *password, const char *uid,
         say(m, "echo \"<$USER_ID:$(cd && pwd):$USER:$LOGNAME>\"\n");
         snprintf(want, sizeof(want), "<%s:%s:%s:%s>", uid, home, user, user);
         CHECK(expect(m, want, 5000));
+        /* who lists the login (utmpx, from login). */
+        say(m, "who\n");
+        snprintf(want, sizeof(want), "%s ", user);
+        CHECK(expect(m, want, 5000));
         say(m, "exit\n");
         status = reap(pid, 10000);
         CHECK(status != -1);
@@ -357,6 +404,7 @@ main(int argc, char **argv)
         test_proc();
         test_utilities();
         test_login(argv[1], argv[2], argv[3], argv[4]);
+        test_utmpx(argv[1]);
         printf("boottest: %d failures\n", failures);
         /* Let init start the console's getty, then stop the system. */
         sleep(3);
