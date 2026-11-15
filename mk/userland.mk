@@ -230,7 +230,15 @@ $(SYS_OBJ)/ed/%.o: $(NB)/bin/ed/%.c $(NB)/bin/ed/ed.h $(COMPAT_HDRS) \
 $(SYS_DIR)/ed: $(ED_OBJS) $(SYS_DEPS)
 	$(call SYS_LINK,$(ED_OBJS))
 
-TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed)
+# passwd: Belka's own (usr/bin/passwd), over the compat library's crypt.
+$(SYS_OBJ)/passwd.o: usr/bin/passwd/passwd.c $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
+$(SYS_DIR)/passwd: $(SYS_OBJ)/passwd.o $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$<)
+
+TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
+                   $(SYS_DIR)/passwd
 
 SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mksh)
 

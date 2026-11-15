@@ -84,7 +84,7 @@ ln "$src/bin/test" "$src/bin/["
 cp "$sys/ps" "$src/bin/ps"            # dynamic: not stripped
 # terminfo: the programs, the descriptions' source (/etc/rc compiles
 # the database), and ed.
-for prog in tic infocmp tput; do
+for prog in tic infocmp tput passwd; do
         cp "$sys/$prog" "$src/usr/bin/$prog"    # dynamic: not stripped
 done
 cp usr/bin/clear/clear.sh "$src/usr/bin/clear"
@@ -119,7 +119,7 @@ $FAKEROOT sh -c '
         chown -R 0:0 "$src"
         chmod 0755 "$src"/bin/* "$src"/sbin/* "$src"/usr/libexec/* \
             "$src"/usr/bin/*
-        chmod 4555 "$src/usr/bin/login"
+        chmod 4555 "$src/usr/bin/login" "$src/usr/bin/passwd"
         chmod 1777 "$src/tmp" "$src/var/tmp"
         chmod 0700 "$src/root"
         if [ -d "$src/home/test" ]; then

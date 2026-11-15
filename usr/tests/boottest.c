@@ -15,7 +15,9 @@
  * pseudo-terminal, that getty and login turn away a wrong password,
  * refuse root on a line /etc/ttys does not mark secure, and log the test
  * user in with the right password, to a shell with the user's IDs, home
- * and name, which who lists; and that utmpx and wtmpx have the records.
+ * and name, which who lists, and where passwd changes the password, so
+ * that the old one fails and the new one works; and that utmpx and
+ * wtmpx have the records.
  * Then it halts the system with /sbin/halt, after giving init time to
  * start the console's getty.
  *
@@ -385,6 +387,40 @@ test_login(const char *user, const char *password, const char *uid,
         say(m, "who\n");
         snprintf(want, sizeof(want), "%s ", user);
         CHECK(expect(m, want, 5000));
+        /* passwd changes the password, giving the old one first. */
+        say(m, "passwd\n");
+        CHECK(expect(m, "Old password:", 5000));
+        snprintf(line, sizeof(line), "%s\n", password);
+        say(m, line);
+        CHECK(expect(m, "New password:", 10000));
+        say(m, "new-Pass-2026\n");
+        CHECK(expect(m, "Retype new password:", 5000));
+        say(m, "new-Pass-2026\n");
+        CHECK(expect(m, "The password is changed.", 15000));
+        say(m, "exit\n");
+        status = reap(pid, 10000);
+        CHECK(status != -1);
+        close(m);
+
+        /* Now the old password fails, and the new one works. */
+        CHECK((m = start_getty(&pid)) >= 0);
+        if (m < 0)
+                return;
+        CHECK(expect(m, "login: ", 5000));
+        snprintf(line, sizeof(line), "%s\n", user);
+        say(m, line);
+        CHECK(expect(m, "Password:", 5000));
+        snprintf(line, sizeof(line), "%s\n", password);
+        say(m, line);
+        CHECK(expect(m, "Login incorrect", 10000));
+        CHECK(expect(m, "login: ", 5000));
+        snprintf(line, sizeof(line), "%s\n", user);
+        say(m, line);
+        CHECK(expect(m, "Password:", 5000));
+        say(m, "new-Pass-2026\n");
+        CHECK(expect(m, "$ ", 10000));
+        say(m, "echo \"<$((40 + 2))>\"\n");
+        CHECK(expect(m, "<42>", 5000));
         say(m, "exit\n");
         status = reap(pid, 10000);
         CHECK(status != -1);

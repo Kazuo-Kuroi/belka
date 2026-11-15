@@ -41,8 +41,10 @@ ext2 root image by `tools/mkroot.sh` (it needs `fakeroot`): NetBSD's
 (`contrib/mksh`), and Belka's own `getty` and `reboot`/`halt`
 (`usr/sbin`), over a small compat library (`usr/lib/compat`), and in
 `/bin` the Ksenon utilities, `ls`, `cat`, `cp` and the rest
-(`contrib/ksenon-utils`, mostly linked dynamically), and Belka's `ps`
-over IRIX-style `/proc`; `/etc` comes from `etc/`. `make sys-progs` builds the programs and `make
+(`contrib/ksenon-utils`, mostly linked dynamically), Belka's `ps` over
+IRIX-style `/proc` and its `passwd`, NetBSD's terminfo (`tic`, `tput`,
+`infocmp`; `/etc/rc` compiles the database at boot) and `ed`; `/etc`
+comes from `etc/`. `make sys-progs` builds the programs and `make
 root-image` the image. A normal boot (no `selftest` on the kernel
 command line) mounts that image as root and starts `/sbin/init`.
 

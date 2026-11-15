@@ -1583,6 +1583,55 @@ Recorded 2026-11-07.
 - **terminfo, not termcap,** when curses and full-screen programs come:
   System V's compiled database, as SVR4 and UnixWare had and as curses
   expects. Belka's getty needs neither.
+- **NetBSD's** (built 2026-11-14), not ncurses: libterminfo (which also
+  answers the termcap calls), tic, infocmp and tput, plain C with no
+  configure step. Its compiled database is NetBSD's one constant
+  database, `/usr/share/misc/terminfo.cdb`, not SVR4's tree of files.
+  The descriptions are ncurses's source (MIT-style licence).
+- **Compiled on Belka:** NetBSD generates libterminfo's `hash.c` with
+  its scripts and nbperf, and builds the database and some built-in
+  descriptions by running tic at build time. Belka runs nothing built
+  from imported code on the host, so `tools/terminfo-hash.awk` makes
+  `hash.c` (a plain search for the perfect hash), `termcap_hash.c` is
+  written by hand, there are no built-in descriptions, and `/etc/rc`
+  compiles the database at boot from the source on the image, when it
+  is missing or older. That takes a second or two.
+- `clear` is a script over `tput`. utiltest checks the database, tput,
+  clear and infocmp.
+
+## utmpx (2026-11-14)
+
+- **The records are System V's,** `/var/adm/utmpx` and `/var/adm/wtmpx`
+  (Belka's mlibc ABI has its own `<utmpx.h>`, musl's struct with these
+  paths), kept through mlibc's POSIX functions.
+- **Who writes them:** init (built with `SUPPORT_UTMPX`) writes the boot
+  and down records and each getty's `LOGIN_PROCESS`, and marks a line's
+  entry dead when its session ends; login writes the `USER_PROCESS`
+  entry, through NetBSD libutil's `loginx`, `logoutx` and `logwtmpx` in
+  the compat library. `who` lists the logins. Not kept: the remote
+  address (there is no networking), NetBSD's lastlogx database, and the
+  old utmp.
+- **mlibc fixes:** `pututxline` now writes over the entry it names
+  instead of always appending (else a logout left the login listed), and
+  `getutxline` matches entries by their own type.
+- **Tests:** boottest checks the boot record, the console's getty and a
+  login in utmpx, the login in wtmpx, and `who`; the console session
+  checks that after logging out and in there is one login on the
+  console. Appending again leaves two.
+
+## ed and passwd (2026-11-14)
+
+- **ed** is NetBSD's, static in `/bin` so that it works when little else
+  does, with its old command forms and without DES.
+- **passwd** is Belka's own (`usr/bin/passwd`), set-user-ID root: a user
+  changes their own password after giving the old one, the superuser
+  anyone's. The new one is asked twice, hashed with `$sha1$` under a new
+  salt (8 characters, about 18,500 to 24,680 rounds), and written to
+  `/etc/passwd` through `/etc/ptmp`, the lock, renamed over it. There is
+  no shadow file yet, so the hashes are in `/etc/passwd`.
+- **Tests:** in boottest's session the test user changes the password;
+  then the old one is refused and the new one logs in. Writing the old
+  hash back makes it fail.
 
 ## File systems
 
