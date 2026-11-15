@@ -28,6 +28,7 @@ The paths are NetBSD's.
                                 the constant database terminfo.cdb is
     sys/sys/bitops.h, sys/sys/queue.h     NetBSD's headers they need
     lib/libutil/efun.c, lib/libc/stdlib/reallocarr.c
+    lib/libutil/loginx.c, logoutx.c, logwtmpx.c    utmpx and wtmpx records
     bin/ed/                     ed(1); Belka builds it without DES
 
 They are built over mlibc with Belka's compat library (usr/lib/compat),
