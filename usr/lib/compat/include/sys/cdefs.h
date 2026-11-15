@@ -38,6 +38,8 @@
 #define __sysloglike(f, a)      __attribute__((__format__(__printf__, f, a)))
 #define __predict_true(e)       __builtin_expect((e) != 0, 1)
 #define __predict_false(e)      __builtin_expect((e) != 0, 0)
+#define __GNUC_PREREQ__(x, y)   (__GNUC__ > (x) || \
+                                 (__GNUC__ == (x) && __GNUC_MINOR__ >= (y)))
 #define __arraycount(a)         (sizeof(a) / sizeof((a)[0]))
 
 /* Drop const from a pointer without a warning. */

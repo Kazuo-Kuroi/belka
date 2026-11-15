@@ -24,6 +24,13 @@
 #include <signal.h>
 #include <sys/time.h>
 #include <sys/socket.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <termios.h>        /* struct winsize, which mlibc keeps here */
+#include <sys/ioctl.h>
+#include <sys/endian.h>
 
 /* NetBSD's internal assertions: off. */
 #define _DIAGASSERT(e)  ((void)0)
@@ -36,6 +43,13 @@ void setprogname(const char *);
 uint32_t arc4random(void);
 uint32_t arc4random_uniform(uint32_t);
 long long strtonum(const char *, long long, long long, const char **);
+int reallocarr(void *, size_t, size_t);
+void mi_vector_hash(const void *, size_t, uint32_t, uint32_t[3]);
+intmax_t strtoi(const char *, char **, int, intmax_t, intmax_t, int *);
+uintmax_t strtou(const char *, char **, int, uintmax_t, uintmax_t, int *);
+
+/* <search.h> */
+void hdestroy1(void (*)(void *), void (*)(void *));
 
 /* <signal.h> */
 typedef void (*sig_t)(int);
@@ -47,6 +61,14 @@ typedef void (*sig_t)(int);
 #define _PASSWORD_WARNDAYS      14
 #define _PASSWORD_CHGNOW        -1
 #define _PASSWORD_LEN           128
+
+/* <sys/stat.h> */
+#ifndef DEFFILEMODE
+#define DEFFILEMODE     0666
+#endif
+#ifndef ALLPERMS
+#define ALLPERMS        07777
+#endif
 
 /* <paths.h> */
 #define _PATH_CONSTTY   "/dev/constty"

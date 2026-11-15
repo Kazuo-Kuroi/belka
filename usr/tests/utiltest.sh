@@ -135,6 +135,19 @@ status "nice -n -5, root" 0 nice -n -5 true
 check "nice runs it" "ran" nice -n 19 sh -c 'echo ran'
 check "id -u" "0" id -u
 check "uname -s" "Belka" uname -s
+# terminfo: the database /etc/rc compiled, and its programs.
+status "terminfo.cdb" 0 test -s /usr/share/misc/terminfo.cdb
+check "tput clear" " 033 [ H 033 [ 2 J" sh -c 'tput -T xterm clear | od -An -c | tr -s " "'
+check "tput cols" "80" tput -T vt100 cols
+check "tput colors" "256" tput -T xterm-256color colors
+check "clear" " 033 [ H 033 [ 2 J" sh -c 'TERM=xterm clear | od -An -c | tr -s " "'
+check "infocmp" "vt100|vt100-am|dec vt100 (w/advanced video)," sh -c 'infocmp vt100 | head -n 2 | tail -n 1'
+
+# ed: write a file, change it, read it back.
+check "ed" "hello
+world" sh -c 'printf "a\nhello\nwurld\n.\n2s/u/o/\nw edfile\nq\n" | ed -s && cat edfile'
+check "ed: line count" "12" sh -c 'printf "a\nhello\nworld\n.\nw edfile2\nq\n" | ed'
+
 # ps, over /proc/pinfo.
 check "ps -p 1" "1 init" sh -c 'set -- $(ps -p 1 | tail -n 1) && echo $1 $4'
 check "ps -f -p 1" "root 0" sh -c 'set -- $(ps -f -p 1 | tail -n 1) && echo $1 $3'

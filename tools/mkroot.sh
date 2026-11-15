@@ -81,6 +81,15 @@ ln "$src/bin/mv" "$src/bin/ln"
 ln "$src/bin/chown" "$src/bin/chgrp"
 ln "$src/bin/test" "$src/bin/["
 cp "$sys/ps" "$src/bin/ps"            # dynamic: not stripped
+# terminfo: the programs, the descriptions' source (/etc/rc compiles
+# the database), and ed.
+for prog in tic infocmp tput; do
+        cp "$sys/$prog" "$src/usr/bin/$prog"    # dynamic: not stripped
+done
+cp usr/bin/clear/clear.sh "$src/usr/bin/clear"
+install_prog ed bin/ed
+mkdir -p "$src/usr/share/misc"
+cp contrib/netbsd/share/terminfo/terminfo "$src/usr/share/misc/terminfo"
 cp "$libdir/ld.so.1" "$libdir/libc.so.1" "$src/usr/lib64/"
 
 for f in rc rc.conf ttys passwd group shells profile defaults/rc.conf; do
@@ -107,7 +116,8 @@ $FAKEROOT sh -c '
         set -e
         src=$1
         chown -R 0:0 "$src"
-        chmod 0755 "$src"/bin/* "$src"/sbin/* "$src"/usr/libexec/*
+        chmod 0755 "$src"/bin/* "$src"/sbin/* "$src"/usr/libexec/* \
+            "$src"/usr/bin/*
         chmod 4555 "$src/usr/bin/login"
         chmod 1777 "$src/tmp"
         chmod 0700 "$src/root"

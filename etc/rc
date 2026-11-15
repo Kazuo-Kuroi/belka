@@ -25,6 +25,14 @@ fi
 
 echo "Starting Belka multi-user."
 
+# The terminal descriptions are compiled here, from their source, when
+# the database is missing or older (the image carries only the source).
+ti=/usr/share/misc/terminfo
+if [ -f $ti ] && { [ ! -f $ti.cdb ] || [ $ti -nt $ti.cdb ]; }; then
+        echo "Compiling the terminal descriptions."
+        tic -x $ti
+fi
+
 if [ -f /etc/rc.local ]; then
         . /etc/rc.local
 fi

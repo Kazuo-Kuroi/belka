@@ -39,7 +39,13 @@ COMPAT_SRCS     := usr/lib/compat/db.c usr/lib/compat/misc.c \
                    $(NB)/lib/libc/stdio/fparseln.c \
                    $(NB)/lib/libcrypt/crypt-sha1.c \
                    $(NB)/lib/libcrypt/hmac_sha1.c \
-                   $(NB)/common/lib/libc/hash/sha1/sha1.c
+                   $(NB)/common/lib/libc/hash/sha1/sha1.c \
+                   usr/lib/compat/strtoi.c \
+                   $(NB)/lib/libc/cdb/cdbw.c \
+                   $(NB)/common/lib/libc/cdb/cdbr.c \
+                   $(NB)/common/lib/libc/stdlib/mi_vector_hash.c \
+                   $(NB)/lib/libc/stdlib/reallocarr.c \
+                   $(NB)/lib/libutil/efun.c
 COMPAT_OBJS     := $(patsubst %.c,$(SYS_OBJ)/%.o,$(COMPAT_SRCS))
 COMPAT_LIB      := $(SYS_DIR)/libcompat.a
 
@@ -132,6 +138,9 @@ $(SYS_OBJ)/mksh/%.o: contrib/mksh/%.c contrib/mksh/sh.h \
 $(SYS_DIR)/mksh: $(MKSH_OBJS) $(SYS_DEPS)
 	$(call SYS_LINK,$(MKSH_OBJS))
 
+# Headers for NetBSD code built for the host (tools/hostcompat).
+HOSTCOMPAT      := $(wildcard tools/hostcompat/*.h tools/hostcompat/*/*.h)
+
 # The host's password hasher for the image's password file, from the
 # same crypt sources (tools/mkpasswd.c).
 MKPASSWD        := build/tools/mkpasswd
@@ -140,11 +149,10 @@ MKPASSWD_SRCS   := tools/mkpasswd.c usr/lib/compat/crypt_to64.c \
                    $(NB)/lib/libcrypt/hmac_sha1.c \
                    $(NB)/common/lib/libc/hash/sha1/sha1.c
 
-$(MKPASSWD): $(MKPASSWD_SRCS) $(wildcard tools/mkpasswd-inc/*.h)
+$(MKPASSWD): $(MKPASSWD_SRCS) $(HOSTCOMPAT)
 	@mkdir -p $(dir $@)
-	$(HOSTCC) -O2 -w -include tools/mkpasswd-inc/host.h -Itools/mkpasswd-inc \
-	    -I$(NB)/sys -I$(NB)/lib/libcrypt -D'__RCSID(s)=' \
-	    -D'_DIAGASSERT(e)=((void)0)' -o $@ $(MKPASSWD_SRCS)
+	$(HOSTCC) -O2 -w -include tools/hostcompat/host.h -Itools/hostcompat \
+	    -I$(NB)/sys -I$(NB)/lib/libcrypt -o $@ $(MKPASSWD_SRCS)
 
 # The boot test (usr/tests/boottest.c), for the test root image only.
 $(SYS_OBJ)/boottest.o: usr/tests/boottest.c sys/sys/procfs.h $(MLIBC)
@@ -152,6 +160,71 @@ $(SYS_OBJ)/boottest.o: usr/tests/boottest.c sys/sys/procfs.h $(MLIBC)
 	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
 $(SYS_DIR)/boottest: $(SYS_OBJ)/boottest.o $(SYS_DEPS)
 	$(call SYS_LINK,$(SYS_OBJ)/boottest.o)
+
+# terminfo (NetBSD's libterminfo, contrib/netbsd/lib/libterminfo), with
+# the files NetBSD generates made Belka's way: hash.c by
+# tools/terminfo-hash.awk, termcap_hash.c and compiled_terms.c (no
+# built-in descriptions: the database is compiled on Belka, by /etc/rc)
+# in usr/lib/compat/terminfo. tic, infocmp and tput are linked
+# dynamically; the library is static.
+TI              := $(NB)/lib/libterminfo
+TI_OBJ          := $(SYS_OBJ)/terminfo
+TI_CFLAGS       := $(IMPORT_CFLAGS) -DTERMINFO_COMPILE -DTERMINFO_DB \
+                   -DTERMINFO_COMPAT -I$(TI) -I$(TI_OBJ) \
+                   -Iusr/lib/compat/terminfo
+TI_SRCS         := compile curterm setupterm term termcap ti tparm tputs
+TI_LIB          := $(SYS_DIR)/libterminfo.a
+TI_HDRS         := $(wildcard $(TI)/*.h usr/lib/compat/terminfo/*)
+
+$(TI_OBJ)/hash.c: $(TI)/term.h tools/terminfo-hash.awk
+	@mkdir -p $(dir $@)
+	LC_ALL=C awk -f tools/terminfo-hash.awk $(TI)/term.h > $@.tmp && \
+	    mv $@.tmp $@
+
+$(TI_OBJ)/hash.o: $(TI_OBJ)/hash.c $(TI_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	$(LIBC_CC) $(TI_CFLAGS) -c -o $@ $<
+
+$(TI_OBJ)/%.o: $(TI)/%.c $(TI_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(TI_CFLAGS) -c -o $@ $<
+
+$(TI_LIB): $(patsubst %,$(TI_OBJ)/%.o,$(TI_SRCS) hash)
+	rm -f $@
+	ar rcs $@ $^
+
+# A dynamic program over the compat library and libc.so.1.
+SYS_DYNLINK     = $(call LINK_DYNAMIC,$(DYN_INTERP),) $(LIBC_CRT0) \
+                  $(PROGRAM_BEGIN) $(1) $(COMPAT_LIB) $(SYSLIB)/libc.so \
+                  $(LIBC_RTLIB) $(PROGRAM_END) $(LIBC_CRTN)
+SYS_DYNDEPS     := $(COMPAT_LIB) $(MLIBC_SHARED) $(PROGRAM_BEGIN) \
+                   $(PROGRAM_END) $(LD_DEPS)
+
+$(TI_OBJ)/prog/tic.o: $(NB)/usr.bin/tic/tic.c
+$(TI_OBJ)/prog/infocmp.o: $(NB)/usr.bin/infocmp/infocmp.c
+$(TI_OBJ)/prog/tput.o: $(NB)/usr.bin/tput/tput.c
+$(TI_OBJ)/prog/tic.o $(TI_OBJ)/prog/infocmp.o $(TI_OBJ)/prog/tput.o: \
+                $(TI_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(TI_CFLAGS) -c -o $@ $(filter $(NB)/usr.bin/%,$^)
+
+$(SYS_DIR)/tic $(SYS_DIR)/infocmp $(SYS_DIR)/tput: $(SYS_DIR)/%: \
+                $(TI_OBJ)/prog/%.o $(TI_LIB) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$< $(TI_LIB))
+
+# ed: NetBSD's, with its old command forms (BACKWARDS) and without DES;
+# static, so that it still works when little else does.
+ED_SRCS         := buf cbc glbl io main re sub undo
+ED_OBJS         := $(patsubst %,$(SYS_OBJ)/ed/%.o,$(ED_SRCS))
+
+$(SYS_OBJ)/ed/%.o: $(NB)/bin/ed/%.c $(NB)/bin/ed/ed.h $(COMPAT_HDRS) \
+                $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DBACKWARDS -c -o $@ $<
+
+$(SYS_DIR)/ed: $(ED_OBJS) $(SYS_DEPS)
+	$(call SYS_LINK,$(ED_OBJS))
+
+TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed)
 
 SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mksh)
 
@@ -222,7 +295,9 @@ $(SYS_DIR)/ps: $(SYS_OBJ)/ps.o $(MLIBC_SHARED) $(PROGRAM_BEGIN) $(PROGRAM_END) \
 # for each boot.
 ROOT_IMG        := build/root-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
-ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(XN_BINS) $(LIBC_SOS) \
+ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
+                   $(LIBC_SOS) usr/bin/clear/clear.sh \
+                   contrib/netbsd/share/terminfo/terminfo \
                    $(MKPASSWD) tools/mkroot.sh \
                    $(wildcard etc/* etc/defaults/*)
 
