@@ -3,6 +3,7 @@
 /*-
  * Copyright (c) 1980, 1987, 1988, 1991, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
+ * Portions Copyright 2026 Setsuna Software L.C.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -65,7 +66,9 @@ static void	 dolastlog(int);
 #ifdef SUPPORT_UTMPX
 #include <utmpx.h>
 static void	 doutmpx(void);
+#ifndef NO_LASTLOGX
 static void	 dolastlogx(int);
+#endif
 #endif
 
 /*
@@ -225,8 +228,10 @@ update_db(int quietlog, int rootlogin, int fflag)
 	(void)gettimeofday(&now, NULL);
 #ifdef SUPPORT_UTMPX
 	doutmpx();
+#ifndef NO_LASTLOGX	/* Belka: no lastlogx database yet */
 	dolastlogx(quietlog);
 	quietlog = 1;
+#endif
 #endif	
 #ifdef SUPPORT_UTMP
 	doutmp();
@@ -246,7 +251,9 @@ doutmpx(void)
 	(void)strncpy(utmpx.ut_name, username, sizeof(utmpx.ut_name));
 	if (hostname) {
 		(void)strncpy(utmpx.ut_host, hostname, sizeof(utmpx.ut_host));
+#ifndef NO_UT_SS	/* Belka: struct utmpx keeps no address */
 		utmpx.ut_ss = ss;
+#endif
 	}
 	(void)strncpy(utmpx.ut_line, tty, sizeof(utmpx.ut_line));
 	utmpx.ut_type = USER_PROCESS;
@@ -261,10 +268,15 @@ doutmpx(void)
 	if (pututxline(&utmpx) == NULL)
 		syslog(LOG_NOTICE, "Cannot update utmpx: %m");
 	endutxent();
+#ifdef UPDWTMPX_VOID	/* Belka: mlibc's updwtmpx() returns nothing */
+	updwtmpx(_PATH_WTMPX, &utmpx);
+#else
 	if (updwtmpx(_PATH_WTMPX, &utmpx) != 0)
 		syslog(LOG_NOTICE, "Cannot update wtmpx: %m");
+#endif
 }
 
+#ifndef NO_LASTLOGX
 static void
 dolastlogx(int quiet)
 {
@@ -293,6 +305,7 @@ dolastlogx(int quiet)
 	if (updlastlogx(_PATH_LASTLOGX, pwd->pw_uid, &ll) != 0)
 		syslog(LOG_NOTICE, "Cannot update lastlogx: %m");
 }
+#endif
 #endif
 
 #ifdef SUPPORT_UTMP
