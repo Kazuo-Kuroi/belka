@@ -498,7 +498,7 @@ $(CONDRIVE): tools/condrive.c
 
 test-console: $(BOOT_ISO) $(ROOT_DEPS) $(CONDRIVE) usr/tests/console.script \
                 tools/console-test.sh
-	sh tools/mkroot.sh $(ROOT_CON_IMG) $(SYS_DIR) $(MKPASSWD) $(LIBC_SODIR)
+	sh tools/mkroot.sh $(ROOT_CON_IMG) $(SYS_DIR) $(LIBC_SODIR)
 	sh tools/console-test.sh $(CONDRIVE) usr/tests/console.script \
 	    $(BUILD)/test-console-serial.log \
 	    $(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_CON_IMG)) -cdrom $(BOOT_ISO)

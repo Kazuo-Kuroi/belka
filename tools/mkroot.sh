@@ -15,14 +15,14 @@
 # Everything is owned by root, and login is set-user-ID, through
 # fakeroot(1). root has no password.
 #
-# With -t, the image is the boot test's: user "test" (uid 100, its
-# password hashed with mkpasswd) and an /etc/rc.local that runs
+# With -t, the image is the boot test's: user "test" (uid 100, password
+# "belka-test", its hash written here) and an /etc/rc.local that runs
 # /usr/tests/boottest in the background as the system comes up.
 #
 # The utilities but mv are dynamic, so /usr/lib64 gets the runtime
 # linker and libc.so.1 from libdir.
 #
-# usage: mkroot.sh [-t] image sysdir mkpasswd libdir
+# usage: mkroot.sh [-t] image sysdir libdir
 #
 
 set -eu
@@ -32,14 +32,13 @@ if [ "${1:-}" = -t ]; then
         test=1
         shift
 fi
-if [ $# -ne 4 ]; then
-        echo "usage: $0 [-t] image sysdir mkpasswd libdir" >&2
+if [ $# -ne 3 ]; then
+        echo "usage: $0 [-t] image sysdir libdir" >&2
         exit 1
 fi
 img=$1
 sys=$2
-mkpasswd=$3
-libdir=$4
+libdir=$3
 MKE2FS=${MKE2FS:-/sbin/mke2fs}
 FAKEROOT=${FAKEROOT:-fakeroot}
 STRIP=${STRIP:-strip}
@@ -102,7 +101,9 @@ ln -s ../dev/mnttab "$src/etc/mnttab"
 if [ $test -eq 1 ]; then
         install_prog boottest usr/tests/boottest
         cp usr/tests/utiltest.sh "$src/usr/tests/utiltest.sh"
-        hash=$("$mkpasswd" belka-test '$sha1$24680$belkatst$')
+        # crypt("belka-test", "$sha1$24680$belkatst$"); boottest logs in
+        # with it, so Belka's crypt checks it.
+        hash='$sha1$24680$belkatst$XycoewmXxvwRJYfMFY3Jpt0BG5Li'
         echo "test:$hash:100:100:Boot test:/home/test:/bin/sh" \
             >> "$src/etc/passwd"
         mkdir -p "$src/home/test"

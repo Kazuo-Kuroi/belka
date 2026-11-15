@@ -6,8 +6,7 @@
 
 /*
  * The base-64 encoding of crypt(3) results, which NetBSD's SHA1 crypt
- * uses. Kept apart, with nothing but <stdint.h>, so that the host's
- * tools/mkpasswd can use it too.
+ * uses, with nothing but <stdint.h>.
  */
 
 #include <stdint.h>

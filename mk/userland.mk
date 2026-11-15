@@ -143,23 +143,6 @@ $(SYS_OBJ)/mksh/%.o: contrib/mksh/%.c contrib/mksh/sh.h \
 
 $(SYS_DIR)/mksh: $(MKSH_OBJS) $(SYS_DEPS)
 	$(call SYS_LINK,$(MKSH_OBJS))
-
-# Headers for NetBSD code built for the host (tools/hostcompat).
-HOSTCOMPAT      := $(wildcard tools/hostcompat/*.h tools/hostcompat/*/*.h)
-
-# The host's password hasher for the image's password file, from the
-# same crypt sources (tools/mkpasswd.c).
-MKPASSWD        := build/tools/mkpasswd
-MKPASSWD_SRCS   := tools/mkpasswd.c usr/lib/compat/crypt_to64.c \
-                   $(NB)/lib/libcrypt/crypt-sha1.c \
-                   $(NB)/lib/libcrypt/hmac_sha1.c \
-                   $(NB)/common/lib/libc/hash/sha1/sha1.c
-
-$(MKPASSWD): $(MKPASSWD_SRCS) $(HOSTCOMPAT)
-	@mkdir -p $(dir $@)
-	$(HOSTCC) -O2 -w -include tools/hostcompat/host.h -Itools/hostcompat \
-	    -I$(NB)/sys -I$(NB)/lib/libcrypt -o $@ $(MKPASSWD_SRCS)
-
 # The boot test (usr/tests/boottest.c), for the test root image only.
 $(SYS_OBJ)/boottest.o: usr/tests/boottest.c sys/sys/procfs.h $(MLIBC)
 	@mkdir -p $(dir $@)
@@ -312,14 +295,13 @@ ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
                    $(LIBC_SOS) usr/bin/clear/clear.sh \
                    contrib/netbsd/share/terminfo/terminfo \
-                   $(MKPASSWD) tools/mkroot.sh \
+                   tools/mkroot.sh \
                    $(wildcard etc/* etc/defaults/*)
 
 $(ROOT_IMG): $(ROOT_DEPS)
-	sh tools/mkroot.sh $@ $(SYS_DIR) $(MKPASSWD) $(LIBC_SODIR)
+	sh tools/mkroot.sh $@ $(SYS_DIR) $(LIBC_SODIR)
 
-MKROOT_TEST     = sh tools/mkroot.sh -t $(ROOT_TEST_IMG) $(SYS_DIR) \
-                  $(MKPASSWD) $(LIBC_SODIR)
+MKROOT_TEST     = sh tools/mkroot.sh -t $(ROOT_TEST_IMG) $(SYS_DIR) $(LIBC_SODIR)
 
 root-image: $(ROOT_IMG)
 

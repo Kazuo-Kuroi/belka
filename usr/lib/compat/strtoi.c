@@ -6,8 +6,7 @@
 
 /*
  * NetBSD functions that its libutil and tic use and other C libraries
- * lack; built for Belka (in the compat library) and for the host (the
- * host's tic):
+ * lack, for the compat library:
  *
  *   strtoi, strtou   strtoimax and strtoumax that also check a range
  *                    and report how the conversion went in *rstatus:
