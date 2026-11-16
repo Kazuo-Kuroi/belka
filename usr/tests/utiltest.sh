@@ -8,8 +8,9 @@
 # root on the booted test image. It uses nothing but the utilities and
 # the shell (mksh), and looks most at what rests on Belka's own calls:
 # df (statvfs, /dev/mnttab), touch (utimensat), nice, tty (ttyname),
-# chown, ln, and the device numbers ls shows. Their full suite, which
-# needs grep, sed and awk, runs on GNU/Linux.
+# chown, ln, and the device numbers ls shows; then the other programs:
+# terminfo, ed, sed, grep, awk, ex and ps. The utilities' own suite runs
+# on GNU/Linux.
 #
 # Prints "utiltest: N failures" and exits with N.
 
@@ -191,6 +192,17 @@ check "awk getline" "pear" awk 'BEGIN { getline l < "fruit"; print l }'
 check "awk | sort" "apple
 fig
 pear" sh -c 'awk "!seen[\$0]++" fruit | sort'
+
+# ex (nvi), in batch mode: its own regex, and its lines in db(3)'s
+# recno. It wants a terminal type even so, and its standard error on a
+# terminal, whose mode it sets for messages (mesg) as vi does.
+check "ex -s" "h_ll_
+w_rld" sh -c 'printf "a\nhello\nworld\n.\n%%s/[aeiou]/_/g\nw exfile\nq\n" | TERM=vt100 ex -s 2>/dev/console && cat exfile'
+check "ex -s, read" "2" sh -c 'printf "\$=\nq\n" | TERM=vt100 ex -s exfile 2>/dev/console'
+
+# The console's mode can change (login and vi's mesg change it).
+check "chmod console" "crw-------" field 1 sh -c 'chmod 600 /dev/console && ls -l /dev/console'
+status "chmod console back" 0 chmod 620 /dev/console
 
 # ps, over /proc/pinfo.
 check "ps -p 1" "1 init" sh -c 'set -- $(ps -p 1 | tail -n 1) && echo $1 $4'

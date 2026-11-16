@@ -28,6 +28,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <errno.h>
+#include <time.h>
 #include <termios.h>        /* struct winsize, which mlibc keeps here */
 #include <sys/ioctl.h>
 #include <sys/endian.h>
@@ -64,6 +66,17 @@ uintmax_t strtou(const char *, char **, int, uintmax_t, uintmax_t, int *);
 /* <search.h> */
 void hdestroy1(void (*)(void *), void (*)(void *));
 
+/* <fcntl.h>: BSD's locking opens; Belka has none. */
+#ifndef O_EXLOCK
+#define O_EXLOCK        0
+#define O_SHLOCK        0
+#endif
+
+/* <errno.h>: NetBSD's "inappropriate file type or format" (db). */
+#ifndef EFTYPE
+#define EFTYPE          EINVAL
+#endif
+
 /* <signal.h> */
 typedef void (*sig_t)(int);
 
@@ -99,6 +112,7 @@ typedef void (*sig_t)(int);
 #include <paths.h>               /* the compat one: utmpx paths */
 
 /* <stdio.h> */
+int fpurge(FILE *);
 #define FPARSELN_UNESCESC       0x01
 #define FPARSELN_UNESCCONT      0x02
 #define FPARSELN_UNESCCOMM      0x04

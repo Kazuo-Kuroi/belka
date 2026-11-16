@@ -68,6 +68,30 @@ expect -> ../dev/mnttab
 send ps\r
 expect \x20console\x20
 
+# vi on the console (a vt100, from /etc/ttys): insert three lines,
+# delete the first and put it after the next, substitute, and write and
+# quit; the file says what was done. (A pause after escape, so that vi
+# does not take what follows for the rest of a key.)
+send vi /tmp/vitest\r
+expect /tmp/vitest: 15000
+send ione\rtwo\rthree\x1b
+sleep 300
+send 1Gddp
+send :%s/three/3/\r
+send :wq\r
+expect #\x20 15000
+send echo "<"$(cat /tmp/vitest)">"\r
+expect <two one 3>
+# Undo and a search: delete a line found by /, then u brings it back.
+send vi /tmp/vitest\r
+expect /tmp/vitest: 15000
+send /one\rdd
+send u
+send :wq\r
+expect #\x20 15000
+send echo "n=$(wc -l < /tmp/vitest | tr -d ' ')"\r
+expect n=3
+
 # Stop the system.
 send halt\r
 expect halted 30000

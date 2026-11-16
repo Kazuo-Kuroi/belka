@@ -93,6 +93,12 @@ for prog in sed grep awk; do
 done
 ln "$src/usr/bin/grep" "$src/usr/bin/egrep"
 ln "$src/usr/bin/grep" "$src/usr/bin/fgrep"
+# vi (nvi): ex and view are vi; its recovery files go in
+# /var/tmp/vi.recover.
+cp "$sys/vi" "$src/usr/bin/vi"
+ln "$src/usr/bin/vi" "$src/usr/bin/ex"
+ln "$src/usr/bin/vi" "$src/usr/bin/view"
+mkdir -p "$src/var/tmp/vi.recover"
 install_prog ed bin/ed
 mkdir -p "$src/usr/share/misc"
 cp contrib/netbsd/share/terminfo/terminfo "$src/usr/share/misc/terminfo"
@@ -127,7 +133,7 @@ $FAKEROOT sh -c '
         chmod 0755 "$src"/bin/* "$src"/sbin/* "$src"/usr/libexec/* \
             "$src"/usr/bin/*
         chmod 4555 "$src/usr/bin/login" "$src/usr/bin/passwd"
-        chmod 1777 "$src/tmp" "$src/var/tmp"
+        chmod 1777 "$src/tmp" "$src/var/tmp" "$src/var/tmp/vi.recover"
         chmod 0700 "$src/root"
         if [ -d "$src/home/test" ]; then
                 chown 100:100 "$src/home/test"

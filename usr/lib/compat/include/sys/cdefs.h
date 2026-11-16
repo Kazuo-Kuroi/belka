@@ -53,4 +53,14 @@
 /* NetBSD's versioned symbol names: the plain ones here. */
 #define __RENAME(x)
 
+/* Link-time warnings about a symbol: none. */
+#define __warn_references(sym, msg)
+#define __nothing               ((void)0)
+#define __USE(a)                ((void)(a))
+#define __strong_alias(alias, sym) \
+        extern __typeof(sym) alias __attribute__((__alias__(#sym)));
+
+/* NetBSD's name for the compiler's va_list. */
+#define __va_list               __builtin_va_list
+
 #endif /* _COMPAT_SYS_CDEFS_H_ */

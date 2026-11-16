@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <pwd.h>
 #include <stdio.h>
+#include <stdio_ext.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -249,4 +250,12 @@ sockaddr_snprintf(char *buf, size_t len, const char *fmt,
         (void)fmt;
         (void)sa;
         return snprintf(buf, len, "?");
+}
+
+/* fpurge: discard what is buffered, as mlibc's __fpurge does. */
+int
+fpurge(FILE *fp)
+{
+        __fpurge(fp);
+        return 0;
 }
