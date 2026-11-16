@@ -1660,9 +1660,8 @@ Recorded 2026-11-07.
   own regex, and its lines in db(3)'s recno; ex and view are links.
   NetBSD's db(3) (btree, hash, recno, mpool) replaces the compat
   library's small in-memory table. nvi's configuration is NetBSD's but
-  for iconv (mlibc has none) and file locks: Belka has neither flock nor
-  fcntl's record locks yet, so vi edits without locking the file.
-  Recovery files go in `/var/tmp/vi.recover`.
+  for iconv (mlibc has none). It locks the files it edits with flock
+  (see Record locks). Recovery files go in `/var/tmp/vi.recover`.
 - **Generated files:** nvi's numbered tables (options, ex commands, ipc
   messages) are made by `tools/nvi-defs.awk` and its prototypes by sed,
   libcurses's `fileio.h` is kept by hand; none of the imported
@@ -1674,6 +1673,35 @@ Recorded 2026-11-07.
 - **Tests:** utiltest checks sed, grep, awk and ex in batch mode on
   Belka; the console test edits a file with vi (insert, delete and put,
   substitute, search, undo, write).
+
+## Record locks (2026-11-15)
+
+- **fcntl's record locks** (`F_GETLK`, `F_SETLK`, `F_SETLKW`), with
+  System V's numbers, in `kern/vfs_reclock.c`: shared and exclusive
+  locks on byte ranges, which may run past the end of the file. They
+  are advisory.
+- **Owned by the process:** its locks on a file are one set whatever
+  descriptor it uses, replaced range by range (a lock that sticks out is
+  split; touching ones of a type are joined). They are not inherited
+  across fork, and all of them go when the process closes any
+  descriptor for the file, and so at exit.
+- **Waiting:** `F_SETLKW` sleeps until the range is free, ends with
+  `EINTR` (or a restart) for a signal, and fails with `EDEADLK` when the
+  wait would close a circle of waiting processes; each waiter records
+  whose lock it waits for.
+- **Structure:** each vnode has a list of its locks (`v_locks`), and one
+  mutex covers them all, with one synchronisation variable that is
+  broadcast whenever a lock goes or weakens. Per-vnode locking can come
+  if contention shows. A lock set while another LWP closed the
+  descriptor is dropped again, as the close would have taken it.
+- **struct flock** is Belka's native layout, the C library's: no
+  `l_sysid`, which only remote locks use.
+- **flock** is mlibc's, a record lock over the whole file. Belka has no
+  locks belonging to open files, so these too are the process's: a dup
+  or a fork does not share them, as BSD's would.
+- **Tests:** libctest on ext2 and tmpfs (conflicts, splitting, ranges,
+  close and exit, waiting, `EDEADLK`, `EINTR`, flock, lockf); utiltest
+  checks that a second ex cannot write a file the first has locked.
 
 ## File systems
 
