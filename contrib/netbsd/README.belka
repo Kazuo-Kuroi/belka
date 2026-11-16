@@ -27,6 +27,7 @@ The paths are NetBSD's.
     sys/sys/cdbr.h, common/lib/libc/stdlib/mi_vector_hash.c
                                 the constant database terminfo.cdb is
     sys/sys/bitops.h, sys/sys/queue.h     NetBSD's headers they need
+    include/bitstring.h         for nvi
     lib/libutil/efun.c, lib/libc/stdlib/reallocarr.c
     lib/libutil/loginx.c, logoutx.c, logwtmpx.c    utmpx and wtmpx records
     bin/ed/                     ed(1); Belka builds it without DES
@@ -39,12 +40,25 @@ The paths are NetBSD's.
                                 the GNU extensions sed and grep use
     lib/libc/gen/fts.c, include/fts.h  fts(3), for grep -r
     lib/libc/gen/errc.c, verrc.c, warnc.c, vwarnc.c   err(3)'s errc, warnc
+    lib/libcurses/              curses(3), over libterminfo; without
+                                inchstr.c and instr.c, whose licence has
+                                an advertising clause (Belka has its own)
+    lib/libc/db/, include/db.h, mpool.h   dbopen(3): btree, hash,
+                                recno, mpool
+    external/bsd/nvi/dist/      vi(1), ex, view: nvi 1.81.6, its cl,
+                                common, ex, vi and regex directories,
+                                and ipc and ip, whose headers vi uses;
+                                the regex files keep the University of
+                                California's advertising clause, which
+                                the University withdrew in 1999
+    external/bsd/nvi/usr.bin/nvi/   NetBSD's configuration of it
 
 They are built over mlibc with Belka's compat library (usr/lib/compat),
 which supplies the BSD interfaces mlibc lacks; see mk/userland.mk.
 Belka's changes to these files are kept as separate commits, each
 marked in the file.
 
-Not imported: NetBSD's bcrypt and its helpers in libcrypt, which carry
-a four-clause licence with an advertising clause, and the rc.d system,
-which Belka's minimal /etc/rc does not use yet.
+Not imported: NetBSD's bcrypt and its helpers in libcrypt, and
+libcurses's inchstr.c and instr.c, which carry a four-clause licence
+with an advertising clause, and the rc.d system, which Belka's minimal
+/etc/rc does not use yet.
