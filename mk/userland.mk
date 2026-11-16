@@ -48,17 +48,27 @@ COMPAT_SRCS     := usr/lib/compat/db.c usr/lib/compat/misc.c \
                    $(NB)/lib/libutil/efun.c \
                    $(NB)/lib/libutil/loginx.c \
                    $(NB)/lib/libutil/logoutx.c \
-                   $(NB)/lib/libutil/logwtmpx.c
+                   $(NB)/lib/libutil/logwtmpx.c \
+                   $(NB)/lib/libc/regex/regcomp.c \
+                   $(NB)/lib/libc/regex/regerror.c \
+                   $(NB)/lib/libc/regex/regexec.c \
+                   $(NB)/lib/libc/regex/regfree.c \
+                   $(NB)/lib/libc/regex/regsub.c \
+                   $(NB)/lib/libc/gen/fts.c \
+                   $(NB)/lib/libc/gen/errc.c $(NB)/lib/libc/gen/verrc.c \
+                   $(NB)/lib/libc/gen/warnc.c $(NB)/lib/libc/gen/vwarnc.c
 COMPAT_OBJS     := $(patsubst %.c,$(SYS_OBJ)/%.o,$(COMPAT_SRCS))
 COMPAT_LIB      := $(SYS_DIR)/libcompat.a
 
 COMPAT_HDRS     := $(wildcard usr/lib/compat/include/*.h \
-                   usr/lib/compat/include/*/*.h)
+                   usr/lib/compat/include/*/*.h $(NB)/include/regex.h \
+                   $(NB)/include/fts.h)
 
 $(SYS_OBJ)/%.o: %.c $(COMPAT_HDRS) $(MLIBC)
 	@mkdir -p $(dir $@)
 	$(LIBC_CC) $(IMPORT_CFLAGS) -I$(NB)/lib/libcrypt \
-	    $(if $(findstring fparseln,$<),-DHAVE_NBTOOL_CONFIG_H=1) -c -o $@ $<
+	    $(if $(findstring fparseln,$<)$(findstring gen/fts,$<),-DHAVE_NBTOOL_CONFIG_H=1) \
+	    -c -o $@ $<
 
 $(COMPAT_LIB): $(COMPAT_OBJS)
 	rm -f $@
@@ -220,8 +230,42 @@ $(SYS_OBJ)/passwd.o: usr/bin/passwd/passwd.c $(MLIBC)
 $(SYS_DIR)/passwd: $(SYS_OBJ)/passwd.o $(SYS_DYNDEPS)
 	$(call SYS_DYNLINK,$<)
 
+# sed, grep and awk: NetBSD's, linked dynamically. grep has no gzip,
+# bzip2 or message catalogues; egrep and fgrep are links to it. awk is
+# the One True AWK, with the parser its dist ships (ytab.c, proctab.c),
+# so no yacc runs.
+SED_SRCS        := compile main misc process
+GREP_SRCS       := fastgrep file grep queue util
+AWK_SRCS        := b lex lib main parse proctab run tran ytab
+AWK_DIST        := $(NB)/external/historical/nawk/dist
+TEXT_CFLAGS     := $(IMPORT_CFLAGS) -DWITHOUT_GZIP -DWITHOUT_BZ2 \
+                   -DWITHOUT_NLS -DHAS_ISBLANK -I$(AWK_DIST) \
+                   -Iusr/lib/compat/awk
+
+TEXT_CC         = @mkdir -p $(dir $@); $(LIBC_CC) $(TEXT_CFLAGS) -c -o $@ $<
+
+$(SYS_OBJ)/sed/%.o: $(NB)/usr.bin/sed/%.c $(wildcard $(NB)/usr.bin/sed/*.h) \
+                $(COMPAT_HDRS) $(MLIBC)
+	$(TEXT_CC)
+$(SYS_OBJ)/grep/%.o: $(NB)/usr.bin/grep/%.c $(NB)/usr.bin/grep/grep.h \
+                $(COMPAT_HDRS) $(MLIBC)
+	$(TEXT_CC)
+$(SYS_OBJ)/awk/%.o: $(AWK_DIST)/%.c $(AWK_DIST)/awk.h $(AWK_DIST)/proto.h \
+                $(AWK_DIST)/ytab.h $(COMPAT_HDRS) $(MLIBC)
+	$(TEXT_CC)
+
+$(SYS_DIR)/sed: $(patsubst %,$(SYS_OBJ)/sed/%.o,$(SED_SRCS)) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(filter $(SYS_OBJ)/%.o,$^))
+$(SYS_DIR)/grep: $(patsubst %,$(SYS_OBJ)/grep/%.o,$(GREP_SRCS)) \
+                $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(filter $(SYS_OBJ)/%.o,$^))
+$(SYS_DIR)/awk: $(patsubst %,$(SYS_OBJ)/awk/%.o,$(AWK_SRCS)) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(filter $(SYS_OBJ)/%.o,$^))
+
+TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk)
+
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
-                   $(SYS_DIR)/passwd
+                   $(SYS_DIR)/passwd $(TEXT_PROGS)
 
 SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mksh)
 

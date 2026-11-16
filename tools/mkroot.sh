@@ -87,6 +87,12 @@ for prog in tic infocmp tput passwd; do
         cp "$sys/$prog" "$src/usr/bin/$prog"    # dynamic: not stripped
 done
 cp usr/bin/clear/clear.sh "$src/usr/bin/clear"
+# sed, grep and awk (NetBSD's); egrep and fgrep are grep.
+for prog in sed grep awk; do
+        cp "$sys/$prog" "$src/usr/bin/$prog"
+done
+ln "$src/usr/bin/grep" "$src/usr/bin/egrep"
+ln "$src/usr/bin/grep" "$src/usr/bin/fgrep"
 install_prog ed bin/ed
 mkdir -p "$src/usr/share/misc"
 cp contrib/netbsd/share/terminfo/terminfo "$src/usr/share/misc/terminfo"

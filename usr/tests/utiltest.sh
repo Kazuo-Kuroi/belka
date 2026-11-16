@@ -148,6 +148,50 @@ check "ed" "hello
 world" sh -c 'printf "a\nhello\nwurld\n.\n2s/u/o/\nw edfile\nq\n" | ed -s && cat edfile'
 check "ed: line count" "12" sh -c 'printf "a\nhello\nworld\n.\nw edfile2\nq\n" | ed'
 
+# sed, grep and awk (NetBSD's), over NetBSD's regex in the compat
+# library.
+printf 'alpha beta\nGamma delta\nepsilon\nbeta beta\n' > words
+check "sed s///g" "alpha BETA
+Gamma delta
+epsilon
+BETA BETA" sed 's/beta/BETA/g' words
+check "sed -n p" "epsilon" sed -n '3p' words
+check "sed -E backref" "beta alpha" sed -E -n '1s/^([a-z]+) ([a-z]+)$/\2 \1/p' words
+check "sed y, d" "ALPHA BETA" sed -e '2,$d' -e 'y/abehlpt/ABEHLPT/' words
+check "sed {}" "$(printf 'epsilon\nzeta')" sed -n -e '/^eps/{p' -e 's/.*/zeta/p' -e '}' words
+check "sed -i" "one
+TWO" sh -c 'printf "one\ntwo\n" > si && sed -i "s/two/TWO/" si && cat si'
+check "sed -g \\|" "x" sh -c 'echo b | sed -g "s/a\\|b/x/"'
+check grep "alpha beta
+beta beta" grep beta words
+check "grep -c -v" "2" grep -c -v beta words
+check "grep -i" "Gamma delta" grep -i '^gamma' words
+check "grep -w" "alpha beta" grep -w alpha words
+check "grep -o" "beta
+beta
+beta" grep -o 'beta' words
+check "grep -n" "3:epsilon" grep -n eps words
+check "egrep" "Gamma delta
+epsilon" egrep 'mm|^e' words
+check "fgrep" "beta beta" fgrep 'ta b' words
+check "grep -E -x" "epsilon" grep -E -x 'e[a-z]+' words
+mkdir -p gr/sub && echo needle > gr/sub/hay && echo straw > gr/top
+check "grep -r" "gr/sub/hay:needle" grep -r needle gr
+check "grep -l" "words" grep -l Gamma words fruit
+status "grep none" 1 grep zzz words
+check "awk fields" "beta
+delta" awk 'NR <= 2 { print $2 }' words
+check "awk -F, NF" "3" sh -c 'echo a:b:c | awk -F: "{ print NF }"'
+check "awk sum" "10" sh -c 'printf "1\n2\n3\n4\n" | awk "{ s += \$1 } END { print s }"'
+check "awk arrays" "beta 3" awk '{ for (i = 1; i <= NF; i++) n[$i]++ } END { print "beta", n["beta"] }' words
+check "awk printf, math" "2.72 1.00 8" awk 'BEGIN { printf "%.2f %.2f %d\n", exp(1), sin(3.14159265/2), 2^3 }'
+check "awk gsub, length" "BxtB 4" sh -c 'echo beta | awk "{ gsub(/[ae]/, \"x\"); \$0 = toupper(substr(\$0, 1, 1)) substr(\$0, 2, 2) \"B\"; print \$0, length }"'
+check "awk split, match" "3 b 2" awk 'BEGIN { n = split("a,b,c", p, ","); match("abc", /bc/); print n, p[2], RSTART }'
+check "awk getline" "pear" awk 'BEGIN { getline l < "fruit"; print l }'
+check "awk | sort" "apple
+fig
+pear" sh -c 'awk "!seen[\$0]++" fruit | sort'
+
 # ps, over /proc/pinfo.
 check "ps -p 1" "1 init" sh -c 'set -- $(ps -p 1 | tail -n 1) && echo $1 $4'
 check "ps -f -p 1" "root 0" sh -c 'set -- $(ps -f -p 1 | tail -n 1) && echo $1 $3'

@@ -50,4 +50,7 @@
 #define __CONCAT(x, y)          x ## y
 #define __STRING(x)             #x
 
+/* NetBSD's versioned symbol names: the plain ones here. */
+#define __RENAME(x)
+
 #endif /* _COMPAT_SYS_CDEFS_H_ */

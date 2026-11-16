@@ -31,6 +31,19 @@
 #include <termios.h>        /* struct winsize, which mlibc keeps here */
 #include <sys/ioctl.h>
 #include <sys/endian.h>
+#include <stdarg.h>
+
+/*
+ * regex(3) is NetBSD's (contrib/netbsd/lib/libc/regex, with its
+ * <regex.h>), under names of its own, so that it never stands in for
+ * mlibc's, whose regex_t is not the same.
+ */
+#define regcomp         compat_regcomp
+#define regexec         compat_regexec
+#define regerror        compat_regerror
+#define regfree         compat_regfree
+#define regnsub         compat_regnsub
+#define regasub         compat_regasub
 
 /* NetBSD's internal assertions: off. */
 #define _DIAGASSERT(e)  ((void)0)
@@ -111,6 +124,12 @@ char *crypt(const char *, const char *);
 
 /* <string.h> */
 void *explicit_memset(void *, int, size_t);
+
+/* <err.h> */
+void errc(int, int, const char *, ...) __attribute__((__noreturn__));
+void verrc(int, int, const char *, va_list) __attribute__((__noreturn__));
+void warnc(int, const char *, ...);
+void vwarnc(int, const char *, va_list);
 
 __END_DECLS
 
