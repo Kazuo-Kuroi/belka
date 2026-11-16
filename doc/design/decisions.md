@@ -1633,6 +1633,48 @@ Recorded 2026-11-07.
   then the old one is refused and the new one logs in. Writing the old
   hash back makes it fail.
 
+## sed, grep, awk, curses and vi (2026-11-15)
+
+- **sed, grep and awk** are NetBSD's: its sed, its grep (egrep and fgrep
+  are links; no gzip, bzip2 or message catalogues), and the One True AWK
+  as NetBSD keeps it, built from the parser its dist ships so that no
+  yacc runs. All three are dynamic, in `/usr/bin`.
+- **regex:** sed and grep need NetBSD's regex (`REG_STARTEND`, the GNU
+  extensions behind `sed -g`), which mlibc's lacks. It goes in the
+  compat library under names of its own (`compat_regcomp` and the rest),
+  so that it never stands in for mlibc's, whose `regex_t` differs. ed
+  now uses it too. fts(3) comes along for `grep -r`.
+- **curses is NetBSD's libcurses**, the system's one curses, over the
+  libterminfo and `terminfo.cdb` already there. ncurses was not taken:
+  it brings a second terminfo reader and database format, and its build
+  runs its own generator programs on the host. Two of libcurses's files
+  (`inchstr.c`, `instr.c`) have a licence with an advertising clause and
+  were left out; Belka's `instr.c` supplies those functions over the
+  public interface.
+- **curses and stream orientation:** curses writes control strings to
+  its stream as bytes and characters with `putwc`. C fixes a stream's
+  orientation at its first write and mlibc enforces it, where NetBSD's
+  stdio lets the two mix, so curses (patched, `BELKA_BYTE_PUTWC`)
+  converts each character with `wcrtomb` and writes bytes.
+- **vi is nvi 1.81.6**, as NetBSD keeps it, with wide characters, its
+  own regex, and its lines in db(3)'s recno; ex and view are links.
+  NetBSD's db(3) (btree, hash, recno, mpool) replaces the compat
+  library's small in-memory table. nvi's configuration is NetBSD's but
+  for iconv (mlibc has none) and file locks: Belka has neither flock nor
+  fcntl's record locks yet, so vi edits without locking the file.
+  Recovery files go in `/var/tmp/vi.recover`.
+- **Generated files:** nvi's numbered tables (options, ex commands, ipc
+  messages) are made by `tools/nvi-defs.awk` and its prototypes by sed,
+  libcurses's `fileio.h` is kept by hand; none of the imported
+  generators runs on the host.
+- **The console's attributes:** its vnode answered with a fixed owner
+  and mode and refused changes, so neither login (which gives the
+  terminal to whoever logs in) nor vi's `mesg` could change them. It now
+  keeps them as a device node does, and checks access by them.
+- **Tests:** utiltest checks sed, grep, awk and ex in batch mode on
+  Belka; the console test edits a file with vi (insert, delete and put,
+  substitute, search, undo, write).
+
 ## File systems
 
 1. **tmpfs**, for testing.

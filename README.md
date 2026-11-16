@@ -43,10 +43,12 @@ ext2 root image by `tools/mkroot.sh` (it needs `fakeroot`): NetBSD's
 `/bin` the Ksenon utilities, `ls`, `cat`, `cp` and the rest
 (`contrib/ksenon-utils`, mostly linked dynamically), Belka's `ps` over
 IRIX-style `/proc` and its `passwd`, NetBSD's terminfo (`tic`, `tput`,
-`infocmp`; `/etc/rc` compiles the database at boot) and `ed`; `/etc`
-comes from `etc/`. `make sys-progs` builds the programs and `make
-root-image` the image. A normal boot (no `selftest` on the kernel
-command line) mounts that image as root and starts `/sbin/init`.
+`infocmp`; `/etc/rc` compiles the database at boot) and `ed`, and in
+`/usr/bin` NetBSD's `sed`, `grep` and `awk`, and nvi as `vi`, `ex` and
+`view` over NetBSD's curses; `/etc` comes from `etc/`. `make sys-progs`
+builds the programs and `make root-image` the image. A normal boot (no
+`selftest` on the kernel command line) mounts that image as root and
+starts `/sbin/init`.
 
 Every self-test boot attaches `build/test-disk.img`, an 8 MB disk with
 a known pattern in each sector, as a virtio block device (`vd0`); it is
