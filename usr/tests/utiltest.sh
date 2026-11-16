@@ -200,6 +200,12 @@ check "ex -s" "h_ll_
 w_rld" sh -c 'printf "a\nhello\nworld\n.\n%%s/[aeiou]/_/g\nw exfile\nq\n" | TERM=vt100 ex -s 2>/dev/console && cat exfile'
 check "ex -s, read" "2" sh -c 'printf "\$=\nq\n" | TERM=vt100 ex -s exfile 2>/dev/console'
 
+# ex locks the file it edits (flock, over fcntl's record locks): while
+# one ex has it, a second finds it locked, edits it read-only, and its
+# write fails; once the first has gone, the second may write.
+check "ex: locked" "aaa" sh -c 'echo aaa > lockf; (sleep 3 | TERM=vt100 ex lockf >/dev/null 2>/dev/console) & sleep 1; printf "s/a/b/\nw\nq!\n" | TERM=vt100 ex -s lockf >/dev/null 2>/dev/console; wait; cat lockf'
+check "ex: unlocked" "baa" sh -c 'printf "s/a/b/\nw\nq!\n" | TERM=vt100 ex -s lockf >/dev/null 2>/dev/console; cat lockf'
+
 # The console's mode can change (login and vi's mesg change it).
 check "chmod console" "crw-------" field 1 sh -c 'chmod 600 /dev/console && ls -l /dev/console'
 status "chmod console back" 0 chmod 620 /dev/console

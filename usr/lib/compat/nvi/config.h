@@ -19,11 +19,6 @@
  * own encoding, with no conversion. */
 #undef USE_ICONV
 
-/* Belka has no file locks yet (neither flock(2) nor fcntl's record
- * locks): vi edits without locking the file, as nvi does where there are
- * none. */
-#undef HAVE_LOCK_FLOCK
-
 /* Linux's open flag, which mlibc's <fcntl.h> has and NetBSD does not: nvi
  * names an option O_PATH (options_def.h). */
 #undef O_PATH
