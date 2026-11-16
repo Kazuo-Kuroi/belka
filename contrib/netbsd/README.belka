@@ -35,6 +35,10 @@ The paths are NetBSD's.
     external/historical/nawk/dist/   awk(1): the One True AWK, with its
                                 parser (ytab.c) as the dist ships it;
                                 Lucent's MIT-style licence, see LICENSE
+    lib/libc/regex/, include/regex.h   regex(3), with REG_STARTEND and
+                                the GNU extensions sed and grep use
+    lib/libc/gen/fts.c, include/fts.h  fts(3), for grep -r
+    lib/libc/gen/errc.c, verrc.c, warnc.c, vwarnc.c   err(3)'s errc, warnc
 
 They are built over mlibc with Belka's compat library (usr/lib/compat),
 which supplies the BSD interfaces mlibc lacks; see mk/userland.mk.
