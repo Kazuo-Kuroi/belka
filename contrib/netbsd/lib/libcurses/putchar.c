@@ -3,6 +3,7 @@
 /*
  * Copyright (c) 1981, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
+ * Portions Copyright 2026 Setsuna Software L.C.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -88,7 +89,28 @@ __cputwchar_args(wchar_t wch, void *args)
 
 	__CTRACE(__CTRACE_OUTPUT, "__cputwchar_args: 0x%x on fd %d\n",
 	    wch, outfd->_file);
+#ifdef BELKA_BYTE_PUTWC
+	/*
+	 * Belka: the character as bytes, in the locale's encoding. The
+	 * terminal's control strings go to the same stream as bytes, and
+	 * a stream that has had bytes is byte-oriented: mlibc, as C has
+	 * it, refuses putwc on it.
+	 */
+	{
+		char mb[MB_LEN_MAX];
+		mbstate_t mbs;
+		size_t n;
+
+		memset(&mbs, 0, sizeof(mbs));
+		n = wcrtomb(mb, wch, &mbs);
+		if (n == (size_t)-1 || fwrite(mb, 1, n, outfd) != n)
+			status = WEOF;
+		else
+			status = (int)wch;
+	}
+#else
 	status = putwc(wch, outfd);
+#endif
 	fflush(outfd);
 	return status;
 }
