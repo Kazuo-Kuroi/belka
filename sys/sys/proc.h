@@ -191,6 +191,8 @@ struct proc {
         int             p_stopsig;
         struct sv       p_stopsv;       /* where a stopped LWP waits */
         struct sv       p_pausesv;      /* pause, sigsuspend */
+        /* Record locks (vfs_reclock.c), under its mutex. */
+        struct proc     *p_lkwait;      /* whose lock it waits for */
         /* Interval timers, in ticks (kern_itimer.c). */
         int64_t         p_alarm;        /* ITIMER_REAL's callout, or 0 */
         uint64_t        p_alarm_when;   /* lbolt it fires at */

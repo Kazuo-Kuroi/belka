@@ -51,6 +51,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/vfs_dnlc.c \
                    sys/kern/vfs_lookup.c \
                    sys/kern/vfs_mount.c \
+                   sys/kern/vfs_reclock.c \
                    sys/kern/vfs_syscalls.c \
                    sys/kern/vfs_vnode.c \
                    sys/kern/vfs_vnops.c \

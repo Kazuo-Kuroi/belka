@@ -19,6 +19,7 @@
 
 #include <sys/cred.h>
 #include <sys/errno.h>
+#include <sys/flock.h>
 #include <sys/fcntl.h>
 #include <sys/file.h>
 #include <sys/kmem.h>
@@ -68,6 +69,17 @@ frele(struct file *fp)
         VN_RELE(fp->f_vnode);
         crfree(fp->f_cred);
         kmem_zone_free(file_zone, fp);
+}
+
+/*
+ * p gives up a descriptor's reference to fp: its record locks on the
+ * file go with it (<sys/flock.h>), then the reference.
+ */
+static void
+fd_release(struct proc *p, struct file *fp)
+{
+        reclock_release(fp->f_vnode, p);
+        frele(fp);
 }
 
 /* The descriptors p may have: below RLIMIT_NOFILE. p_lock is held. */
@@ -166,7 +178,7 @@ fd_install(struct proc *p, struct file *fp, int fd)
         p->p_pofile[fd] = 0;
         mutex_unlock(&p->p_lock);
         if (old != NULL)
-                frele(old);
+                fd_release(p, old);
         return 0;
 }
 
@@ -196,7 +208,7 @@ fd_close(struct proc *p, int fd)
         mutex_unlock(&p->p_lock);
         if (fp == NULL)
                 return EBADF;
-        frele(fp);
+        fd_release(p, fp);
         return 0;
 }
 
@@ -252,7 +264,7 @@ fd_close_if(struct proc *p, int exec_only)
                 }
                 mutex_unlock(&p->p_lock);
                 if (fp != NULL)
-                        frele(fp);
+                        fd_release(p, fp);
         }
 }
 

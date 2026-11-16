@@ -11,7 +11,8 @@
  * processes and wait statuses, signals and handlers, time, the thread
  * pointer, the clocks and processor time, pipes and named FIFOs, poll
  * and select, ppoll and pselect, resource limits and getrusage,
- * vectored I/O, the *at calls, and getcwd().
+ * vectored I/O, record locks, flock and lockf, the *at calls, and
+ * getcwd().
  *
  * usage: libctest dir, where dir holds bin/ and is writable. Exits with
  * the number of failed checks.
@@ -32,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/select.h>
@@ -1216,6 +1218,242 @@ test_file_ops(void)
         CHECK(unlink(path("/libctest.mode")) == 0);
 }
 
+/* fcntl(fd, cmd) on the range given; for F_GETLK, *out gets the answer. */
+static int
+lk(int fd, int cmd, int type, int whence, off_t start, off_t len,
+    struct flock *out)
+{
+        struct flock fl;
+        int r;
+
+        memset(&fl, 0, sizeof(fl));
+        fl.l_type = (short)type;
+        fl.l_whence = (short)whence;
+        fl.l_start = start;
+        fl.l_len = len;
+        r = fcntl(fd, cmd, &fl);
+        if (out != NULL)
+                *out = fl;
+        return r;
+}
+
+/* Whether F_GETLK for a write lock on [start, start + len) says this. */
+static int
+held(int fd, off_t start, off_t len, int type, off_t lstart, off_t llen,
+    pid_t pid)
+{
+        struct flock fl;
+
+        if (lk(fd, F_GETLK, F_WRLCK, SEEK_SET, start, len, &fl) != 0)
+                return 0;
+        if (type == F_UNLCK)
+                return fl.l_type == F_UNLCK;
+        return fl.l_type == type && fl.l_whence == SEEK_SET &&
+            fl.l_start == lstart && fl.l_len == llen && fl.l_pid == pid;
+}
+
+static volatile sig_atomic_t lock_alarms;
+
+static void
+on_lock_alarm(int sig)
+{
+        (void)sig;
+        lock_alarms++;
+}
+
+/*
+ * Record locks. A child process tests what the parent holds; each
+ * child's exit status is a bit for each check it failed.
+ */
+static void
+test_locks(void)
+{
+        const char *name = path("/libctest.lock");
+        pid_t me = getpid(), pid;
+        struct sigaction sa;
+        struct flock fl;
+        int fd, fd2, ro, pfd[2], st;
+        char c;
+
+        fd = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        CHECK(fd >= 0);
+        if (fd < 0)
+                return;
+        CHECK(write(fd, "0123456789abcdefghijklmnopqrstuvwxyz0123456789"
+            "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuv",
+            100) == 100);
+
+        /* Bad requests. */
+        CHECK(lk(fd, F_SETLK, 99, SEEK_SET, 0, 1, NULL) == -1 &&
+            errno == EINVAL);
+        CHECK(lk(fd, F_SETLK, F_WRLCK, 7, 0, 1, NULL) == -1 &&
+            errno == EINVAL);
+        CHECK(lk(fd, F_SETLK, F_WRLCK, SEEK_SET, -1, 1, NULL) == -1 &&
+            errno == EINVAL);
+        CHECK(lk(fd, F_GETLK, F_UNLCK, SEEK_SET, 0, 1, NULL) == -1 &&
+            errno == EINVAL);
+        CHECK(lk(-1, F_SETLK, F_WRLCK, SEEK_SET, 0, 1, NULL) == -1 &&
+            errno == EBADF);
+        ro = open(name, O_RDONLY);
+        CHECK(ro >= 0 && lk(ro, F_SETLK, F_WRLCK, SEEK_SET, 0, 1, NULL) ==
+            -1 && errno == EBADF);
+        CHECK(lk(ro, F_SETLK, F_RDLCK, SEEK_SET, 0, 1, NULL) == 0);
+        close(ro);      /* drops that read lock, and any of ours */
+
+        /* Our own locks never conflict with each other. */
+        CHECK(lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 0, 10, NULL) == 0);
+        CHECK(lk(fd, F_SETLK, F_RDLCK, SEEK_SET, 5, 1, NULL) == 0);
+        CHECK(held(fd, 0, 0, F_UNLCK, 0, 0, 0));
+
+        /* Another process sees them, and is refused. */
+        if ((pid = fork()) == 0) {
+                int bad = 0;
+
+                bad |= !held(fd, 0, 1, F_WRLCK, 0, 5, me);
+                bad |= !held(fd, 5, 1, F_RDLCK, 5, 1, me) << 1;
+                bad |= !held(fd, 6, 0, F_WRLCK, 6, 4, me) << 2;
+                bad |= !held(fd, 10, 0, F_UNLCK, 0, 0, 0) << 3;
+                bad |= !(lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 9, 2, NULL) ==
+                    -1 && (errno == EAGAIN || errno == EACCES)) << 4;
+                bad |= (lk(fd, F_SETLK, F_RDLCK, SEEK_SET, 5, 1, NULL) !=
+                    0) << 5;
+                bad |= (lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 10, 10, NULL) !=
+                    0) << 6;
+                _exit(bad);
+        }
+        CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
+            WEXITSTATUS(st) == 0);
+        /* The child's locks went when it exited; ours are as they were. */
+        CHECK(lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 10, 10, NULL) == 0);
+        CHECK(lk(fd, F_SETLK, F_UNLCK, SEEK_SET, 10, 10, NULL) == 0);
+
+        /*
+         * One read lock over all of it replaces them; unlocking the middle
+         * splits it in two. SEEK_CUR, SEEK_END and a length before the
+         * start name ranges too.
+         */
+        CHECK(lk(fd, F_SETLK, F_RDLCK, SEEK_SET, 0, 100, NULL) == 0);
+        CHECK(lseek(fd, 40, SEEK_SET) == 40);
+        CHECK(lk(fd, F_SETLK, F_UNLCK, SEEK_CUR, 0, 20, NULL) == 0);
+        CHECK(lk(fd, F_SETLK, F_WRLCK, SEEK_END, -10, 10, NULL) == 0);
+        CHECK(lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 100, -5, NULL) == 0);
+        if ((pid = fork()) == 0) {
+                int bad = 0;
+
+                bad |= !held(fd, 0, 1, F_RDLCK, 0, 40, me);
+                bad |= !held(fd, 40, 20, F_UNLCK, 0, 0, 0) << 1;
+                bad |= !held(fd, 60, 1, F_RDLCK, 60, 30, me) << 2;
+                bad |= !held(fd, 90, 1, F_WRLCK, 90, 10, me) << 3;
+                bad |= !held(fd, 100, 0, F_UNLCK, 0, 0, 0) << 4;
+                _exit(bad);
+        }
+        CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
+            WEXITSTATUS(st) == 0);
+
+        /* A close of any descriptor for the file drops them all. */
+        fd2 = open(name, O_RDONLY);
+        CHECK(fd2 >= 0);
+        close(fd2);
+        if ((pid = fork()) == 0)
+                _exit(!held(fd, 0, 0, F_UNLCK, 0, 0, 0));
+        CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
+            WEXITSTATUS(st) == 0);
+
+        /* F_SETLKW waits until the lock is free. */
+        CHECK(pipe(pfd) == 0);
+        CHECK(lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 0, 0, NULL) == 0);
+        if ((pid = fork()) == 0) {
+                int r;
+
+                close(pfd[0]);
+                (void)write(pfd[1], "w", 1);
+                r = lk(fd, F_SETLKW, F_WRLCK, SEEK_SET, 0, 1, NULL);
+                /* By now the parent has let go of byte 0 only. */
+                _exit((r != 0) | !held(fd, 1, 0, F_WRLCK, 1, 0, me) << 1);
+        }
+        close(pfd[1]);
+        CHECK(read(pfd[0], &c, 1) == 1);
+        close(pfd[0]);
+        usleep(200000);
+        CHECK(waitpid(pid, &st, WNOHANG) == 0);         /* still waiting */
+        CHECK(lk(fd, F_SETLK, F_UNLCK, SEEK_SET, 0, 1, NULL) == 0);
+        CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
+            WEXITSTATUS(st) == 0);
+
+        /*
+         * A circle: we hold byte 0 and the child byte 1; it waits for 0,
+         * so our wait for 1 would never end.
+         */
+        CHECK(lk(fd, F_SETLK, F_UNLCK, SEEK_SET, 0, 0, NULL) == 0);
+        CHECK(lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 0, 1, NULL) == 0);
+        CHECK(pipe(pfd) == 0);
+        if ((pid = fork()) == 0) {
+                int r;
+
+                close(pfd[0]);
+                r = lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 1, 1, NULL);
+                (void)write(pfd[1], "w", 1);
+                r |= lk(fd, F_SETLKW, F_WRLCK, SEEK_SET, 0, 1, NULL);
+                _exit(r != 0);
+        }
+        close(pfd[1]);
+        CHECK(read(pfd[0], &c, 1) == 1);
+        close(pfd[0]);
+        usleep(200000);
+        CHECK(lk(fd, F_SETLKW, F_WRLCK, SEEK_SET, 1, 1, NULL) == -1 &&
+            errno == EDEADLK);
+        CHECK(lk(fd, F_SETLK, F_UNLCK, SEEK_SET, 0, 1, NULL) == 0);
+        CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
+            WEXITSTATUS(st) == 0);
+
+        /* A signal ends a wait (no SA_RESTART): EINTR. */
+        CHECK(lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 0, 0, NULL) == 0);
+        if ((pid = fork()) == 0) {
+                int r;
+
+                memset(&sa, 0, sizeof(sa));
+                sa.sa_handler = on_lock_alarm;
+                sigemptyset(&sa.sa_mask);
+                sigaction(SIGALRM, &sa, NULL);
+                alarm(1);
+                r = lk(fd, F_SETLKW, F_WRLCK, SEEK_SET, 0, 0, NULL);
+                _exit(!(r == -1 && errno == EINTR && lock_alarms == 1));
+        }
+        CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
+            WEXITSTATUS(st) == 0);
+
+        /* flock and lockf, over the same locks. */
+        if ((pid = fork()) == 0) {
+                int bad = 0;
+
+                bad |= !(flock(fd, LOCK_EX | LOCK_NB) == -1 &&
+                    errno == EWOULDBLOCK);
+                bad |= !(lockf(fd, F_TEST, 0) == -1 && errno == EACCES) << 1;
+                _exit(bad);
+        }
+        CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
+            WEXITSTATUS(st) == 0);
+        CHECK(flock(fd, LOCK_UN) == 0);
+        if ((pid = fork()) == 0) {
+                int bad = 0;
+
+                /* Free now: a shared lock, then our own made exclusive. */
+                bad |= flock(fd, LOCK_SH | LOCK_NB) != 0;
+                bad |= (lseek(fd, 0, SEEK_SET) != 0 ||
+                    lockf(fd, F_TLOCK, 0) != 0) << 1;
+                bad |= !held(fd, 0, 0, F_UNLCK, 0, 0, 0) << 2;
+                bad |= (flock(fd, LOCK_UN) != 0) << 3;
+                _exit(bad);
+        }
+        CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
+            WEXITSTATUS(st) == 0);
+        CHECK(lk(fd, F_GETLK, F_RDLCK, SEEK_SET, 0, 0, &fl) == 0 &&
+            fl.l_type == F_UNLCK);
+
+        close(fd);
+        CHECK(unlink(name) == 0);
+}
+
 /*
  * The *at calls, relative to a directory descriptor on ext2 (dir) whose
  * directory is renamed while open, with the current directory on tmpfs.
@@ -1514,6 +1752,7 @@ main(int argc, char **argv)
         test_ppoll();
         test_rlimits();
         test_file_ops();
+        test_locks();
         test_at_calls();
         test_cwd();
         test_itimers();

@@ -25,6 +25,7 @@
 #include <sys/cred.h>
 #include <sys/dirent.h>
 #include <sys/errno.h>
+#include <sys/flock.h>
 #include <sys/fcntl.h>
 #include <sys/file.h>
 #include <sys/kmem.h>
@@ -348,6 +349,33 @@ file_oflags(int flag)
         return ((flag & (FREAD | FWRITE)) - 1) | (flag & ~(FREAD | FWRITE));
 }
 
+/*
+ * F_GETLK, F_SETLK and F_SETLKW (vfs_reclock.c), with the struct flock
+ * at uaddr. A lock set while another LWP closed fd would outlive the
+ * close, so after setting one the descriptor is looked at again: if it
+ * no longer names fp, the locks go, as the close would have taken them.
+ */
+static int
+fcntl_lock(struct proc *p, int fd, struct file *fp, int cmd, uint64_t uaddr)
+{
+        struct flock fl;
+        struct file *now;
+        int error;
+
+        if ((error = copyin((const void *)(uintptr_t)uaddr, &fl,
+            sizeof(fl))) != 0)
+                return error;
+        if ((error = reclock_fcntl(fp, cmd, &fl)) != 0)
+                return error;
+        if (cmd == F_GETLK)
+                return copyout(&fl, (void *)(uintptr_t)uaddr, sizeof(fl));
+        if ((now = fd_get(p, fd)) != NULL)
+                frele(now);
+        if (now != fp)
+                reclock_release(fp->f_vnode, p);
+        return 0;
+}
+
 int
 sys_fcntl(const uint64_t *args, uint64_t *rv)
 {
@@ -387,6 +415,11 @@ sys_fcntl(const uint64_t *args, uint64_t *rv)
         case F_SETFL:
                 fp->f_flag = (fp->f_flag & ~FMASK_SETFL) |
                     (arg & FMASK_SETFL);
+                break;
+        case F_GETLK:
+        case F_SETLK:
+        case F_SETLKW:
+                error = fcntl_lock(p, fd, fp, cmd, args[2]);
                 break;
         default:
                 error = EINVAL;

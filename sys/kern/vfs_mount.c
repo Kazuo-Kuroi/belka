@@ -15,6 +15,7 @@
 #include <sys/cred.h>
 #include <sys/dnlc.h>
 #include <sys/errno.h>
+#include <sys/flock.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
 #include <sys/param.h>
@@ -83,6 +84,7 @@ vfs_init(void)
 {
         mutex_init(&vfs_mutex, "vfs");
         dnlc_init();
+        reclock_init();
 }
 
 /*

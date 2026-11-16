@@ -55,6 +55,7 @@
 #include <vm/pvn.h>
 
 struct cred;
+struct reclock;
 struct page;
 struct pollhead;
 struct uio;
@@ -95,6 +96,7 @@ struct vnode {
         uint32_t        v_flushgen;     /* last flush pass that saw it */
 
         struct vpcache  v_pc;           /* its pages */
+        struct reclock  *v_locks;       /* record locks (vfs_reclock.c) */
 };
 
 /* VOP_INACTIVE results, for shared vnodes. */
