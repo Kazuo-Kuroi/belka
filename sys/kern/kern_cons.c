@@ -25,6 +25,7 @@
 #include <sys/cons.h>
 #include <sys/errno.h>
 #include <sys/mkdev.h>
+#include <sys/specvn.h>
 #include <sys/stat.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
@@ -130,32 +131,33 @@ cons_input(int c)
                 tty_input(&cons_tty, c);
 }
 
+/*
+ * The console's owner, group and mode (cons_attr, the vnode's v_data):
+ * root's, 0620, until login gives it to whoever logs in on it. They are
+ * kept and checked as a device node's are (kern/spec_vnops.c).
+ */
+static struct specattr cons_attr;
+
 static int
-cons_getattr(struct vnode *vp __unused, struct vattr *va,
-    struct cred *cr __unused)
+cons_getattr(struct vnode *vp, struct vattr *va, struct cred *cr)
 {
-        memset(va, 0, sizeof(*va));
-        va->va_type = VCHR;
-        va->va_mode = 0620;
-        va->va_nlink = 1;
-        va->va_rdev = makedev(DEV_CONS_MAJOR, 0);
-        va->va_nodeid = 1;
-        va->va_blksize = CONS_CHUNK;
-        return 0;
+        int error;
+
+        if ((error = spec_getattr(vp, va, cr)) == 0)
+                va->va_blksize = CONS_CHUNK;
+        return error;
 }
 
 static int
-cons_setattr(struct vnode *vp __unused, struct vattr *va __unused,
-    struct cred *cr __unused)
+cons_setattr(struct vnode *vp, struct vattr *va, struct cred *cr)
 {
-        return EPERM;
+        return spec_setattr(vp, va, cr);
 }
 
 static int
-cons_access(struct vnode *vp __unused, int mode __unused,
-    struct cred *cr __unused)
+cons_access(struct vnode *vp, int mode, struct cred *cr)
 {
-        return 0;
+        return spec_access(vp, mode, cr);
 }
 
 static int
@@ -283,7 +285,10 @@ cons_vnode(void)
                 cons_tty.t_output = cons_output;
                 cons_tty.t_vnode = &cons_vn;
                 cons_tty_ready = 1;
-                vn_init(&cons_vn, NULL, VCHR, &cons_vnodeops, NULL);
+                specattr_init(&cons_attr, 0620, 0, 0,
+                    makedev(DEV_CONS_MAJOR, 0));
+                cons_attr.sa_ino = 1;
+                vn_init(&cons_vn, NULL, VCHR, &cons_vnodeops, &cons_attr);
                 VN_HOLD(&cons_vn);      /* never released */
                 cons_vn_ready = 1;
         }
