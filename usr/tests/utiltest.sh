@@ -154,6 +154,14 @@ status "mount not a disk" 1 mount -F ext2fs /dev/null /mnt
 # su: root becomes anyone without a password.
 check "su as root" "test" su test -c 'id -un'
 
+# passwd's ageing and its state (passwd -s), on test2; then as it was.
+check "passwd -s" "test2 PS" sh -c 'set -- $(passwd -s test2) && echo $1 $2'
+status "passwd -x -n -w" 0 passwd -n 0 -x 30 -w 7 test2
+check "passwd -s ageing" "0 30 7" sh -c 'set -- $(passwd -s test2) && echo $4 $5 $6'
+check "shadow fields" "0:30:7" sh -c 'awk -F: "\$1 == \"test2\" { print \$4 \":\" \$5 \":\" \$6 }" /etc/shadow'
+status "passwd back" 0 passwd -n -1 -x -1 -w -1 test2
+check "passwd -s again" "3" sh -c 'set -- $(passwd -s test2) && echo $#'
+
 # The host name: the boot set it from /etc/myname (rc.d/hostname), and
 # uname, sysinfo and hostname agree; root may change it.
 check "hostname" "belkatest" hostname

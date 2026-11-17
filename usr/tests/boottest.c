@@ -514,6 +514,93 @@ test_login(const char *user, const char *password, const char *uid,
         test_shadow(user);
 }
 
+/* Log user in with password on a new getty; the master, or -1. */
+static int
+login_as(const char *user, const char *password, pid_t *pidp)
+{
+        char line[256];
+        int m;
+
+        if ((m = start_getty(pidp)) < 0)
+                return -1;
+        CHECK(expect(m, "login: ", 5000));
+        snprintf(line, sizeof(line), "%s\n", user);
+        say(m, line);
+        CHECK(expect(m, "Password:", 5000));
+        snprintf(line, sizeof(line), "%s\n", password);
+        say(m, line);
+        return m;
+}
+
+static void
+login_done(int m, pid_t pid)
+{
+        say(m, "exit\n");
+        CHECK(reap(pid, 10000) != -1);
+        close(m);
+}
+
+/*
+ * Password ageing (/etc/shadow, login and passwd), on test3, which has
+ * the test user's password: a change made due with passwd -f is asked
+ * for at login, and the login goes on once it is made; a password near
+ * its end is warned of, and may not be changed again within min days; an
+ * expired account and a locked one are turned away.
+ */
+static void
+test_ageing(const char *password)
+{
+        static const char newpw[] = "Aged-Pass-2026";
+        char line[64];
+        pid_t pid;
+        int m;
+
+        CHECK(system("passwd -f test3") == 0);
+        if ((m = login_as("test3", password, &pid)) < 0)
+                return;
+        CHECK(expect(m, "Your password has expired", 10000));
+        CHECK(expect(m, "Old password:", 5000));
+        snprintf(line, sizeof(line), "%s\n", password);
+        say(m, line);
+        CHECK(expect(m, "New password:", 10000));
+        snprintf(line, sizeof(line), "%s\n", newpw);
+        say(m, line);
+        CHECK(expect(m, "Retype new password:", 5000));
+        say(m, line);
+        CHECK(expect(m, "The password is changed.", 15000));
+        CHECK(expect(m, "$ ", 10000));
+        login_done(m, pid);
+
+        /* Due in 10 days, warned of 20 before; no change within 5. */
+        CHECK(system("passwd -n 5 -x 10 -w 20 test3") == 0);
+        if ((m = login_as("test3", newpw, &pid)) < 0)
+                return;
+        CHECK(expect(m, "Warning: your password expires on", 10000));
+        CHECK(expect(m, "$ ", 10000));
+        say(m, "passwd\n");
+        CHECK(expect(m, "changed too recently", 5000));
+        login_done(m, pid);
+
+        /* An account that expired in 1970 (the eighth field, day 1). */
+        CHECK(system("awk -F: -v OFS=: '$1 == \"test3\" { $8 = 1 } "
+            "{ print }' /etc/shadow > /etc/shadow.new && "
+            "mv /etc/shadow.new /etc/shadow && chmod 400 /etc/shadow") == 0);
+        if ((m = login_as("test3", newpw, &pid)) < 0)
+                return;
+        CHECK(expect(m, "your account has expired", 10000));
+        CHECK(reap(pid, 15000) != -1);
+        close(m);
+
+        /* Locked: the right password no longer works. */
+        CHECK(system("passwd -l test3") == 0);
+        if ((m = login_as("test3", newpw, &pid)) < 0)
+                return;
+        CHECK(expect(m, "Login incorrect", 10000));
+        kill(pid, SIGKILL);
+        (void)reap(pid, 5000);
+        close(m);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -529,6 +616,7 @@ main(int argc, char **argv)
         test_xn_suite();
         test_login(argv[1], argv[2], argv[3], argv[4]);
         test_utmpx(argv[1]);
+        test_ageing(argv[2]);
         printf("boottest: %d failures\n", failures);
         /* Let init start the console's getty, then stop the system. */
         sleep(3);

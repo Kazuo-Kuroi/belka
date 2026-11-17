@@ -152,6 +152,10 @@ if [ $test -eq 1 ]; then
         echo "test2:x:101:100:Boot test 2:/home/test:/bin/sh" \
             >> "$src/etc/passwd"
         echo "test2:$hash:$(($(date +%s) / 86400))::::::" >> "$src/etc/shadow"
+        # And a third, whose password ageing boottest changes.
+        echo "test3:x:102:100:Boot test 3:/home/test:/bin/sh" \
+            >> "$src/etc/passwd"
+        echo "test3:$hash:$(($(date +%s) / 86400))::::::" >> "$src/etc/shadow"
         mkdir -p "$src/home/test"
         echo belkatest > "$src/etc/myname"     # the hostname script
         cat > "$src/etc/rc.local" <<'EOF'

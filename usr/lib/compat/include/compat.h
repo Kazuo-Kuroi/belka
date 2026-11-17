@@ -211,6 +211,11 @@ const char *user_from_uid(uid_t, int);
 const char *group_from_gid(gid_t, int);
 struct passwd;
 void compat_shadow(struct passwd *);
+/* /etc/shadow's ageing fields, in days since 1970; -1: none (misc.c). */
+struct compat_age {
+        long    lastchg, min, max, warn, inact, expire;
+};
+int compat_shadow_age(const char *, struct compat_age *);
 char *crypt(const char *, const char *);
 
 /* <string.h> */

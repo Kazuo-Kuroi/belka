@@ -367,3 +367,24 @@ consttime_memequal(const void *a, const void *b, size_t n)
                 diff |= p[i] ^ q[i];
         return diff == 0;
 }
+
+/*
+ * The ageing fields of name's /etc/shadow entry, in days (-1 for an
+ * empty field; lastchg 0 means a change is due now): 0, or -1 if there
+ * is no entry (only root can read the file).
+ */
+int
+compat_shadow_age(const char *name, struct compat_age *a)
+{
+        struct spwd *sp;
+
+        if ((sp = getspnam(name)) == NULL)
+                return -1;
+        a->lastchg = sp->sp_lstchg;
+        a->min = sp->sp_min;
+        a->max = sp->sp_max;
+        a->warn = sp->sp_warn;
+        a->inact = sp->sp_inact;
+        a->expire = sp->sp_expire;
+        return 0;
+}
