@@ -59,6 +59,7 @@ install_prog init sbin/init
 install_prog reboot sbin/reboot
 ln "$src/sbin/reboot" "$src/sbin/halt"
 install_prog mount sbin/mount
+install_prog rcorder sbin/rcorder
 ln "$src/sbin/mount" "$src/sbin/umount"
 install_prog getty usr/libexec/getty
 install_prog login usr/bin/login
@@ -118,6 +119,11 @@ for f in rc rc.conf ttys passwd shadow group shells profile vfstab \
 done
 # The mount table is the kernel's (devfs).
 ln -s ../dev/mnttab "$src/etc/mnttab"
+# The start-up scripts: NetBSD's rc.subr and some of its rc.d, and
+# Belka's own (etc/rc.d).
+mkdir -p "$src/etc/rc.d"
+cp contrib/netbsd/etc/rc.subr "$src/etc/rc.subr"
+cp contrib/netbsd/etc/rc.d/* etc/rc.d/* "$src/etc/rc.d/"
 
 if [ $test -eq 1 ]; then
         install_prog boottest usr/tests/boottest
@@ -154,7 +160,7 @@ $FAKEROOT sh -c '
         src=$1
         chown -R 0:0 "$src"
         chmod 0755 "$src"/bin/* "$src"/sbin/* "$src"/usr/libexec/* \
-            "$src"/usr/bin/*
+            "$src"/usr/bin/* "$src"/etc/rc.d/*
         chmod 4555 "$src/usr/bin/login" "$src/usr/bin/passwd"
         chmod 0400 "$src/etc/shadow"
         chmod 1777 "$src/tmp" "$src/var/tmp" "$src/var/tmp/vi.recover"

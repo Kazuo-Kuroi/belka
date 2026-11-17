@@ -9,6 +9,7 @@
 #   /sbin/init          NetBSD's (contrib/netbsd/sbin/init)
 #   /sbin/reboot, halt  Belka's (usr/sbin/reboot), through uadmin
 #   /sbin/mount, umount Belka's (usr/sbin/mount), System V's, over vfstab
+#   /sbin/rcorder       Belka's (usr/sbin/rcorder), for /etc/rc and rc.d
 #   /usr/libexec/getty  Belka's (usr/sbin/getty)
 #   /usr/bin/login      NetBSD's (contrib/netbsd/usr.bin/login)
 #   /bin/sh, /bin/mksh  mksh R59c (contrib/mksh)
@@ -157,6 +158,12 @@ $(SYS_OBJ)/mount.o: usr/sbin/mount/mount.c $(MLIBC)
 	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
 $(SYS_DIR)/mount: $(SYS_OBJ)/mount.o $(SYS_DEPS)
 	$(call SYS_LINK,$(SYS_OBJ)/mount.o)
+
+$(SYS_OBJ)/rcorder.o: usr/sbin/rcorder/rcorder.c $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
+$(SYS_DIR)/rcorder: $(SYS_OBJ)/rcorder.o $(SYS_DEPS)
+	$(call SYS_LINK,$(SYS_OBJ)/rcorder.o)
 
 # mksh, configured by hand (usr/lib/compat/mksh-config.h) rather than
 # by its Build.sh, with its option tables made by tools/mksh-genopt.awk
@@ -436,7 +443,8 @@ TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS))
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(TEXT_PROGS)
 
-SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mount mksh)
+SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mount rcorder \
+                   mksh)
 
 sys-progs: $(SYS_PROGS)
 
@@ -509,7 +517,8 @@ ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
                    $(LIBC_SOS) usr/bin/clear/clear.sh \
                    contrib/netbsd/share/terminfo/terminfo \
                    tools/mkroot.sh \
-                   $(wildcard etc/* etc/defaults/*)
+                   $(wildcard etc/* etc/defaults/* etc/rc.d/* \
+                   contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 
 $(ROOT_IMG): $(ROOT_DEPS)
 	sh tools/mkroot.sh $@ $(SYS_DIR) $(LIBC_SODIR)

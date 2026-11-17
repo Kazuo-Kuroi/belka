@@ -5,41 +5,38 @@
 # SPDX-License-Identifier: MIT
 #
 # /etc/rc: multi-user start-up, run by init(8) with "autoboot" when the
-# system boots. A failure (a non-zero exit) leaves init in single-user
-# mode. Settings come from /etc/rc.conf, read after the defaults in
-# /etc/defaults/rc.conf; site additions go in /etc/rc.local.
-#
-# This is the minimal rc: there is no rc.d or rcorder yet.
+# system boots. It starts each script in /etc/rc.d, in the order rcorder
+# gives from their PROVIDE, REQUIRE and BEFORE lines, as NetBSD's rc
+# does, but for its log of the boot (/var/run/rc.log), which needs
+# NetBSD's own sh. The scripts use NetBSD's rc.subr. A failure (a
+# non-zero exit) leaves init in single-user mode. Settings come from
+# /etc/rc.conf, which reads /etc/defaults/rc.conf first; site additions
+# go in /etc/rc.local, which the local script runs.
 
-PATH=/sbin:/bin:/usr/sbin:/usr/bin
-export PATH
+export HOME=/
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
 umask 022
 
-. /etc/defaults/rc.conf
-[ -f /etc/rc.conf ] && . /etc/rc.conf
+. /etc/rc.subr
+. /etc/rc.conf
+_rc_conf_loaded=true
 
-if [ "$rc_configured" != YES ]; then
+if ! checkyesno rc_configured; then
         echo "/etc/rc.conf is not configured: staying single-user."
         exit 1
 fi
 
+if [ "$1" = autoboot ]; then
+        autoboot=yes
+        rc_fast=yes
+fi
+
 echo "Starting Belka multi-user."
 
-# The file systems /etc/vfstab marks to be mounted at boot; then /tmp
-# open to all, as it must be (a tmpfs root starts as 0755).
-mount -a
-chmod 1777 /tmp
+files=$(rcorder -s nostart ${rc_rcorder_flags} /etc/rc.d/*)
+for _rc_elem in $files; do
+        run_rc_script $_rc_elem start
+done
 
-# The terminal descriptions are compiled here, from their source, when
-# the database is missing or older (the image carries only the source).
-ti=/usr/share/misc/terminfo
-if [ -f $ti ] && { [ ! -f $ti.cdb ] || [ $ti -nt $ti.cdb ]; }; then
-        echo "Compiling the terminal descriptions."
-        tic -x $ti
-fi
-
-if [ -f /etc/rc.local ]; then
-        . /etc/rc.local
-fi
-
+date
 exit 0

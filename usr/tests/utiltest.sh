@@ -151,6 +151,21 @@ status "umount tmpfs" 0 umount /mnt
 status "mount no type" 1 mount swap /mnt
 status "mount not a disk" 1 mount -F ext2fs /dev/null /mnt
 
+# rcorder: PROVIDE, REQUIRE, BEFORE and KEYWORD, as /etc/rc uses them.
+mkdir rco
+printf '# PROVIDE: c\n# REQUIRE: b\n' > rco/c
+printf '# PROVIDE: a\n# KEYWORD: nostart\n' > rco/a
+printf '# PROVIDE: b\n# REQUIRE: a\n' > rco/b
+printf '# PROVIDE: z\n# BEFORE: a\n\necho # PROVIDE: ignored\n' > rco/z
+check "rcorder" "rco/z rco/a rco/b rco/c" sh -c 'echo $(rcorder rco/c rco/a rco/b rco/z)'
+check "rcorder -s" "rco/z rco/b rco/c" sh -c 'echo $(rcorder -s nostart rco/c rco/a rco/b rco/z)'
+check "rcorder -k" "rco/a" sh -c 'echo $(rcorder -k nostart rco/c rco/a rco/b rco/z)'
+check "rcorder: none" "rco/n" sh -c 'printf "# REQUIRE: nothing\n" > rco/n && rcorder rco/n 2>/dev/null'
+printf '# PROVIDE: x\n# REQUIRE: y\n' > rco/x
+printf '# PROVIDE: y\n# REQUIRE: x\n' > rco/y
+status "rcorder: circle" 1 rcorder rco/x rco/y
+check "rc.d order" "mountall terminfo local" sh -c 'echo $(rcorder -s nostart /etc/rc.d/* | sed "s,.*/,," | grep -e mountall -e terminfo -e local)'
+
 # Devices, the terminal and processes.
 check "ls -l console" "c 1, 0" sh -c 'set -- $(ls -l /dev/console) && echo ${1%${1#?}} $5 $6'
 check "ls -l null" "2, 0" sh -c 'set -- $(ls -l /dev/null) && echo $5 $6'
