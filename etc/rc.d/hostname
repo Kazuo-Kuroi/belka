@@ -1,0 +1,33 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-16
+# SPDX-License-Identifier: MIT
+#
+# The host name, as NetBSD finds it: hostname in /etc/rc.conf, else the
+# first line of /etc/myname. With neither, the kernel's ("belka") stays.
+
+# PROVIDE: hostname
+# REQUIRE: mountcritlocal
+# BEFORE: NETWORKING
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="hostname"
+start_cmd="hostname_start"
+stop_cmd=":"
+
+hostname_start()
+{
+        _name=$hostname
+        if [ -z "$_name" ] && [ -s /etc/myname ]; then
+                read _name < /etc/myname
+        fi
+        if [ -n "$_name" ]; then
+                echo "Hostname: $_name"
+                /bin/hostname "$_name"
+        fi
+}
+
+load_rc_config $name
+run_rc_command "$1"

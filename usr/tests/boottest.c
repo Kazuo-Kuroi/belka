@@ -467,6 +467,9 @@ test_login(const char *user, const char *password, const char *uid,
         CHECK(expect(m, "Password:", 5000));
         say(m, "not-the-password\n");
         CHECK(expect(m, "Sorry", 10000));
+        /* And setting the host name. */
+        say(m, "hostname other\n");
+        CHECK(expect(m, "Operation not permitted", 5000));
         /* So is mount. */
         say(m, "/sbin/mount /dev/vd1 /mnt\n");
         CHECK(expect(m, "only the superuser may mount", 5000));

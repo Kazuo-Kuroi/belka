@@ -154,6 +154,14 @@ status "mount not a disk" 1 mount -F ext2fs /dev/null /mnt
 # su: root becomes anyone without a password.
 check "su as root" "test" su test -c 'id -un'
 
+# The host name: the boot set it from /etc/myname (rc.d/hostname), and
+# uname, sysinfo and hostname agree; root may change it.
+check "hostname" "belkatest" hostname
+check "uname -n" "belkatest" uname -n
+check "hostname -s" "belka" sh -c 'hostname belka.example.org && hostname -s'
+check "uname -n, set" "belka.example.org" uname -n
+status "hostname back" 0 hostname belkatest
+
 # rcorder: PROVIDE, REQUIRE, BEFORE and KEYWORD, as /etc/rc uses them.
 mkdir rco
 printf '# PROVIDE: c\n# REQUIRE: b\n' > rco/c

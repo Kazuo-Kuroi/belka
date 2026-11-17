@@ -85,6 +85,7 @@ ln "$src/bin/mv" "$src/bin/ln"
 ln "$src/bin/chown" "$src/bin/chgrp"
 ln "$src/bin/test" "$src/bin/["
 cp "$sys/ps" "$src/bin/ps"            # dynamic: not stripped
+cp "$sys/hostname" "$src/bin/hostname"
 # terminfo: the programs, the descriptions' source (/etc/rc compiles
 # the database), and ed.
 for prog in tic infocmp tput passwd su; do
@@ -152,6 +153,7 @@ if [ $test -eq 1 ]; then
             >> "$src/etc/passwd"
         echo "test2:$hash:$(($(date +%s) / 86400))::::::" >> "$src/etc/shadow"
         mkdir -p "$src/home/test"
+        echo belkatest > "$src/etc/myname"     # the hostname script
         cat > "$src/etc/rc.local" <<'EOF'
 # The boot test: in the background, so that init goes on to multi-user.
 /usr/tests/boottest test belka-test 100 /home/test &

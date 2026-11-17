@@ -445,12 +445,20 @@ $(SYS_DIR)/$(1): $(patsubst %,$(SYS_OBJ)/$(1)/%.o,$(call tool_srcs,$(1))) \
 	$$(call SYS_DYNLINK,$$(filter $(SYS_OBJ)/%.o,$$^))
 endef
 $(foreach t,$(FILE_TOOLS),$(eval $(call file_tool,$(t))))
+
+# hostname: NetBSD's, over sethostname (sysinfo, System V's), in /bin.
+$(SYS_OBJ)/hostname.o: $(NB)/bin/hostname/hostname.c $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -c -o $@ $<
+$(SYS_DIR)/hostname: $(SYS_OBJ)/hostname.o $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(SYS_OBJ)/hostname.o)
 # stat as NetBSD builds it for the host: no st_flags, st_gen or birth time.
 TOOL_XFLAGS     :=
 $(SYS_OBJ)/stat/stat.o: TOOL_XFLAGS := -DHAVE_NBTOOL_CONFIG_H=1
 $(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
 
-TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS))
+TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS) \
+                   hostname)
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
