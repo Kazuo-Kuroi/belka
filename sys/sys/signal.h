@@ -109,6 +109,7 @@ typedef struct siginfo {
 #define SI_USER         0
 #define SI_LWP          (-1)    /* sent by _lwp_kill */
 #define SI_QUEUE        (-2)    /* sent by sigqueue */
+#define SI_ASYNCIO      (-4)    /* asynchronous I/O completion */
 #define SI_FROMUSER(sip) ((sip)->si_code <= 0)
 
 #define POLL_IN         1

@@ -1835,6 +1835,22 @@ Recorded 2026-11-07.
 - [POSIX.1-2001 local sockets](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_10.html)
   and [accept](https://www.gaertner.de/~neitzel/susv3/functions/accept.html).
 
+## Regular-file AIO completion (2026-11-17)
+
+- mlibc queues `aio_read`, `aio_write`, and `aio_fsync` for a
+  per-process worker and exposes completion through `aio_error`,
+  `aio_return`, and `aio_suspend`. A private close-on-exec reference
+  protects the open file from descriptor reuse without releasing the
+  application's record locks when the worker closes its reference.
+  Fork copies neither requests nor their private references.
+- `SIGEV_SIGNAL` posts the requested signal with `SI_ASYNCIO` and the
+  supplied value, once the result is available. `SIGEV_NONE` leaves
+  the result available without posting a signal. Standard signals
+  still coalesce. Cancellation, list I/O, and `SIGEV_THREAD` remain
+  open, so the complete POSIX AIO option is still unavailable.
+- [POSIX.1-2001 asynchronous reads](https://www.gaertner.de/~neitzel/susv3/functions/aio_read.html)
+  and [signal generation](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_04.html).
+
 ## File systems
 
 1. **tmpfs**, for testing.

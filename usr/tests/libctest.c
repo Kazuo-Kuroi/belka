@@ -21,6 +21,7 @@
 #define _DEFAULT_SOURCE         /* POSIX, XSI, and the BSD and SVID extras */
 #define _POSIX_C_SOURCE 202405L /* mlibc wants it named: renameat, ppoll */
 
+#include <aio.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -2104,6 +2105,69 @@ test_pipe_flags(void)
         close(fd[0]);
 }
 
+static void
+test_aio_completion(void)
+{
+        const struct timespec timeout = { 3, 0 };
+        struct aiocb cb = { 0 };
+        const struct aiocb *waitfor[] = { &cb };
+        char path[128], data[] = "aio", buf[4] = { 0 };
+        sigset_t set, old;
+        siginfo_t info;
+        int fd, readonly, status;
+        pid_t child;
+
+        snprintf(path, sizeof(path), "%s/aio-%d", dir, getpid());
+        fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+        CHECK(fd >= 0);
+        if (fd < 0)
+                return;
+        unlink(path);
+        sigemptyset(&set);
+        sigaddset(&set, SIGUSR2);
+        CHECK(sigprocmask(SIG_BLOCK, &set, &old) == 0);
+        cb.aio_fildes = fd;
+        cb.aio_offset = 2;
+        cb.aio_buf = data;
+        cb.aio_nbytes = sizeof(data);
+        cb.aio_sigevent.sigev_notify = SIGEV_SIGNAL;
+        cb.aio_sigevent.sigev_signo = SIGUSR2;
+        cb.aio_sigevent.sigev_value.sival_ptr = &cb;
+        CHECK(aio_write(&cb) == 0);
+        CHECK(sigtimedwait(&set, &info, &timeout) == SIGUSR2 &&
+            info.si_code == SI_ASYNCIO && info.si_value.sival_ptr == &cb);
+        CHECK(aio_error(&cb) == 0 && aio_return(&cb) == sizeof(data));
+        CHECK(aio_error(&cb) == -1 && errno == EINVAL);
+
+        cb.aio_buf = buf;
+        cb.aio_sigevent.sigev_notify = SIGEV_NONE;
+        CHECK(aio_read(&cb) == 0);
+        CHECK(aio_suspend(waitfor, 1, &timeout) == 0);
+        CHECK(aio_error(&cb) == 0 && aio_return(&cb) == sizeof(buf));
+        CHECK(memcmp(buf, data, sizeof(buf)) == 0);
+
+        readonly = open("/dev/null", O_RDONLY);
+        if (readonly >= 0) {
+                cb.aio_fildes = readonly;
+                CHECK(aio_read(&cb) == -1 && errno == EOPNOTSUPP);
+                close(readonly);
+        }
+        cb.aio_fildes = fd;
+
+        child = fork();
+        if (child == 0) {
+                if (aio_fsync(O_SYNC, &cb) != 0 ||
+                    aio_suspend(waitfor, 1, &timeout) != 0 ||
+                    aio_error(&cb) != 0 || aio_return(&cb) != 0)
+                        _exit(1);
+                _exit(0);
+        }
+        CHECK(child > 0 && waitpid(child, &status, 0) == child &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
+        close(fd);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2133,6 +2197,7 @@ main(int argc, char **argv)
         test_at_calls();
         test_cwd();
         test_itimers();
+        test_aio_completion();
         printf("libctest: %d failures\n", failures);
         return failures;
 }

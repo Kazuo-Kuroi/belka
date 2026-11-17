@@ -926,6 +926,22 @@ sys_sigqueue(const uint64_t *args, uint64_t *rv __unused)
         return kill_pid(pid, sig, &si);
 }
 
+/* The libc AIO worker can report completion only to its own process. */
+int
+sys_aio_notify(const uint64_t *args, uint64_t *rv __unused)
+{
+        int sig = (int)args[0], error;
+        siginfo_t si = { .si_code = SI_ASYNCIO };
+
+        if (sig <= 0 || sig > MAXSIG)
+                return EINVAL;
+        error = copyin((const void *)(uintptr_t)args[1], &si.si_value,
+            sizeof(si.si_value));
+        if (error == 0)
+                sigtoproc(curproc, sig, &si);
+        return error;
+}
+
 /*
  * Discard pending instances of sig after its action became ignore.
  * p_siglock is held.

@@ -156,7 +156,9 @@
 #define SYS_listen      237
 #define SYS_connect     238
 #define SYS_accept      239
+#define SYS_aio_notify  240
+#define SYS_aio_dup     241
 
-#define NSYSCALL        240     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        242     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

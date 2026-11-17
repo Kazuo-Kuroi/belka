@@ -37,6 +37,7 @@
 #define FMASK_SETFL     (FNDELAY | FAPPEND | FSYNC | FNONBLOCK)
 
 struct cred;
+#define FD_AIO          0x02    /* libc's private close-on-exec AIO reference */
 struct vnode;
 
 struct file {

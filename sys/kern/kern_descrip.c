@@ -25,6 +25,7 @@
 #include <sys/kmem.h>
 #include <sys/proc.h>
 #include <sys/stream.h>
+#include <sys/sysent.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
 #include <sys/vnode.h>
@@ -78,9 +79,10 @@ frele(struct file *fp)
  * file go with it (<sys/flock.h>), then the reference.
  */
 static void
-fd_release(struct proc *p, struct file *fp)
+fd_release(struct proc *p, struct file *fp, int flags)
 {
-        reclock_release(fp->f_vnode, p);
+        if ((flags & FD_AIO) == 0)
+                reclock_release(fp->f_vnode, p);
         frele(fp);
 }
 
@@ -198,7 +200,7 @@ int
 fd_install(struct proc *p, struct file *fp, int fd)
 {
         struct file *old;
-        int error;
+        int error, flags;
 
         mutex_lock(&p->p_lock);
         if (fd < 0 || fd >= fd_limit(p)) {
@@ -210,13 +212,14 @@ fd_install(struct proc *p, struct file *fp, int fd)
                 return error;
         }
         old = p->p_ofile[fd];
+        flags = p->p_pofile[fd];
         if (old != NULL && old->f_vnode->v_stream != NULL)
                 strsig_close(old->f_vnode->v_stream, p);
         p->p_ofile[fd] = fp;
         p->p_pofile[fd] = 0;
         mutex_unlock(&p->p_lock);
         if (old != NULL)
-                fd_release(p, old);
+                fd_release(p, old, flags);
         return 0;
 }
 
@@ -233,14 +236,36 @@ fd_get(struct proc *p, int fd)
         return fp;
 }
 
+/* A private reference for a libc AIO request. Fork skips it. */
+int
+sys_aio_dup(const uint64_t *args, uint64_t *rv)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        int fd, error;
+
+        if (fp == NULL)
+                return EBADF;
+        if (fp->f_vnode->v_type != VREG)
+                error = EOPNOTSUPP;
+        else
+                error = fd_alloc_flags(curproc, fp, 0, FD_CLOEXEC | FD_AIO, &fd);
+        if (error == 0)
+                *rv = (uint64_t)fd;
+        else
+                frele(fp);
+        return error;
+}
+
 int
 fd_close(struct proc *p, int fd)
 {
         struct file *fp = NULL;
+        int flags = 0;
 
         mutex_lock(&p->p_lock);
         if (fd >= 0 && fd < p->p_nofile) {
                 fp = p->p_ofile[fd];
+                flags = p->p_pofile[fd];
                 if (fp != NULL && fp->f_vnode->v_stream != NULL)
                         strsig_close(fp->f_vnode->v_stream, p);
                 p->p_ofile[fd] = NULL;
@@ -248,7 +273,7 @@ fd_close(struct proc *p, int fd)
         mutex_unlock(&p->p_lock);
         if (fp == NULL)
                 return EBADF;
-        fd_release(p, fp);
+        fd_release(p, fp, flags);
         return 0;
 }
 
@@ -263,9 +288,9 @@ fd_cloexec(struct proc *p, int fd, int set)
                 mutex_unlock(&p->p_lock);
                 return -1;
         }
-        if (set >= 0)
+        if (set >= 0 && (p->p_pofile[fd] & FD_AIO) == 0)
                 p->p_pofile[fd] = set ? FD_CLOEXEC : 0;
-        r = p->p_pofile[fd];
+        r = p->p_pofile[fd] & FD_CLOEXEC;
         mutex_unlock(&p->p_lock);
         return r;
 }
@@ -280,7 +305,7 @@ fd_dup_table(struct proc *parent, struct proc *child)
                 for (int fd = 0; fd < parent->p_nofile; fd++) {
                         struct file *fp = parent->p_ofile[fd];
 
-                        if (fp != NULL) {
+                        if (fp != NULL && (parent->p_pofile[fd] & FD_AIO) == 0) {
                                 fhold(fp);
                                 child->p_ofile[fd] = fp;
                                 child->p_pofile[fd] = parent->p_pofile[fd];
@@ -295,18 +320,20 @@ fd_close_if(struct proc *p, int exec_only)
 {
         for (int fd = 0; fd < p->p_nofile; fd++) {
                 struct file *fp = NULL;
+                int flags = 0;
 
                 mutex_lock(&p->p_lock);
                 if (p->p_ofile[fd] != NULL &&
                     (!exec_only || (p->p_pofile[fd] & FD_CLOEXEC) != 0)) {
                         fp = p->p_ofile[fd];
+                        flags = p->p_pofile[fd];
                         if (fp->f_vnode->v_stream != NULL)
                                 strsig_close(fp->f_vnode->v_stream, p);
                         p->p_ofile[fd] = NULL;
                 }
                 mutex_unlock(&p->p_lock);
                 if (fp != NULL)
-                        fd_release(p, fp);
+                        fd_release(p, fp, flags);
         }
 }
 
