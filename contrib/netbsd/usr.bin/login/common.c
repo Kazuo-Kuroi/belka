@@ -228,7 +228,7 @@ update_db(int quietlog, int rootlogin, int fflag)
 	(void)gettimeofday(&now, NULL);
 #ifdef SUPPORT_UTMPX
 	doutmpx();
-#ifndef NO_LASTLOGX	/* Belka: no lastlogx database yet */
+#ifndef NO_LASTLOGX	/* Belka: the compat library keeps lastlogx */
 	dolastlogx(quietlog);
 	quietlog = 1;
 #endif
