@@ -288,6 +288,7 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_alarm] = sys_alarm,
         [SYS_pause] = sys_pause,
         [SYS_kill] = sys_kill,
+        [SYS_sigqueue] = sys_sigqueue,
         [SYS_pgrpsys] = sys_pgrpsys,
         [SYS_signal] = sys_signal,
         [SYS_sigprocmask] = sys_sigprocmask,

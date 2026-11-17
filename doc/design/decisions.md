@@ -1740,6 +1740,17 @@ Recorded 2026-11-07.
   it is still root's and 0400, with a new hash and today's date; the old
   password fails and the new one works.
 
+## Signal values and waits (2026-11-17)
+
+- `sigqueue` (229, a Belka number) sends a signal with an application
+  value to one positive PID, using `kill`'s permission checks. Signal
+  zero checks access without sending anything. The first pending
+  standard signal keeps its `siginfo`, including any `SI_QUEUE` value.
+  Repeated signals coalesce under the existing posting rule.
+- mlibc exposes `sigqueue`, `sigtimedwait`, `sigwaitinfo` and `sigwait`.
+  The synchronous waits use the existing `sigwait` syscall (194).
+  `sigwait` returns an error number directly and resumes after `EINTR`.
+
 ## File systems
 
 1. **tmpfs**, for testing.

@@ -65,6 +65,11 @@ typedef struct {
         uint32_t        __sigbits[4];
 } sigset_t;
 
+union sigval {
+        int             sival_int;
+        void            *sival_ptr;
+};
+
 typedef struct siginfo {
         int32_t         si_signo;
         int32_t         si_code;
@@ -74,8 +79,10 @@ typedef struct siginfo {
                 struct {
                         int32_t _pid;
                         int32_t _uid;
-                        int32_t _status;        /* SIGCHLD */
-                        int32_t _pad;
+                        union {
+                                int32_t _status;        /* SIGCHLD */
+                                union sigval _value;
+                        } _u;
                         int64_t _utime;         /* SIGCHLD, exited: ticks */
                         int64_t _stime;
                 } _proc;
@@ -88,7 +95,8 @@ typedef struct siginfo {
 
 #define si_pid          _data._proc._pid
 #define si_uid          _data._proc._uid
-#define si_status       _data._proc._status
+#define si_status       _data._proc._u._status
+#define si_value        _data._proc._u._value
 #define si_utime        _data._proc._utime
 #define si_stime        _data._proc._stime
 #define si_addr         _data._fault._addr
@@ -96,6 +104,7 @@ typedef struct siginfo {
 /* si_code: sent by a process (kill), or by the kernel for a reason. */
 #define SI_USER         0
 #define SI_LWP          (-1)    /* sent by _lwp_kill */
+#define SI_QUEUE        (-2)    /* sent by sigqueue */
 #define SI_FROMUSER(sip) ((sip)->si_code <= 0)
 
 #define ILL_ILLOPC      1

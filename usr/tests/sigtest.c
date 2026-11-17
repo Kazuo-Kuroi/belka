@@ -46,6 +46,7 @@ static int failures;
 
 static volatile int hits, last_sig, order[8], norder;
 static volatile int info_code, info_pid, info_signo;
+static volatile sig_atomic_t info_value;
 static volatile unsigned long info_addr;
 static volatile int masked_inside;
 
@@ -84,6 +85,8 @@ on_sig(int sig, siginfo_t *si, void *uc)
                 info_code = si->si_code;
                 info_pid = si->si_pid;
                 info_addr = (unsigned long)si->si_addr;
+                if (si->si_code == SI_QUEUE)
+                        info_value = si->si_value.sival_int;
         }
         sigprocmask(SIG_BLOCK, NULL, &cur);
         masked_inside = sigismember(&cur, sig);
@@ -286,6 +289,73 @@ test_sigsuspend(void)
             sigismember(&cur, SIGUSR1));
         CHECK(waitpid(pid, &status, 0) == pid);
         CHECK(sigprocmask(SIG_UNBLOCK, &set, NULL) == 0);
+}
+
+/* Payloads reach both handlers and synchronous waits. */
+static void
+test_sigqueue(void)
+{
+        const struct timespec now = { 0, 0 }, invalid = { 0, 1000000000 };
+        const struct timespec timeout = { 2, 0 };
+        union sigval value = { .sival_int = -23 };
+        sigset_t set, old, empty;
+        siginfo_t info;
+        int signo = 0, status;
+        pid_t self = getpid(), child;
+
+        reset_counts();
+        CHECK(catch(SIGUSR1, on_sig, 0) == 0);
+        CHECK(sigqueue(self, 0, value) == 0 && hits == 0);
+        CHECK(sigqueue(0, SIGUSR1, value) == -1 && errno == ESRCH);
+        CHECK(sigqueue(self, -1, value) == -1 && errno == EINVAL);
+        CHECK(sigqueue(self, SIGUSR1, value) == 0);
+        CHECK(hits == 1 && info_code == SI_QUEUE && info_pid == self &&
+            info_value == -23);
+
+        sigemptyset(&set);
+        sigaddset(&set, SIGUSR1);
+        if (sigprocmask(SIG_BLOCK, &set, &old) != 0) {
+                CHECK(0);
+                return;
+        }
+        CHECK(sigtimedwait(&set, NULL, &invalid) == -1 && errno == EINVAL);
+        CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
+        value.sival_ptr = &signo;
+        CHECK(sigqueue(self, SIGUSR1, value) == 0);
+        CHECK(sigqueue(self, SIGUSR1, (union sigval){ .sival_int = 7 }) == 0);
+        CHECK(sigtimedwait(&set, &info, &now) == SIGUSR1 &&
+            info.si_signo == SIGUSR1 && info.si_code == SI_QUEUE &&
+            info.si_pid == self && info.si_uid == getuid() &&
+            info.si_value.sival_ptr == &signo);
+        CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
+
+        sigemptyset(&empty);
+        errno = EDOM;
+        CHECK(sigwait(&empty, &signo) == EINVAL && errno == EDOM);
+        if (kill(self, SIGUSR1) == 0)
+                CHECK(sigwait(&set, &signo) == 0 && signo == SIGUSR1);
+        else
+                CHECK(0);
+        if (kill(self, SIGUSR1) == 0)
+                CHECK(sigwaitinfo(&set, &info) == SIGUSR1 &&
+                    info.si_code == SI_USER);
+        else
+                CHECK(0);
+
+        child = fork();
+        if (child == 0) {
+                value.sival_int = 42;
+                _exit(sigqueue(self, SIGUSR1, value) == 0 ? 0 : 1);
+        }
+        CHECK(child > 0);
+        if (child > 0) {
+                CHECK(sigtimedwait(&set, &info, &timeout) == SIGUSR1 &&
+                    info.si_code == SI_QUEUE && info.si_pid == child &&
+                    info.si_value.sival_int == 42);
+                CHECK(waitpid(child, &status, 0) == child &&
+                    WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        }
+        CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
 }
 
 /* Default actions on a child: terminate, and ignore. */
@@ -615,6 +685,7 @@ main(int argc, char **argv)
         test_fault_regs();
         test_alarm();
         test_sigsuspend();
+        test_sigqueue();
         test_defaults();
         test_restart();
         test_stop();

@@ -783,6 +783,25 @@ pgsignal(pid_t pgid, int sig)
         (void)kill_group(0, pgid, sig, &si, kcred);
 }
 
+/* Send to a single positive PID using the caller's credentials. */
+static int
+kill_pid(pid_t pid, int sig, const siginfo_t *si)
+{
+        struct proc *t;
+        int error = 0;
+
+        mutex_lock(&proctree_lock);
+        t = proc_find_locked(pid);
+        if (t == NULL || t->p_stat == SZOMB || (t->p_flags & P_SYSTEM) != 0)
+                error = ESRCH;
+        else if (!sig_permitted(CRED(), curproc->p_sid, t, sig))
+                error = EPERM;
+        else if (sig != 0)
+                sigtoproc(t, sig, si);
+        mutex_unlock(&proctree_lock);
+        return error;
+}
+
 /* kill(pid, sig) */
 int
 sys_kill(const uint64_t *args, uint64_t *rv __unused)
@@ -791,7 +810,6 @@ sys_kill(const uint64_t *args, uint64_t *rv __unused)
         pid_t pid = (pid_t)args[0];
         int sig = (int)args[1];
         siginfo_t si;
-        struct proc *t;
 
         if (sig < 0 || sig > MAXSIG)
                 return EINVAL;
@@ -806,20 +824,33 @@ sys_kill(const uint64_t *args, uint64_t *rv __unused)
                 return kill_group(1, 0, sig, &si, CRED());
         if (pid < -1)
                 return kill_group(0, -pid, sig, &si, CRED());
-        mutex_lock(&proctree_lock);
-        t = proc_find_locked(pid);
-        if (t == NULL || t->p_stat == SZOMB || (t->p_flags & P_SYSTEM) != 0) {
-                mutex_unlock(&proctree_lock);
+        return kill_pid(pid, sig, &si);
+}
+
+/* sigqueue(pid, sig, &value): standard signals keep the first posting. */
+int
+sys_sigqueue(const uint64_t *args, uint64_t *rv __unused)
+{
+        pid_t pid = (pid_t)args[0];
+        int sig = (int)args[1];
+        siginfo_t si;
+        int error;
+
+        if (sig < 0 || sig > MAXSIG)
+                return EINVAL;
+        if (pid <= 0)
                 return ESRCH;
-        }
-        if (!sig_permitted(CRED(), p->p_sid, t, sig)) {
-                mutex_unlock(&proctree_lock);
-                return EPERM;
-        }
-        if (sig != 0)
-                sigtoproc(t, sig, &si);
-        mutex_unlock(&proctree_lock);
-        return 0;
+        if (sig == 0)
+                return kill_pid(pid, 0, NULL);
+        memset(&si, 0, sizeof(si));
+        error = copyin((const void *)(uintptr_t)args[2], &si.si_value,
+            sizeof(si.si_value));
+        if (error != 0)
+                return error;
+        si.si_code = SI_QUEUE;
+        si.si_pid = curproc->p_pid;
+        si.si_uid = (int32_t)CRED()->cr_ruid;
+        return kill_pid(pid, sig, &si);
 }
 
 /*

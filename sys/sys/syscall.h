@@ -145,7 +145,8 @@
 #define SYS_getrusage   226
 #define SYS_utimensat   227
 #define SYS_flock       228
+#define SYS_sigqueue    229
 
-#define NSYSCALL        229     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        230     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */
