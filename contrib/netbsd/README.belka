@@ -40,6 +40,11 @@ The paths are NetBSD's.
                                 the GNU extensions sed and grep use
     lib/libc/gen/fts.c, include/fts.h  fts(3), for grep -r
     lib/libc/gen/errc.c, verrc.c, warnc.c, vwarnc.c   err(3)'s errc, warnc
+    usr.bin/mktemp/, seq/, stat/ (and readlink), find/, xargs/, getconf/
+                                the tools ksenon-utils' suite uses; xargs
+                                without its pathnames.h, whose licence has
+                                an advertising clause (Belka has its own)
+    lib/libc/gen/setmode.c      setmode(3) and getmode, for find -perm
     lib/libcurses/              curses(3), over libterminfo; without
                                 inchstr.c and instr.c, whose licence has
                                 an advertising clause (Belka has its own)
