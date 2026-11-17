@@ -3,6 +3,7 @@
 /*
  * Copyright (c) 1988 The Regents of the University of California.
  * All rights reserved.
+ * Portions Copyright 2026 Setsuna Software L.C.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -221,6 +222,9 @@ main(int argc, char **argv)
 #endif
 	if ((pwd = getpwnam(user)) == NULL)
 		errx(EXIT_FAILURE, "unknown login `%s'", user);
+#ifdef BELKA_SHADOW	/* Belka: the hash is in /etc/shadow */
+	compat_shadow(pwd);
+#endif
 
 #ifdef LOGIN_CAP
 	/* force the usage of specified class */
