@@ -230,6 +230,7 @@ lwp_exit(void)
         for (link = &p->p_lwps; *link != l; link = &(*link)->l_next)
                 continue;
         *link = l->l_next;
+        sig_lwp_exit_locked(l);
         p->p_nlwp--;
         p->p_lwpleaving++;
         p->p_ticks += curthread->kt_ticks;
@@ -521,7 +522,7 @@ sys_lwpkill(const uint64_t *args, uint64_t *rv __unused)
         int sig = (int)args[1];
         struct lwp *t;
         siginfo_t si;
-        int s;
+        int s, error = 0;
 
         if (sig < 0 || sig > MAXSIG)
                 return EINVAL;
@@ -535,9 +536,9 @@ sys_lwpkill(const uint64_t *args, uint64_t *rv __unused)
                 return ESRCH;
         }
         if (sig != 0)
-                sigtolwp_locked(p, t, sig, &si);
+                error = sigtolwp_locked(p, t, sig, &si);
         spin_unlock(&p->p_siglock, s);
-        return 0;
+        return error;
 }
 
 /*

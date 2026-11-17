@@ -93,17 +93,62 @@ sig_ignored(const struct proc *p, int sig)
         return h == H_IGN || (h == H_DFL && (IGNDEFAULT & sigbit(sig)) != 0);
 }
 
-/* The highest-numbered signal of a non-empty set; SIGKILL first. */
+/* SIGKILL first, then traditional priority, then lowest real-time number. */
 static int
 sig_pick(k_sigset_t set)
 {
-        int sig = MAXSIG;
+        int sig = SIGRTMIN - 1;
 
         if ((set & sigbit(SIGKILL)) != 0)
                 return SIGKILL;
+        if ((set & (sigbit(SIGRTMIN) - 1)) == 0) {
+                for (sig = SIGRTMIN; (set & sigbit(sig)) == 0; sig++)
+                        continue;
+                return sig;
+        }
         while ((set & sigbit(sig)) == 0)
                 sig--;
         return sig;
+}
+
+/* Remove matching queued signals, retaining the arrival order of the rest. */
+static void
+sig_queue_clear(struct proc *p, k_sigset_t mask, struct lwp *target,
+    int all_targets)
+{
+        unsigned int count = 0;
+
+        for (unsigned int i = 0; i < p->p_signqueued; i++) {
+                if ((all_targets || p->p_sigqueue[i].sq_target == target) &&
+                    (mask & sigbit(p->p_sigqueue[i].sq_info.si_signo)) != 0)
+                        continue;
+                if (count != i)
+                        p->p_sigqueue[count] = p->p_sigqueue[i];
+                count++;
+        }
+        p->p_signqueued = count;
+}
+
+void
+sig_lwp_exit_locked(struct lwp *l)
+{
+        sig_queue_clear(l->l_proc, SIG_ALL, l, 0);
+}
+
+static void
+sig_clear(struct proc *p, k_sigset_t mask)
+{
+        sig_queue_clear(p, mask, NULL, 1);
+        p->p_sigpend &= ~mask;
+        for (int sig = 1; sig <= MAXSIG; sig++) {
+                if ((mask & sigbit(sig)) == 0)
+                        continue;
+                p->p_siginfo[sig].si_signo = 0;
+                for (struct lwp *l = p->p_lwps; l != NULL; l = l->l_next) {
+                        l->l_sigpend &= ~sigbit(sig);
+                        l->l_siginfo[sig].si_signo = 0;
+                }
+        }
 }
 
 /*
@@ -174,9 +219,8 @@ sig_jobctl(struct proc *p, int sig)
         }
         if ((STOPDEFAULT & bit) != 0)
                 cancel = sigbit(SIGCONT);
-        p->p_sigpend &= ~cancel;
-        for (struct lwp *l = p->p_lwps; l != NULL; l = l->l_next)
-                l->l_sigpend &= ~cancel;
+        if (cancel != 0)
+                sig_clear(p, cancel);
 }
 
 /* Whether some LWP of p waits for sig in sigwait. p_siglock is held. */
@@ -200,34 +244,64 @@ sig_store_info(siginfo_t *dst, int sig, const siginfo_t *info)
         dst->si_signo = sig;
 }
 
+/* Pending bits cover both ordinary slots and queued instances. */
+static int
+sig_post(struct proc *p, struct lwp *l, int sig, const siginfo_t *info)
+{
+        k_sigset_t *pending = l != NULL ? &l->l_sigpend : &p->p_sigpend;
+        k_sigset_t bit = sigbit(sig);
+        int queued = sig >= SIGRTMIN || (info != NULL &&
+            (info->si_code == SI_QUEUE || info->si_code == SI_ASYNCIO) &&
+            (p->p_sigact[sig].ksa_flags & SA_SIGINFO) != 0);
+
+        if (queued) {
+                unsigned int index = p->p_signqueued;
+
+                if (index == SIGQUEUE_MAX)
+                        return EAGAIN;
+                p->p_sigqueue[index].sq_target = l;
+                sig_store_info(&p->p_sigqueue[index].sq_info, sig, info);
+                p->p_signqueued++;
+        } else if ((*pending & bit) == 0) {
+                sig_store_info(l != NULL ? &l->l_siginfo[sig] :
+                    &p->p_siginfo[sig], sig, info);
+        }
+        *pending |= bit;
+        return 0;
+}
+
 /*
  * Post sig to p, with info (or none). Callable from any context,
  * interrupts included. The signal goes to whichever LWP takes it first;
  * one waiting for it in sigwait is nudged, or else one not holding it.
  */
-void
+int
 sigtoproc(struct proc *p, int sig, const siginfo_t *info)
 {
-        k_sigset_t bit = sigbit(sig);
+        k_sigset_t bit;
         struct lwp *target = NULL;
-        int s;
+        int s, error;
 
         if (sig <= 0 || sig > MAXSIG || (p->p_flags & P_SYSTEM) != 0)
-                return;
+                return 0;
+        bit = sigbit(sig);
         s = spin_lock(&p->p_siglock);
         if (p->p_lwps == NULL) {                /* exiting */
                 spin_unlock(&p->p_siglock, s);
-                return;
+                return 0;
         }
         sig_jobctl(p, sig);
-        if ((sig_ignored(p, sig) && !sig_awaited(p, sig)) ||
-            (p->p_sigpend & bit) != 0) {
+        if (sig_ignored(p, sig) && !sig_awaited(p, sig)) {
                 sig_recalc_all(p);
                 spin_unlock(&p->p_siglock, s);
-                return;
+                return 0;
         }
-        p->p_sigpend |= bit;
-        sig_store_info(&p->p_siginfo[sig], sig, info);
+        error = sig_post(p, NULL, sig, info);
+        if (error != 0) {
+                sig_recalc_all(p);
+                spin_unlock(&p->p_siglock, s);
+                return error;
+        }
         sig_recalc_all(p);
         for (struct lwp *l = p->p_lwps; l != NULL; l = l->l_next) {
                 if ((l->l_sigwait & bit) != 0) {
@@ -240,24 +314,24 @@ sigtoproc(struct proc *p, int sig, const siginfo_t *info)
         if (target != NULL)
                 sig_nudge_lwp(target);
         spin_unlock(&p->p_siglock, s);
+        return 0;
 }
 
 /* Post sig to LWP l of p (faults, _lwp_kill). p_siglock is held. */
-void
+int
 sigtolwp_locked(struct proc *p, struct lwp *l, int sig, const siginfo_t *info)
 {
-        k_sigset_t bit = sigbit(sig);
+        int error;
 
         sig_jobctl(p, sig);
-        if ((sig_ignored(p, sig) && (l->l_sigwait & bit) == 0) ||
-            (l->l_sigpend & bit) != 0) {
+        if (sig_ignored(p, sig) && (l->l_sigwait & sigbit(sig)) == 0) {
                 sig_recalc_all(p);
-                return;
+                return 0;
         }
-        l->l_sigpend |= bit;
-        sig_store_info(&l->l_siginfo[sig], sig, info);
+        error = sig_post(p, l, sig, info);
         sig_recalc_all(p);
         sig_nudge_lwp(l);
+        return error;
 }
 
 /* A signal from the kernel, with no particular information. */
@@ -320,13 +394,43 @@ static void
 sig_take(struct proc *p, struct lwp *l, int sig, siginfo_t *info)
 {
         k_sigset_t bit = sigbit(sig);
+        struct lwp *target = (l->l_sigpend & bit) != 0 ? l : NULL;
+        siginfo_t *ordinary;
+        unsigned int i;
 
-        if ((l->l_sigpend & bit) != 0) {
-                l->l_sigpend &= ~bit;
-                *info = l->l_siginfo[sig];
+        for (i = 0; i < p->p_signqueued; i++) {
+                struct lwp *queued = p->p_sigqueue[i].sq_target;
+
+                if (p->p_sigqueue[i].sq_info.si_signo != sig)
+                        continue;
+                if (sig >= SIGRTMIN && (queued == NULL || queued == l)) {
+                        target = queued;
+                        break;
+                }
+                if (queued == target)
+                        break;
+        }
+        ordinary = target != NULL ? &target->l_siginfo[sig] : &p->p_siginfo[sig];
+        if (ordinary->si_signo != 0) {
+                *info = *ordinary;
+                ordinary->si_signo = 0;
         } else {
-                p->p_sigpend &= ~bit;
-                *info = p->p_siginfo[sig];
+                if (i >= p->p_signqueued)
+                        panic("sig_take: no instance of pending signal %d", sig);
+                *info = p->p_sigqueue[i].sq_info;
+                p->p_signqueued--;
+                memmove(&p->p_sigqueue[i], &p->p_sigqueue[i + 1],
+                    (p->p_signqueued - i) * sizeof(p->p_sigqueue[0]));
+        }
+        for (; i < p->p_signqueued; i++)
+                if (p->p_sigqueue[i].sq_target == target &&
+                    p->p_sigqueue[i].sq_info.si_signo == sig)
+                        break;
+        if (i == p->p_signqueued) {
+                if (target != NULL)
+                        target->l_sigpend &= ~bit;
+                else
+                        p->p_sigpend &= ~bit;
         }
         sig_recalc_all(p);
 }
@@ -549,8 +653,7 @@ sig_exec(struct proc *p)
                 a->ksa_flags &= ~(SA_ONSTACK | SA_RESETHAND | SA_NODEFER);
                 if (a->ksa_handler == H_DFL &&
                     (IGNDEFAULT & sigbit(sig)) != 0) {
-                        p->p_sigpend &= ~sigbit(sig);
-                        l->l_sigpend &= ~sigbit(sig);
+                        sig_clear(p, sigbit(sig));
                 }
         }
         l->l_altflags = SS_DISABLE;
@@ -638,6 +741,7 @@ struct killarg {
         pid_t           ka_sid;
         int             ka_found;       /* a process matched */
         int             ka_sent;        /* one was allowed */
+        int             ka_error;
 };
 
 static void
@@ -653,9 +757,12 @@ kill_one(struct proc *t, void *arg)
         ka->ka_found = 1;
         if (!sig_permitted(ka->ka_cred, ka->ka_sid, t, ka->ka_sig))
                 return;
-        ka->ka_sent = 1;
-        if (ka->ka_sig != 0)
-                sigtoproc(t, ka->ka_sig, ka->ka_si);
+        int error = ka->ka_sig == 0 ? 0 : sigtoproc(t, ka->ka_sig, ka->ka_si);
+
+        if (error == 0)
+                ka->ka_sent = 1;
+        else
+                ka->ka_error = error;
 }
 
 /*
@@ -665,13 +772,17 @@ kill_one(struct proc *t, void *arg)
 static int
 kill_group(int all, pid_t pgid, int sig, const siginfo_t *si, struct cred *cr)
 {
-        struct killarg ka = { all, pgid, sig, si, cr, 0, 0, 0 };
+        struct killarg ka = { all, pgid, sig, si, cr, 0, 0, 0, 0 };
 
         mutex_lock(&proctree_lock);
         ka.ka_sid = curproc->p_sid;
         proc_iterate_locked(kill_one, &ka);
         mutex_unlock(&proctree_lock);
-        return !ka.ka_found ? ESRCH : !ka.ka_sent ? EPERM : 0;
+        if (ka.ka_sent)
+                return 0;
+        if (ka.ka_error != 0)
+                return ka.ka_error;
+        return ka.ka_found ? EPERM : ESRCH;
 }
 
 struct pgfind {
@@ -870,7 +981,7 @@ kill_pid(pid_t pid, int sig, const siginfo_t *si)
         else if (!sig_permitted(CRED(), curproc->p_sid, t, sig))
                 error = EPERM;
         else if (sig != 0)
-                sigtoproc(t, sig, si);
+                error = sigtoproc(t, sig, si);
         mutex_unlock(&proctree_lock);
         return error;
 }
@@ -900,7 +1011,7 @@ sys_kill(const uint64_t *args, uint64_t *rv __unused)
         return kill_pid(pid, sig, &si);
 }
 
-/* sigqueue(pid, sig, &value): standard signals keep the first posting. */
+/* sigqueue(pid, sig, &value): queue the value for a siginfo handler. */
 int
 sys_sigqueue(const uint64_t *args, uint64_t *rv __unused)
 {
@@ -938,7 +1049,7 @@ sys_aio_notify(const uint64_t *args, uint64_t *rv __unused)
         error = copyin((const void *)(uintptr_t)args[1], &si.si_value,
             sizeof(si.si_value));
         if (error == 0)
-                sigtoproc(curproc, sig, &si);
+                error = sigtoproc(curproc, sig, &si);
         return error;
 }
 
@@ -950,9 +1061,7 @@ static void
 sig_discard_if_ignored(struct proc *p, int sig)
 {
         if (sig_ignored(p, sig)) {
-                p->p_sigpend &= ~sigbit(sig);
-                for (struct lwp *l = p->p_lwps; l != NULL; l = l->l_next)
-                        l->l_sigpend &= ~sigbit(sig);
+                sig_clear(p, sigbit(sig));
                 sig_recalc_all(p);
         }
 }

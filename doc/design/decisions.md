@@ -1851,6 +1851,20 @@ Recorded 2026-11-07.
 - [POSIX.1-2001 asynchronous reads](https://www.gaertner.de/~neitzel/susv3/functions/aio_read.html)
   and [signal generation](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_04.html).
 
+## Real-time signals (2026-11-17)
+
+- The kernel and libc expose signals 35 through 64 and up to 32 queued
+  records per receiving process. An exhausted queue returns `EAGAIN`
+  to the sender. Masks, waits, and handlers cover the entire range.
+- Pending real-time signals are selected by lowest signal number. Each
+  number is consumed in arrival order among signals eligible for the
+  calling LWP. Pending traditional signals keep their previous priority.
+- Traditional signals coalesce for ordinary posts. Value-bearing
+  `sigqueue` and AIO notifications use the queue when the disposition
+  has `SA_SIGINFO`. The AIO worker publishes the result before posting
+  the notification and retries if the receiving queue is full.
+- [POSIX.1-2001 signal generation and delivery](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_04.html).
+
 ## File systems
 
 1. **tmpfs**, for testing.

@@ -564,10 +564,10 @@ test_clocks(void)
         CHECK(b.tv_sec * 1000 + b.tv_nsec / 1000000 -
             (a.tv_sec * 1000 + a.tv_nsec / 1000000) >= 80);
         CHECK(sysconf(_SC_CLK_TCK) == 100);
-        CHECK(_POSIX_ASYNCHRONOUS_IO == -1 && _POSIX_REALTIME_SIGNALS == -1);
+        CHECK(_POSIX_ASYNCHRONOUS_IO == -1 && _POSIX_REALTIME_SIGNALS >= 200112L);
         errno = 0;
         CHECK(sysconf(_SC_ASYNCHRONOUS_IO) == -1 && errno == 0);
-        CHECK(sysconf(_SC_REALTIME_SIGNALS) == -1 && errno == 0);
+        CHECK(sysconf(_SC_REALTIME_SIGNALS) >= 200112L && errno == 0);
 
         pid = fork();
         if (pid == 0) {
