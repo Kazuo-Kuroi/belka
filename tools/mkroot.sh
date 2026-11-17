@@ -94,7 +94,7 @@ mkdir -p "$src/usr/share/licenses/stty"
 cp contrib/netbsd/bin/stty/NOTICE "$src/usr/share/licenses/stty/"
 # terminfo: the programs, the descriptions' source (/etc/rc compiles
 # the database), and ed.
-for prog in tic infocmp tput passwd su; do
+for prog in tic infocmp tput passwd su chsh; do
         cp "$sys/$prog" "$src/usr/bin/$prog"    # dynamic: not stripped
 done
 cp usr/bin/clear/clear.sh "$src/usr/bin/clear"
@@ -178,7 +178,7 @@ $FAKEROOT sh -c '
         chmod 0755 "$src"/bin/* "$src"/sbin/* "$src"/usr/libexec/* \
             "$src"/usr/bin/* "$src"/etc/rc.d/*
         chmod 4555 "$src/usr/bin/login" "$src/usr/bin/passwd" \
-            "$src/usr/bin/su"
+            "$src/usr/bin/su" "$src/usr/bin/chsh"
         chmod 0400 "$src/etc/shadow"
         chmod 1777 "$src/tmp" "$src/var/tmp" "$src/var/tmp/vi.recover"
         chmod 0700 "$src/root"

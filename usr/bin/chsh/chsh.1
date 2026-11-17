@@ -1,0 +1,49 @@
+.\" Copyright (c) 2026 Setsuna Software L.C.
+.\" Created: 2026-11-17
+.\" SPDX-License-Identifier: MIT
+.Dd November 17, 2026
+.Dt CHSH 1
+.Os Belka
+.Sh NAME
+.Nm chsh
+.Nd change the login shell
+.Sh SYNOPSIS
+.Nm
+.Op Fl s Ar shell
+.Op Ar user
+.Sh DESCRIPTION
+.Nm
+changes the login shell of the named user, or of the invoking user
+when no name is given.
+Without
+.Fl s ,
+it prompts for the new shell on the controlling terminal.
+An empty response leaves the current shell in place.
+.Pp
+A user may change their own shell after authenticating with their
+password.
+Both their current and new shells must be listed in
+.Pa /etc/shells .
+The superuser may change any account and select any executable shell.
+The new shell must be an absolute path to a regular executable file.
+.Pp
+Updates preserve the other account fields and accounts, file ownership,
+and permissions.
+The password-file lock is shared with
+.Xr passwd 1 .
+.Sh FILES
+.Bl -tag -width /etc/.pwd.lock
+.It Pa /etc/passwd
+Account names, identifiers, home directories, and login shells.
+.It Pa /etc/shadow
+Account password hashes.
+.It Pa /etc/shells
+Permitted login shells.
+.It Pa /etc/.pwd.lock
+Password-file update lock.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr passwd 1 ,
+.Xr tcsh 1

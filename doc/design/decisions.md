@@ -1897,6 +1897,19 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
   and cfsetospeed. The console test exercises echo, saved settings,
   window dimensions, and a baud-rate change.
 
+## Changing login shells (2026-11-17)
+
+- chsh is Belka's MIT-licensed utility over the System V text passwd
+  file. Ordinary users authenticate against shadow, select a shell from
+  /etc/shells, and may change their own account. The superuser may
+  select another executable shell or account.
+- It shares lckpwdf with passwd, rechecks the account under that lock,
+  preserves other accounts and fields, ownership and mode, and replaces
+  passwd with a flushed and synced temporary file in /etc.
+- The PTY login test checks authentication failure, ownership restrictions,
+  shell-list validation, a successful switch and restoration, and file
+  permissions.
+
 ## File systems
 
 1. **tmpfs**, for testing.

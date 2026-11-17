@@ -32,6 +32,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -473,6 +474,41 @@ test_login(const char *user, const char *password, const char *uid,
         /* So is mount. */
         say(m, "/sbin/mount /dev/vd1 /mnt\n");
         CHECK(expect(m, "only the superuser may mount", 5000));
+        /* chsh enforces ownership, listed shells, and authentication. */
+        struct stat passwd_before;
+
+        CHECK(stat("/etc/passwd", &passwd_before) == 0);
+        say(m, "chsh -s /bin/tcsh test2\n");
+        CHECK(expect(m, "only the superuser", 5000));
+        say(m, "chsh -s /bin/cat\n");
+        CHECK(expect(m, "not listed in /etc/shells", 5000));
+        say(m, "chsh -s /bin/tcsh\n");
+        CHECK(expect(m, "Password:", 5000));
+        say(m, "not-the-password\n");
+        CHECK(expect(m, "authentication failed", 10000));
+        say(m, "chsh -s /bin/tcsh\n");
+        CHECK(expect(m, "Password:", 5000));
+        snprintf(line, sizeof(line), "%s\n", password);
+        say(m, line);
+        CHECK(expect(m, "The shell is changed.", 15000));
+        {
+                struct passwd *pw = getpwnam(user);
+
+                CHECK(pw != NULL && strcmp(pw->pw_shell, "/bin/tcsh") == 0);
+        }
+        say(m, "chsh -s /bin/sh\n");
+        CHECK(expect(m, "Password:", 5000));
+        snprintf(line, sizeof(line), "%s\n", password);
+        say(m, line);
+        CHECK(expect(m, "The shell is changed.", 15000));
+        {
+                struct stat st;
+                struct passwd *pw = getpwnam(user);
+
+                CHECK(pw != NULL && strcmp(pw->pw_shell, "/bin/sh") == 0);
+                CHECK(stat("/etc/passwd", &st) == 0 &&
+                    st.st_uid == 0 && (st.st_mode & 07777) == (passwd_before.st_mode & 07777));
+        }
         /* passwd changes the password, giving the old one first. */
         say(m, "passwd\n");
         CHECK(expect(m, "Old password:", 5000));
