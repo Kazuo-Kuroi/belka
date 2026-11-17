@@ -25,5 +25,6 @@
 #define DEV_TTY_MAJOR           3       /* /dev/tty */
 #define DEV_PTM_MAJOR           4       /* pseudo-terminal masters */
 #define DEV_PTS_MAJOR           5       /* and slaves; minor: the index */
+#define DEV_BLK_MAJOR           6       /* disks; minor: the blkdev index */
 
 #endif /* _SYS_MKDEV_H_ */

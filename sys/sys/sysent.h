@@ -35,6 +35,7 @@ sy_call_t sys_openat, sys_mknodat, sys_mkdirat, sys_unlinkat, sys_renameat;
 sy_call_t sys_linkat, sys_symlinkat, sys_readlinkat, sys_fstatat;
 sy_call_t sys_fchownat, sys_fchmodat, sys_faccessat;
 sy_call_t sys_statvfs, sys_fstatvfs, sys_utime, sys_utimensat;
+sy_call_t sys_mount, sys_umount;
 /* vm_mman.c */
 sy_call_t sys_brk, sys_mmap, sys_munmap, sys_mprotect;
 /* kern_sig.c */

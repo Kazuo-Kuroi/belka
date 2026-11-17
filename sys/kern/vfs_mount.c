@@ -135,6 +135,18 @@ vfs_mountroot(const char *fstype, const void *data)
 int
 vfs_mount(const char *fstype, const char *path, const void *data)
 {
+        return vfs_mount_named(fstype, path, data, NULL);
+}
+
+/*
+ * The same, with special the name the mount table gives it if the file
+ * system names no device of its own (mount(2) passes what it was given,
+ * "swap" for a tmpfs, as System V records it).
+ */
+int
+vfs_mount_named(const char *fstype, const char *path, const void *data,
+    const char *special)
+{
         int t = vfs_type(fstype);
         struct vnode *vp;
         struct vfs *vfsp;
@@ -170,6 +182,9 @@ vfs_mount(const char *fstype, const char *path, const void *data)
                 VN_RELE(vp);
                 return error;
         }
+        if (special != NULL && vfsp->vfs_special[0] == '\0')
+                snprintf(vfsp->vfs_special, sizeof(vfsp->vfs_special), "%s",
+                    special);
         vfs_note(vfsp, path);
         vfsp->vfs_vnodecovered = vp;            /* keeps our reference */
         vfsp->vfs_next = rootvfs->vfs_next;
@@ -243,6 +258,35 @@ vfs_unmount(const char *path)
         kmem_free(vfsp->vfs_mntpt, strlen(vfsp->vfs_mntpt) + 1);
         kmem_free(vfsp, sizeof(*vfsp));
         return 0;
+}
+
+/*
+ * The mount point of the file system on the disk named dev ("vd1"), in
+ * buf; ENXIO (System V's answer) if it is not mounted.
+ */
+int
+vfs_mntpt_of(const char *dev, char *buf, size_t len)
+{
+        char special[VFS_SPECSZ];
+        int error = ENXIO;
+
+        snprintf(special, sizeof(special), "/dev/%s", dev);
+        mutex_lock(&vfs_mutex);
+        for (struct vfs *vfsp = rootvfs; vfsp != NULL;
+            vfsp = vfsp->vfs_next) {
+                if (strcmp(vfsp->vfs_special, special) == 0) {
+                        if (strlen(vfsp->vfs_mntpt) < len) {
+                                memcpy(buf, vfsp->vfs_mntpt,
+                                    strlen(vfsp->vfs_mntpt) + 1);
+                                error = 0;
+                        } else {
+                                error = ENAMETOOLONG;
+                        }
+                        break;
+                }
+        }
+        mutex_unlock(&vfs_mutex);
+        return error;
 }
 
 /*

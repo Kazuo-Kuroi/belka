@@ -38,6 +38,8 @@
 #define SYS_stat        18
 #define SYS_lseek       19
 #define SYS_getpid      20
+#define SYS_mount       21
+#define SYS_umount      22
 #define SYS_setuid      23
 #define SYS_getuid      24
 #define SYS_stime       25

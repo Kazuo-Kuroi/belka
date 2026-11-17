@@ -15,20 +15,25 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/blkdev.h>
 #include <sys/cred.h>
 #include <sys/errno.h>
 #include <sys/fcntl.h>
 #include <sys/file.h>
 #include <sys/kmem.h>
+#include <sys/mount.h>
 #include <sys/pathname.h>
 #include <sys/proc.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/sysent.h>
 #include <sys/systm.h>
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <sys/vfs.h>
 #include <sys/vnode.h>
+
+#include <fs/ext2fs/ext2fs.h>
 
 /*
  * A user path, copied in, and the directory a relative one starts at:
@@ -696,5 +701,92 @@ sys_utimensat(const uint64_t *args, uint64_t *rv __unused)
         }
         error = vn_utimes(vp, args[2] != 0 ? t : NULL);
         VN_RELE(vp);
+        return error;
+}
+
+/*
+ * mount(spec, dir, mflag, fstype, dataptr, datalen): see <sys/mount.h>.
+ * ext2fs and tmpfs may be mounted; devfs and /proc are the kernel's.
+ */
+int
+sys_mount(const uint64_t *args, uint64_t *rv __unused)
+{
+        int mflag = (int)args[2];
+        char fstype[FSTYPSZ], special[VFS_SPECSZ] = "";
+        struct ext2fs_args ea;
+        struct blkdev *bd;
+        struct upath dir;
+        struct vnode *vp;
+        const void *data = NULL;
+        int error;
+
+        if (!CRED_ISROOT(CRED()))
+                return EPERM;
+        if ((mflag & MS_DATA) == 0 ||
+            (mflag & ~(MS_RDONLY | MS_DATA)) != 0)
+                return EINVAL;
+        if ((error = copyinstr((const char *)(uintptr_t)args[3], fstype,
+            sizeof(fstype), NULL)) != 0)
+                return error == ENAMETOOLONG ? EINVAL : error;
+        if (strcmp(fstype, "ext2fs") == 0) {
+                if ((error = upath_lookup(AT_FDCWD, args[0], FOLLOW,
+                    &vp)) != 0)
+                        return error;
+                bd = vp->v_type == VBLK ? devfs_blkdev(vp) : NULL;
+                VN_RELE(vp);
+                if (bd == NULL)
+                        return ENOTBLK;
+                ea.ea_dev = bd->bd_name;
+                ea.ea_rdonly = (mflag & MS_RDONLY) != 0;
+                data = &ea;
+        } else if (strcmp(fstype, "tmpfs") == 0) {
+                /* Any name; the mount table records it ("swap"). */
+                if ((mflag & MS_RDONLY) != 0)
+                        return EINVAL;
+                if ((error = copyinstr((const char *)(uintptr_t)args[0],
+                    special, sizeof(special), NULL)) != 0)
+                        return error == ENAMETOOLONG ? EINVAL : error;
+        } else {
+                return EINVAL;
+        }
+        if ((error = upath_in(AT_FDCWD, args[1], &dir)) != 0)
+                return error;
+        if (dir.up_path[0] != '/')
+                error = EINVAL;
+        else
+                error = vfs_mount_named(fstype, dir.up_path, data,
+                    special[0] != '\0' ? special : NULL);
+        upath_free(&dir);
+        return error;
+}
+
+/* umount(file): the mount point, or a disk's block device. */
+int
+sys_umount(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct blkdev *bd;
+        struct upath up;
+        struct vnode *vp;
+        char *path;
+        int error;
+
+        if (!CRED_ISROOT(CRED()))
+                return EPERM;
+        if ((error = upath_lookup(AT_FDCWD, args[0], FOLLOW, &vp)) != 0)
+                return error;
+        bd = vp->v_type == VBLK ? devfs_blkdev(vp) : NULL;
+        VN_RELE(vp);
+        if (bd != NULL) {
+                path = kmem_alloc(MAXPATHLEN, KM_SLEEP);
+                if ((error = vfs_mntpt_of(bd->bd_name, path,
+                    MAXPATHLEN)) == 0)
+                        error = vfs_unmount(path);
+                kmem_free(path, MAXPATHLEN);
+                return error;
+        }
+        if ((error = upath_in(AT_FDCWD, args[0], &up)) != 0)
+                return error;
+        error = vfs_unmount(up.up_path);
+        upath_free(&up);
         return error;
 }

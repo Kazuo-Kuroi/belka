@@ -16,6 +16,8 @@
  *   pts/       pts/N: each pseudo-terminal slave whose master is open
  *   mnttab     the mount table, as text (vfs_mnttab); /etc/mnttab links
  *              here, as Solaris makes the table the kernel's
+ *   vd0, ...   each disk (blkdev), a block device that mount(2) is given;
+ *              it cannot be read or written through yet
  *
  * Its vnodes are private and static but for the console's and the
  * slaves', which belong to their drivers, so it is mounted once.
@@ -24,6 +26,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/blkdev.h>
 #include <sys/cons.h>
 #include <sys/cred.h>
 #include <sys/dirent.h>
@@ -44,10 +47,14 @@ enum { DV_ROOT, DV_PTS, DV_NULL, DV_ZERO, DV_TTY, DV_PTMX, DV_MNTTAB, DV_N };
 
 static struct specattr dv_attr[DV_N];
 static struct vnode dv_vn[DV_N];
+/* The disks' nodes, made when devfs is mounted, after the disks are found. */
+static struct specattr dv_blkattr[BLKDEV_MAX];
+static struct vnode dv_blkvn[BLKDEV_MAX];
+static int dv_nblk;
 static struct vfs *devfs_vfs;
 
 static const struct vnodeops devfs_dirops, devfs_memops, devfs_cloneops,
-    devfs_mntops;
+    devfs_mntops, devfs_blkops;
 
 /* The root's names, in order; NULL: the console's own vnode. */
 static const struct {
@@ -96,6 +103,17 @@ devfs_mount(struct vfs *vfsp, const void *data __unused,
                 vn_init(&dv_vn[i], vfsp, setup[i].type, setup[i].ops,
                     &dv_attr[i]);
                 VN_HOLD(&dv_vn[i]);     /* never released */
+        }
+        for (dv_nblk = 0; dv_nblk < BLKDEV_MAX; dv_nblk++) {
+                struct blkdev *bd = blkdev_index(dv_nblk);
+
+                if (bd == NULL)
+                        break;
+                specattr_init(&dv_blkattr[dv_nblk], 0600, 0, 0,
+                    makedev(DEV_BLK_MAJOR, (uint32_t)dv_nblk));
+                vn_init(&dv_blkvn[dv_nblk], vfsp, VBLK, &devfs_blkops,
+                    &dv_blkattr[dv_nblk]);
+                VN_HOLD(&dv_blkvn[dv_nblk]);   /* never released */
         }
         dv_vn[DV_ROOT].v_flag |= VROOT;
         pty_setvfs(vfsp);
@@ -195,6 +213,13 @@ devfs_lookup(struct vnode *dvp, const char *nm, struct vnode **vpp,
                         VN_HOLD(*vpp);
                 return 0;
         }
+        for (int i = 0; i < dv_nblk; i++) {
+                if (strcmp(nm, blkdev_index(i)->bd_name) == 0) {
+                        *vpp = &dv_blkvn[i];
+                        VN_HOLD(*vpp);
+                        return 0;
+                }
+        }
         return ENOENT;
 }
 
@@ -244,14 +269,23 @@ devfs_readdir(struct vnode *vp, struct uio *uio, int *eofp,
                         snprintf(name, sizeof(name), "..");
                         ino = dv_attr[DV_ROOT].sa_ino;
                 } else if (vp == &dv_vn[DV_ROOT]) {
-                        if ((size_t)(idx - 2) >= NNAMES) {
+                        size_t k = (size_t)(idx - 2);
+
+                        if (k >= NNAMES + (size_t)dv_nblk) {
                                 *eofp = 1;
                                 break;
                         }
-                        snprintf(name, sizeof(name), "%s",
-                            devfs_names[idx - 2].name);
-                        ino = devfs_names[idx - 2].node < 0 ? 1 :
-                            dv_attr[devfs_names[idx - 2].node].sa_ino;
+                        if (k >= NNAMES) {
+                                k -= NNAMES;
+                                snprintf(name, sizeof(name), "%s",
+                                    blkdev_index((int)k)->bd_name);
+                                ino = dv_blkattr[k].sa_ino;
+                        } else {
+                                snprintf(name, sizeof(name), "%s",
+                                    devfs_names[k].name);
+                                ino = devfs_names[k].node < 0 ? 1 :
+                                    dv_attr[devfs_names[k].node].sa_ino;
+                        }
                 } else {
                         if (pty_next((unsigned int)(idx - 2), &n) != 0) {
                                 *eofp = 1;
@@ -400,3 +434,31 @@ static const struct vnodeops devfs_mntops = {
         spec_symlink, spec_readlink, spec_fsync, devfs_inactive,
         spec_putpage, spec_reclaim, spec_getpage, fs_poll, NULL
 };
+
+/* --- the disks. --- */
+
+/* Not yet: a disk is only named, for mount(2). */
+static int
+blk_rw(struct vnode *vp __unused, struct uio *uio __unused,
+    int ioflag __unused, struct cred *cr __unused)
+{
+        return ENODEV;
+}
+
+static const struct vnodeops devfs_blkops = {
+        devfs_open, devfs_close, blk_rw, blk_rw, spec_getattr,
+        spec_setattr, spec_access, spec_lookup, spec_create, spec_name1,
+        spec_link, spec_rename, spec_mkdir, spec_name1, spec_readdir,
+        spec_symlink, spec_readlink, spec_fsync, devfs_inactive,
+        spec_putpage, spec_reclaim, spec_getpage, fs_poll, NULL
+};
+
+/* The disk vp is devfs's node for, or NULL (mount(2), umount(2)). */
+struct blkdev *
+devfs_blkdev(struct vnode *vp)
+{
+        for (int i = 0; i < dv_nblk; i++)
+                if (vp == &dv_blkvn[i])
+                        return blkdev_index(i);
+        return NULL;
+}

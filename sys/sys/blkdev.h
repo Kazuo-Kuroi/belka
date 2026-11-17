@@ -46,6 +46,9 @@ struct blkdev {
 /* Register bd under a name built from prefix and a unit number. */
 int blkdev_register(struct blkdev *, const char *);
 struct blkdev *blkdev_lookup(const char *);
+struct blkdev *blkdev_index(int);
+struct vnode;
+struct blkdev *devfs_blkdev(struct vnode *);  /* fs/devfs */
 
 /* Range-checked operations; nsec sectors starting at sector. */
 int blkdev_read(struct blkdev *, uint64_t, void *, size_t);

@@ -119,3 +119,18 @@ blkdev_flush(struct blkdev *bd)
 {
         return bd->bd_ops->bo_flush != NULL ? bd->bd_ops->bo_flush(bd) : 0;
 }
+
+/* The i'th device registered, or NULL: devfs's block nodes. */
+struct blkdev *
+blkdev_index(int i)
+{
+        struct blkdev *bd = NULL;
+
+        if (!blkdev_ready || i < 0)
+                return NULL;
+        mutex_lock(&blkdev_lock);
+        if (i < nblkdevs)
+                bd = blkdevs[i];
+        mutex_unlock(&blkdev_lock);
+        return bd;
+}

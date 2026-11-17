@@ -75,6 +75,8 @@ void vfs_shutdown(void);
 extern int vfs_shutting_down;   /* the last sync: leave them clean */
 int vfs_mount(const char *, const char *, const void *);
 int vfs_unmount(const char *);
+int vfs_mntpt_of(const char *, char *, size_t);
+int vfs_mount_named(const char *, const char *, const void *, const char *);
 int vfs_statvfs_path(const char *, struct statvfs *);
 int vfs_statvfs(struct vfs *, struct statvfs *);
 size_t vfs_mnttab(char *, size_t);
