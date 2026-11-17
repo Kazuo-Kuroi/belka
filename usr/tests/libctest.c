@@ -11,8 +11,8 @@
  * processes and wait statuses, signals and handlers, time, the thread
  * pointer, the clocks and processor time, pipes and named FIFOs, poll
  * and select, ppoll and pselect, resource limits and getrusage,
- * vectored I/O, record locks, flock and lockf, the *at calls, and
- * getcwd().
+ * vectored I/O, record locks, flock and lockf, getopt, mktime's
+ * normalising, the *at calls, and getcwd().
  *
  * usage: libctest dir, where dir holds bin/ and is writable. Exits with
  * the number of failed checks.
@@ -1218,6 +1218,82 @@ test_file_ops(void)
         CHECK(unlink(path("/libctest.mode")) == 0);
 }
 
+/* getopt over words; the letters it returns, '?' and ':' as they come. */
+static void
+run_getopt(int argc, char **argv, const char *opts, char *out, size_t len)
+{
+        size_t n = 0;
+        int c;
+
+        optind = 1;
+        opterr = 0;
+        while (n + 3 < len) {
+                optarg = NULL;          /* set only for an option with one */
+                if ((c = getopt(argc, argv, opts)) == -1)
+                        break;
+                out[n++] = (char)c;
+                if (c != '?' && c != ':' && optarg != NULL) {
+                        out[n++] = '=';
+                        n += (size_t)snprintf(out + n, len - n, "%s,", optarg);
+                }
+        }
+        out[n] = '\0';
+}
+
+/*
+ * getopt as POSIX has it: clusters, an argument in the same word or the
+ * next (even one beginning with '-'), an unknown letter in a cluster, a
+ * missing argument, and the stop at the first operand without moving
+ * later options before it.
+ */
+static void
+test_getopt(void)
+{
+        char out[128];
+        char *a1[] = { "p", "-cv", "-e", "x", "f", NULL };
+        char *a2[] = { "p", "-cefoo", "-e", "-v", NULL };
+        char *a3[] = { "p", "-czv", NULL };
+        char *a4[] = { "p", "-v", "-e", NULL };
+        char *a5[] = { "p", "-c", "file", "-v", NULL };
+        char *a6[] = { "p", "-c", "--", "-v", NULL };
+
+        run_getopt(5, a1, "cve:", out, sizeof(out));
+        CHECK(strcmp(out, "cve=x,") == 0 && optind == 4);
+        run_getopt(4, a2, "cve:", out, sizeof(out));
+        CHECK(strcmp(out, "ce=foo,e=-v,") == 0 && optind == 4);
+        run_getopt(2, a3, "cv", out, sizeof(out));
+        CHECK(strcmp(out, "c?v") == 0 && optopt == 'z');
+        run_getopt(3, a4, ":ve:", out, sizeof(out));
+        CHECK(strcmp(out, "v:") == 0 && optopt == 'e');
+        run_getopt(4, a5, "cv", out, sizeof(out));
+        CHECK(strcmp(out, "c") == 0 && optind == 2 &&
+            strcmp(a5[2], "file") == 0 && strcmp(a5[3], "-v") == 0);
+        run_getopt(4, a6, "cv", out, sizeof(out));
+        CHECK(strcmp(out, "c") == 0 && optind == 3);
+}
+
+/* mktime brings fields back into range and fills in the day of the week. */
+static void
+test_mktime(void)
+{
+        struct tm tm;
+
+        memset(&tm, 0, sizeof(tm));
+        tm.tm_year = 2001 - 1900;
+        tm.tm_mon = 12;                 /* the 13th month: January 2002 */
+        tm.tm_mday = 32;                /* and the 32nd: February 1 */
+        tm.tm_hour = 25;                /* an hour into February 2 */
+        CHECK(timegm(&tm) == 1012611600);
+        CHECK(tm.tm_year == 102 && tm.tm_mon == 1 && tm.tm_mday == 2 &&
+            tm.tm_hour == 1 && tm.tm_wday == 6 && tm.tm_yday == 32);
+        memset(&tm, 0, sizeof(tm));
+        tm.tm_year = 2000 - 1900;
+        tm.tm_mon = -1;                 /* December 1999 */
+        tm.tm_mday = 31;
+        CHECK(mktime(&tm) != (time_t)-1 && tm.tm_year == 99 &&
+            tm.tm_mon == 11 && tm.tm_mday == 31);
+}
+
 /* fcntl(fd, cmd) on the range given; for F_GETLK, *out gets the answer. */
 static int
 lk(int fd, int cmd, int type, int whence, off_t start, off_t len,
@@ -1807,6 +1883,8 @@ main(int argc, char **argv)
         test_rlimits();
         test_file_ops();
         test_locks();
+        test_getopt();
+        test_mktime();
         test_at_calls();
         test_cwd();
         test_itimers();
