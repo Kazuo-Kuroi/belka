@@ -94,9 +94,12 @@ mkdir -p "$src/usr/share/licenses/stty"
 cp contrib/netbsd/bin/stty/NOTICE "$src/usr/share/licenses/stty/"
 # terminfo: the programs, the descriptions' source (/etc/rc compiles
 # the database), and ed.
-for prog in tic infocmp tput passwd su chsh; do
+for prog in tic infocmp tput passwd su chsh less; do
         cp "$sys/$prog" "$src/usr/bin/$prog"    # dynamic: not stripped
 done
+ln "$src/usr/bin/less" "$src/usr/bin/more"
+mkdir -p "$src/usr/share/licenses/less"
+cp contrib/netbsd/external/bsd/less/dist/LICENSE "$src/usr/share/licenses/less/"
 cp usr/bin/clear/clear.sh "$src/usr/bin/clear"
 # sed, grep and awk (NetBSD's); egrep and fgrep are grep.
 for prog in sed grep awk; do

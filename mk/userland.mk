@@ -491,6 +491,24 @@ $(SYS_DIR)/$(1): $(patsubst %,$(SYS_OBJ)/$(1)/%.o,$(call tool_srcs,$(1))) \
 endef
 $(foreach t,$(FILE_TOOLS),$(eval $(call file_tool,$(t))))
 
+# less also provides its POSIX more interface through argv[0].
+LESS            := $(NB)/external/bsd/less/dist
+LESS_SRCS       := main screen brac ch charset cmdbuf command cvt decode edit \
+                   filename forwback help ifile input jump line linenum lsystem \
+                   mark optfunc option opttbl os output pattern position prompt \
+                   search signal tags ttyin version
+LESS_OBJS       := $(addprefix $(SYS_OBJ)/less/,$(addsuffix .o,$(LESS_SRCS)))
+LESS_HDRS       := $(wildcard $(LESS)/*.h usr/lib/compat/less/*.h)
+
+$(SYS_OBJ)/less/%.o: $(LESS)/%.c $(LESS_HDRS) $(TI_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -Iusr/lib/compat/less -I$(LESS) -I$(TI) \
+	    -Iusr/lib/compat/terminfo -DBINDIR='"/usr/bin"' -DSYSDIR='"/etc"' \
+	    -c -o $@ $<
+
+$(SYS_DIR)/less: $(LESS_OBJS) $(TI_LIB) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(LESS_OBJS) $(TI_LIB))
+
 # chsh edits the System V passwd file using the shared password-file lock.
 $(SYS_OBJ)/chsh.o: usr/bin/chsh/chsh.c $(MLIBC)
 	@mkdir -p $(dir $@)
@@ -524,7 +542,7 @@ $(SYS_OBJ)/stat/stat.o: TOOL_XFLAGS := -DHAVE_NBTOOL_CONFIG_H=1
 $(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
 
 TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS) \
-                   hostname stty chsh)
+                   hostname stty chsh less)
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
@@ -604,6 +622,7 @@ ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
                    contrib/netbsd/share/terminfo/terminfo \
                    contrib/tcsh/Copyright contrib/tcsh/NOTICE \
                    contrib/netbsd/bin/stty/NOTICE usr/bin/chsh/chsh.1 tools/mkroot.sh \
+                   contrib/netbsd/external/bsd/less/dist/LICENSE \
                    $(wildcard etc/* etc/defaults/* etc/rc.d/* \
                    contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 

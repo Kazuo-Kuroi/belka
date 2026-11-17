@@ -112,6 +112,25 @@ expect -> ../dev/mnttab
 send ps\r
 expect \x20console\x20
 
+# The pager renders a file, jumps to its end, and searches interactively.
+send seq 1 70 | sed 's/^/pager-line-/' > /tmp/pagertest\r
+send less /tmp/pagertest\r
+expect pager-line-1
+send G
+expect pager-line-70
+send g
+expect pager-line-2\r
+send /pager-line-50\r
+expect pager-line-51
+send q
+expect #\x20
+send more /tmp/pagertest\r
+expect pager-line-1
+send \x20
+expect pager-line-40
+send q
+expect #\x20
+
 # vi on the console (a vt100, from /etc/ttys): insert three lines,
 # delete the first and put it after the next, substitute, and write and
 # quit; the file says what was done. (A pause after escape, so that vi

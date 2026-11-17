@@ -1910,6 +1910,16 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
   shell-list validation, a successful switch and restoration, and file
   permissions.
 
+## Interactive pager (2026-11-17)
+
+- NetBSD's less 458 is imported under its BSD-style Less License.
+  The same executable provides more through its invocation name.
+- Belka selects POSIX signal masking and the termcap interface supplied
+  by NetBSD's terminfo library. The pager supports file viewing, pipes,
+  forward and backward movement, and searching.
+- The console test checks end and beginning jumps, a forward search,
+  more-style paging, and terminal restoration on exit.
+
 ## File systems
 
 1. **tmpfs**, for testing.

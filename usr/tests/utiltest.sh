@@ -278,6 +278,10 @@ status date 0 date -u +%Y
 status sleep 0 sleep 1
 status who 0 who
 
+# Pagers preserve their input when used in pipelines.
+check "less pipe" pager-pipe sh -c 'printf "pager-pipe\n" | less'
+check "more pipe" pager-pipe sh -c 'printf "pager-pipe\n" | more'
+
 cd /
 rm -rf "$work"
 echo "utiltest: $pass passed, $fail failures"

@@ -32,6 +32,7 @@ The paths are NetBSD's.
     lib/libutil/efun.c, lib/libc/stdlib/reallocarr.c
     lib/libutil/loginx.c, logoutx.c, logwtmpx.c    utmpx and wtmpx records
     bin/ed/                     ed(1); Belka builds it without DES
+    external/bsd/less/dist/     less(1), more(1), using the BSD Less License
     bin/stty/                  stty(1), with System V termios adaptations
     bin/hostname/               hostname(1)
     usr.bin/sed/                sed(1)
