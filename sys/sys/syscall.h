@@ -96,6 +96,7 @@
 #define SYS_rename      134
 #define SYS_uname       135
 #define SYS_setegid     136
+#define SYS_systeminfo  139
 #define SYS_seteuid     141
 #define SYS_setitimer   169
 #define SYS_getitimer   170

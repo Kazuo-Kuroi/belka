@@ -18,12 +18,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/cred.h>
 #include <sys/errno.h>
 #include <sys/proc.h>
 #include <sys/signal.h>
 #include <sys/syscall.h>
 #include <sys/sysent.h>
 #include <sys/systm.h>
+#include <sys/spinlock.h>
+#include <sys/systeminfo.h>
 #include <sys/time.h>
 #include <sys/utsname.h>
 #include <sys/vfs.h>
@@ -66,19 +69,82 @@ sys_gettimeofday(const uint64_t *args, uint64_t *rv __unused)
             sizeof(tv)) : 0;
 }
 
+/*
+ * The names uname and sysinfo report; the node name is the host name,
+ * which sysinfo(SI_SET_HOSTNAME) changes, under uts_lock.
+ */
+static struct utsname uts = {
+        "Belka", "belka", "0.0", "dev", "amd64"
+};
+static struct spinlock uts_lock = SPINLOCK_INITIALIZER("uts");
+
 static int
 sys_uname(const uint64_t *args, uint64_t *rv __unused)
 {
-        static struct utsname u;
+        struct utsname u;
+        int s;
 
-        if (u.sysname[0] == '\0') {
-                memcpy(u.sysname, "Belka", 6);
-                memcpy(u.nodename, "belka", 6);
-                memcpy(u.release, "0.0", 4);
-                memcpy(u.version, "dev", 4);
-                memcpy(u.machine, "amd64", 6);
-        }
+        s = spin_lock(&uts_lock);
+        u = uts;
+        spin_unlock(&uts_lock, s);
         return copyout(&u, (void *)(uintptr_t)args[0], sizeof(u));
+}
+
+/* sysinfo(command, buf, count): see <sys/systeminfo.h>. */
+static int
+sys_systeminfo(const uint64_t *args, uint64_t *rv)
+{
+        int cmd = (int)args[0];
+        size_t count = (size_t)args[2], len;
+        char name[SYS_NMLN];
+        int s, error;
+
+        if (cmd == SI_SET_HOSTNAME) {
+                if (!CRED_ISROOT(CRED()))
+                        return EPERM;
+                if ((error = copyinstr((const char *)(uintptr_t)args[1], name,
+                    sizeof(name), &len)) != 0)
+                        return error == ENAMETOOLONG ? EINVAL : error;
+                s = spin_lock(&uts_lock);
+                memcpy(uts.nodename, name, len);
+                spin_unlock(&uts_lock, s);
+                rv[0] = len;
+                return 0;
+        }
+        s = spin_lock(&uts_lock);
+        switch (cmd) {
+        case SI_SYSNAME:
+                memcpy(name, uts.sysname, sizeof(name));
+                break;
+        case SI_HOSTNAME:
+                memcpy(name, uts.nodename, sizeof(name));
+                break;
+        case SI_RELEASE:
+                memcpy(name, uts.release, sizeof(name));
+                break;
+        case SI_VERSION:
+                memcpy(name, uts.version, sizeof(name));
+                break;
+        case SI_MACHINE:
+        case SI_ARCHITECTURE:
+                memcpy(name, uts.machine, sizeof(name));
+                break;
+        default:
+                spin_unlock(&uts_lock, s);
+                return EINVAL;
+        }
+        spin_unlock(&uts_lock, s);
+        len = strlen(name) + 1;
+        if (count > 0) {
+                size_t n = len < count ? len : count;
+
+                name[n - 1] = '\0';
+                if ((error = copyout(name, (void *)(uintptr_t)args[1],
+                    n)) != 0)
+                        return error;
+        }
+        rv[0] = len;
+        return 0;
 }
 
 /* __lwp_private(void *): the LWP private data pointer, the %fs base. */
@@ -159,6 +225,7 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_fchdir] = sys_fchdir,
         [SYS_rename] = sys_rename,
         [SYS_uname] = sys_uname,
+        [SYS_systeminfo] = sys_systeminfo,
         [SYS_setitimer] = sys_setitimer,
         [SYS_getitimer] = sys_getitimer,
         [SYS_gettimeofday] = sys_gettimeofday,
