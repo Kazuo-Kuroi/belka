@@ -77,6 +77,7 @@ void    tty_init(struct tty *);
 void    tty_destroy(struct tty *);
 void    tty_open(struct tty *, int);
 void    tty_hangup(struct tty *);
+void    tty_modem_disconnect(struct tty *);
 int     tty_wait_room(struct tty *, int);
 void    tty_session_end(pid_t);
 struct vnode *tty_ctty_vnode(pid_t);

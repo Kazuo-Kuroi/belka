@@ -57,7 +57,7 @@ modes(int fd)
                 return;
         t.c_iflag = BRKINT | ICRNL | IXON | IMAXBEL;
         t.c_oflag = OPOST | ONLCR;
-        t.c_cflag = (t.c_cflag & (CBAUD | CSIZE)) | CREAD | HUPCL;
+        t.c_cflag = (t.c_cflag & (CBAUD | CSIZE | CLOCAL)) | CREAD | HUPCL;
         if ((t.c_cflag & CSIZE) == 0)
                 t.c_cflag |= CS8;
         t.c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE |

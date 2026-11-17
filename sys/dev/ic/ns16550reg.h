@@ -20,6 +20,7 @@
 #define COM_LCR         3       /* line control */
 #define COM_MCR         4       /* modem control */
 #define COM_LSR         5       /* line status */
+#define COM_MSR         6       /* modem status */
 #define COM_SCR         7       /* scratch */
 
 #define FCR_ENABLE      0x01
@@ -31,6 +32,7 @@
 #define LCR_DLAB        0x80
 
 #define IER_RXRDY       0x01    /* received data, or a FIFO timeout */
+#define IER_MODEM       0x08    /* modem status changed */
 
 #define MCR_DTR         0x01
 #define MCR_RTS         0x02
@@ -39,6 +41,10 @@
 #define LSR_RXRDY       0x01
 #define LSR_TXRDY       0x20    /* transmit holding register empty */
 #define LSR_TSRE        0x40    /* transmitter completely empty */
+
+#define MSR_DELTA       0x0f    /* changed modem inputs */
+#define MSR_DDCD        0x08    /* carrier detect changed */
+#define MSR_DCD         0x80    /* carrier present */
 
 #define COM_FREQ        1843200 /* standard input clock, Hz */
 

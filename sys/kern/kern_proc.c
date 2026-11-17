@@ -277,7 +277,7 @@ spawn(const char *path, char *const argv[], char *const envp[], pid_t *pidp,
         memset(p->p_comm, 0, PSCOMSIZ);
         for (size_t i = 0; i + 1 < PSCOMSIZ && base[i] != '\0'; i++)
                 p->p_comm[i] = base[i];
-        fp = falloc(cons_vnode(), FREAD | FWRITE);
+        fp = falloc(cons_open_vnode(), FREAD | FWRITE);
         for (int i = 0; i < 3; i++) {
                 if (i != 0)
                         fhold(fp);

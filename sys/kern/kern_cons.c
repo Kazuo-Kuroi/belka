@@ -24,6 +24,7 @@
 
 #include <sys/cons.h>
 #include <sys/errno.h>
+#include <sys/file.h>
 #include <sys/mkdev.h>
 #include <sys/specvn.h>
 #include <sys/stat.h>
@@ -36,6 +37,7 @@
 static struct consdev *cn_tab;
 static struct tty cons_tty;
 static int cons_tty_ready;
+static unsigned int cons_opens;         /* protected by cons_tty.t_lock */
 
 void
 cninit(struct consdev *cp)
@@ -77,6 +79,10 @@ cnflush(void)
 static int
 cons_open(struct vnode **vpp __unused, int flags, struct cred *cr __unused)
 {
+        mutex_lock(&cons_tty.t_lock);
+        if (cons_opens++ == 0)
+                cons_tty.t_hungup = 0;
+        mutex_unlock(&cons_tty.t_lock);
         tty_open(&cons_tty, flags);
         return 0;
 }
@@ -85,6 +91,9 @@ static int
 cons_close(struct vnode *vp __unused, int flags __unused,
     struct cred *cr __unused)
 {
+        mutex_lock(&cons_tty.t_lock);
+        cons_opens--;
+        mutex_unlock(&cons_tty.t_lock);
         return 0;
 }
 
@@ -129,6 +138,13 @@ cons_input(int c)
 {
         if (cons_tty_ready)
                 tty_input(&cons_tty, c);
+}
+
+void
+cons_disconnect(void)
+{
+        if (cons_tty_ready)
+                tty_modem_disconnect(&cons_tty);
 }
 
 /*
@@ -282,6 +298,7 @@ cons_vnode(void)
 {
         if (!cons_vn_ready) {
                 tty_init(&cons_tty);
+                cons_tty.t_termios.c_cflag |= CLOCAL;
                 cons_tty.t_output = cons_output;
                 cons_tty.t_vnode = &cons_vn;
                 cons_tty_ready = 1;
@@ -294,4 +311,14 @@ cons_vnode(void)
         }
         VN_HOLD(&cons_vn);
         return &cons_vn;
+}
+
+/* An open file on the console for a kernel-started process. */
+struct vnode *
+cons_open_vnode(void)
+{
+        struct vnode *vp = cons_vnode();
+
+        (void)cons_open(&vp, FNOCTTY, NULL);
+        return vp;
 }

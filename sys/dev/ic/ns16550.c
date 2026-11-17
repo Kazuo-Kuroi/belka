@@ -98,7 +98,12 @@ static int
 ns16550_intr(void *arg)
 {
         struct ns16550_softc *sc = arg;
-        int claimed = 0;
+        uint8_t msr = inb(sc->sc_iobase + COM_MSR);
+        int claimed = (msr & MSR_DELTA) != 0;
+
+        if ((msr & (MSR_DDCD | MSR_DCD)) == MSR_DDCD &&
+            sc->sc_disconnect != NULL)
+                sc->sc_disconnect();
 
         while ((inb(sc->sc_iobase + COM_LSR) & LSR_RXRDY) != 0) {
                 int c = inb(sc->sc_iobase + COM_DATA);
@@ -116,16 +121,19 @@ ns16550_intr(void *arg)
  * the interrupt cannot be attached.
  */
 int
-ns16550_intr_attach(struct ns16550_softc *sc, int irq, void (*input)(int))
+ns16550_intr_attach(struct ns16550_softc *sc, int irq, void (*input)(int),
+    void (*disconnect)(void))
 {
         if (sc->sc_present == 0)
                 return -1;
         sc->sc_input = input;
+        sc->sc_disconnect = disconnect;
         if (intr_establish(irq, INTR_ISA, ns16550_intr, sc, sc->sc_cons.cn_name)
             == NULL)
                 return -1;
         while ((inb(sc->sc_iobase + COM_LSR) & LSR_RXRDY) != 0)
                 (void)inb(sc->sc_iobase + COM_DATA);
-        outb(sc->sc_iobase + COM_IER, IER_RXRDY);
+        (void)inb(sc->sc_iobase + COM_MSR);
+        outb(sc->sc_iobase + COM_IER, IER_RXRDY | IER_MODEM);
         return 0;
 }

@@ -66,6 +66,7 @@ static void tty_erase1(struct tty *);
 static int tty_enqueue(struct tty *, uint16_t);
 static int tty_store(struct tty *, int);
 static void tty_flush_input(struct tty *);
+static void tty_disconnect_locked(struct tty *);
 static void tty_end_line(struct tty *, int);
 static size_t tty_readable(const struct tty *);
 static int tty_sleep(struct tty *, struct sv *);
@@ -185,6 +186,18 @@ tty_hup_signal(pid_t pgrp)
         }
 }
 
+/* Finish an active connection. t_lock is held. */
+static void
+tty_disconnect_locked(struct tty *tp)
+{
+        tp->t_hungup = 1;
+        tty_flush_input(tp);
+        tp->t_stopped = 0;
+        sv_broadcast(&tp->t_insv);
+        sv_broadcast(&tp->t_outsv);
+        sv_broadcast(&tp->t_roomsv);
+}
+
 /*
  * The line went (a pseudo-terminal's master was closed): reads see end
  * of file and writes fail with EIO from now on; the foreground group
@@ -197,20 +210,40 @@ tty_hangup(struct tty *tp)
         pid_t pgrp, sid;
 
         mutex_lock(&tp->t_lock);
-        tp->t_hungup = 1;
-        tty_flush_input(tp);
-        tp->t_stopped = 0;
+        tty_disconnect_locked(tp);
         pgrp = tp->t_pgrp;
         sid = tp->t_sid;
         tp->t_pgrp = tp->t_sid = 0;
-        sv_broadcast(&tp->t_insv);
-        sv_broadcast(&tp->t_outsv);
-        sv_broadcast(&tp->t_roomsv);
         mutex_unlock(&tp->t_lock);
         pollwakeup(&tp->t_ph);
         tty_hup_signal(pgrp);
         if (sid > 0 && sid != pgrp)
                 tty_hup_signal(sid);
+}
+
+/* Modem carrier loss interrupts the controlling process. */
+void
+tty_modem_disconnect(struct tty *tp)
+{
+        struct proc *leader;
+        pid_t sid;
+
+        mutex_lock(&tp->t_lock);
+        if ((tp->t_termios.c_cflag & CLOCAL) != 0 || tp->t_hungup) {
+                mutex_unlock(&tp->t_lock);
+                return;
+        }
+        tty_disconnect_locked(tp);
+        sid = tp->t_sid;
+        mutex_unlock(&tp->t_lock);
+        pollwakeup(&tp->t_ph);
+        if (sid == 0)
+                return;
+        mutex_lock(&proctree_lock);
+        leader = proc_find_locked(sid);
+        if (leader != NULL && leader->p_sid == sid)
+                psignal(leader, SIGHUP);
+        mutex_unlock(&proctree_lock);
 }
 
 /*
@@ -522,6 +555,8 @@ tty_input(struct tty *tp, int c)
 
         c &= 0xff;
         mutex_lock(&tp->t_lock);
+        if (tp->t_hungup)
+                goto out;
         if ((t->c_iflag & ISTRIP) != 0)
                 c &= 0x7f;
         if (tp->t_lnext) {
@@ -1038,7 +1073,9 @@ tty_poll(struct tty *tp, short events, short *reventsp,
 
         (void)events;
         mutex_lock(&tp->t_lock);
-        if (tty_readable(tp) != 0)
+        if (tp->t_hungup)
+                rev = POLLHUP;
+        else if (tty_readable(tp) != 0)
                 rev |= POLLIN | POLLRDNORM;
         mutex_unlock(&tp->t_lock);
         *reventsp = rev;

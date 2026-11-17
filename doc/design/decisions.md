@@ -1762,6 +1762,19 @@ Recorded 2026-11-07.
 - [POSIX.1-2001 `<termios.h>`](https://www.gaertner.de/~neitzel/susv3/basedefs/termios.h.html)
   and [Solaris `termio(4I)`](https://docs.oracle.com/cd/E88353_01/html/E37851/termio-4i.html).
 
+## Serial carrier loss (2026-11-17)
+
+- The 16550 console handles a falling data-carrier-detect interrupt.
+  With `CLOCAL` clear, the terminal sends `SIGHUP` to the controlling
+  process. Reads see EOF, writes fail with `EIO`, and `poll` reports
+  `POLLHUP`. The next open after the last console file closes clears
+  the hangup. The built-in console defaults to `CLOCAL` for direct
+  serial connections, and getty preserves it.
+- Connection setup does not wait for carrier, and closing the console
+  does not lower DTR. These are separate modem-control operations.
+- [POSIX.1-2001 `<termios.h>`](https://www.gaertner.de/~neitzel/susv3/basedefs/termios.h.html)
+  and [Solaris `termio(4I)`](https://docs.oracle.com/cd/E88353_01/html/E37851/termio-4i.html).
+
 ## File systems
 
 1. **tmpfs**, for testing.

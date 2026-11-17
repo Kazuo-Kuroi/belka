@@ -730,7 +730,8 @@ configure(void)
         boottime_sec = rtc_time_of_day();
         pci_init();
         /* Console input, for the console terminal. */
-        (void)ns16550_intr_attach(&console_softc, CONSOLE_IRQ, cons_input);
+        (void)ns16550_intr_attach(&console_softc, CONSOLE_IRQ, cons_input,
+            cons_disconnect);
 }
 
 /*

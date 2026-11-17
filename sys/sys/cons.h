@@ -28,8 +28,10 @@ void cnflush(void);
 void cnputc_raw(int);
 void cnwrite(const char *, size_t);
 void cons_input(int);
+void cons_disconnect(void);
 
 struct vnode;
 struct vnode *cons_vnode(void);
+struct vnode *cons_open_vnode(void);
 
 #endif /* _SYS_CONS_H_ */
