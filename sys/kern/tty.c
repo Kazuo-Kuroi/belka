@@ -405,7 +405,7 @@ tty_erase1(struct tty *tp)
 
         if (tp->t_linelen == 0)
                 return;
-        c = (unsigned char)tp->t_line[--tp->t_linelen];
+        c = tp->t_line[--tp->t_linelen] & 0xff;
         if ((lflag & ECHO) == 0)
                 return;
         if ((lflag & ECHOE) == 0) {
@@ -428,6 +428,8 @@ tty_enqueue(struct tty *tp, uint16_t e)
         tp->t_incount++;
         if ((e & (TQ_DELIM | TQ_EOF)) != 0)
                 tp->t_lines++;
+        if ((e & TQ_DSUSP) != 0)
+                tp->t_dsusp++;
         return 1;
 }
 
@@ -435,6 +437,7 @@ static void
 tty_flush_input(struct tty *tp)
 {
         tp->t_inhead = tp->t_incount = tp->t_lines = 0;
+        tp->t_dsusp = 0;
         tp->t_linelen = 0;
         tp->t_lnext = 0;
 }
@@ -455,7 +458,7 @@ tty_end_line(struct tty *tp, int delim)
                 return;
         }
         for (size_t i = 0; i < tp->t_linelen; i++)
-                (void)tty_enqueue(tp, (unsigned char)tp->t_line[i]);
+                (void)tty_enqueue(tp, tp->t_line[i]);
         tp->t_linelen = 0;
         (void)tty_enqueue(tp, delim >= 0 ? (uint16_t)(delim | TQ_DELIM) :
             TQ_EOF);
@@ -477,8 +480,8 @@ tty_store(struct tty *tp, int c)
                                 tp->t_output(tp, "\a", 1);
                         return 0;
                 }
-                tp->t_line[tp->t_linelen++] = (char)c;
-                tty_echo(tp, c);
+                tp->t_line[tp->t_linelen++] = (uint16_t)c;
+                tty_echo(tp, c & 0xff);
                 return 0;
         }
         if (!tty_enqueue(tp, (uint16_t)c)) {
@@ -486,8 +489,16 @@ tty_store(struct tty *tp, int c)
                         tp->t_output(tp, "\a", 1);
                 return 0;
         }
-        tty_echo(tp, c);
+        tty_echo(tp, c & 0xff);
         return 1;
+}
+
+/* A group nothing could continue is not stopped. No tty lock held. */
+static void
+tty_signal_group(pid_t pgrp, int sig)
+{
+        if (pgrp > 0 && (sig != SIGTSTP || !pgrp_orphaned(pgrp, NULL)))
+                pgsignal(pgrp, sig);
 }
 
 /* Signal the foreground process group. Called without t_lock. */
@@ -499,12 +510,7 @@ tty_signal(struct tty *tp, int sig)
         mutex_lock(&tp->t_lock);
         pgrp = tp->t_pgrp;
         mutex_unlock(&tp->t_lock);
-        if (pgrp > 0) {
-                /* A group nothing could continue is not stopped. */
-                if (sig == SIGTSTP && pgrp_orphaned(pgrp, NULL))
-                        return;
-                pgsignal(pgrp, sig);
-        }
+        tty_signal_group(pgrp, sig);
 }
 
 /* A character from the device. */
@@ -559,6 +565,10 @@ tty_input(struct tty *tp, int c)
                                 tty_flush_input(tp);
                         tty_echo(tp, c);
                         goto out;
+                }
+                if ((t->c_lflag & IEXTEN) != 0 && tty_cc(tp, VDSUSP, c)) {
+                        wake = tty_store(tp, c | TQ_DSUSP);
+                        goto done;
                 }
         }
         if ((t->c_lflag & ICANON) != 0) {
@@ -649,10 +659,15 @@ int
 tty_read(struct tty *tp, struct uio *uio, int ioflag)
 {
         struct termios *t = &tp->t_termios;
+        ssize_t resid = uio->uio_resid;
         size_t last = 0;
         int64_t id = 0;
-        int timing = 0, error = 0;
+        pid_t pgrp = 0;
+        int timing = 0, error = 0, suspend = 0;
 
+        if (resid == 0)
+                return 0;
+retry:
         if ((error = tty_bgcheck(tp, SIGTTIN)) != 0)
                 return error;
         mutex_lock(&tp->t_lock);
@@ -673,7 +688,7 @@ tty_read(struct tty *tp, struct uio *uio, int ioflag)
                                 want = (size_t)uio->uio_resid;
                         if (want == 0 && (vtime == 0 || avail != 0))
                                 break;          /* VMIN 0: what there is */
-                        if (want != 0 && avail >= want)
+                        if (tp->t_dsusp != 0 || (want != 0 && avail >= want))
                                 break;
                         if (timing && curlwp->l_timedout)
                                 break;          /* VTIME ran out */
@@ -720,6 +735,14 @@ tty_read(struct tty *tp, struct uio *uio, int ioflag)
                         }
                         tp->t_inhead = (tp->t_inhead + 1) % TTY_INQ;
                         tp->t_incount--;
+                        if ((e & TQ_DSUSP) != 0) {
+                                tp->t_dsusp--;
+                                if (tp->t_pgrp == curproc->p_pgid &&
+                                    tp->t_sid == curproc->p_sid)
+                                        pgrp = tp->t_pgrp;
+                                suspend = 1;
+                                break;
+                        }
                         buf[n++] = (char)(e & 0xff);
                         if ((e & (TQ_DELIM | TQ_EOF)) != 0) {
                                 tp->t_lines--;
@@ -731,7 +754,7 @@ tty_read(struct tty *tp, struct uio *uio, int ioflag)
                 }
                 if ((error = uiomove(buf, n, UIO_READ, uio)) != 0)
                         break;
-                if (done)
+                if (done || suspend)
                         break;
         }
         sv_broadcast(&tp->t_roomsv);
@@ -739,6 +762,20 @@ out:
         mutex_unlock(&tp->t_lock);
         if (timing)
                 lwp_timeout_stop(id);
+        if (suspend) {
+                tty_signal_group(pgrp, SIGTSTP);
+                if (uio->uio_resid == resid && error == 0) {
+                        int action = sig_sleep_check();
+
+                        if (action != 0)
+                                return action == 2 ? ERESTART :
+                                    sig_restart(EINTR);
+                        suspend = timing = 0;
+                        last = 0;
+                        pgrp = 0;
+                        goto retry;
+                }
+        }
         return error;
 }
 
@@ -793,7 +830,7 @@ tty_setmodes(struct tty *tp, const struct termios *nt, int flush)
                 tty_flush_input(tp);
         if ((was & ICANON) != 0 && (nt->c_lflag & ICANON) == 0) {
                 for (size_t i = 0; i < tp->t_linelen; i++)
-                        (void)tty_enqueue(tp, (unsigned char)tp->t_line[i]);
+                        (void)tty_enqueue(tp, tp->t_line[i]);
                 tp->t_linelen = 0;
         }
         tp->t_termios = *nt;
@@ -984,7 +1021,7 @@ tty_ioctl(struct tty *tp, unsigned long cmd, uint64_t arg, int flag,
                 v = 0;
                 for (size_t i = 0; i < tp->t_incount; i++)
                         if ((tp->t_inq[(tp->t_inhead + i) % TTY_INQ] &
-                            TQ_EOF) == 0)
+                            (TQ_EOF | TQ_DSUSP)) == 0)
                                 v++;
                 mutex_unlock(&tp->t_lock);
                 return copyout(&v, uaddr, sizeof(v));

@@ -237,6 +237,63 @@ background(int s, int what)
         return status;
 }
 
+/* Delayed suspend is taken on read by a non-orphaned foreground group. */
+static void
+delayed_suspend(int m, int s)
+{
+        struct sigaction sa;
+        struct termios t, raw;
+        char buf[16];
+        int ready[2], status;
+        pid_t pid, parent_group = getpgrp();
+
+        CHECK(pipe(ready) == 0);
+        pid = fork();
+        if (pid == 0) {
+                alarm(10);
+                close(ready[1]);
+                if (read(ready[0], buf, 1) != 1)
+                        _exit(1);
+                close(ready[0]);
+                memset(&sa, 0, sizeof(sa));
+                sa.sa_handler = on_int;
+                CHECK(sigaction(SIGTSTP, &sa, NULL) == 0);
+                ints = 0;
+                CHECK(tcgetattr(s, &t) == 0);
+                CHECK(write(m, "a\031b\n", 4) == 4 && ints == 0);
+                CHECK(read(s, buf, sizeof(buf)) == 1 && buf[0] == 'a');
+                CHECK(ints == 1);
+                CHECK(read(s, buf, sizeof(buf)) == 2 &&
+                    memcmp(buf, "b\n", 2) == 0);
+                CHECK(write(m, "\026\031\n", 3) == 3);
+                CHECK(read(s, buf, sizeof(buf)) == 2 && buf[0] == '\031' &&
+                    ints == 1);
+
+                raw = t;
+                raw.c_lflag &= ~(tcflag_t)ICANON;
+                raw.c_cc[VMIN] = 4;
+                raw.c_cc[VTIME] = 0;
+                CHECK(tcsetattr(s, TCSANOW, &raw) == 0);
+                CHECK(write(m, "\031", 1) == 1 && ints == 1);
+                CHECK(read(s, buf, sizeof(buf)) == -1 && errno == EINTR);
+                CHECK(ints == 2);
+                CHECK(tcsetattr(s, TCSANOW, &t) == 0);
+                CHECK(tcsetpgrp(s, parent_group) == 0);
+                fflush(stdout);
+                _exit(failures);
+        }
+        close(ready[0]);
+        CHECK(pid > 0);
+        if (pid > 0) {
+                CHECK(setpgid(pid, pid) == 0 && tcsetpgrp(s, pid) == 0);
+                CHECK(write(ready[1], "r", 1) == 1);
+        }
+        close(ready[1]);
+        if (pid > 0)
+                CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                    WEXITSTATUS(status) == 0);
+}
+
 /*
  * In a session of its own: the slave becomes its controlling terminal
  * on open; background reads and writes stop; ^C reaches the foreground;
@@ -284,6 +341,8 @@ session(void *arg)
         st = background(s, 'w');
         CHECK(WIFSTOPPED(st) && WSTOPSIG(st) == SIGTTOU);
         (void)drain(m, buf, sizeof(buf));
+
+        delayed_suspend(m, s);
 
         /* ^C typed on the master: SIGINT to the foreground group. */
         memset(&sa, 0, sizeof(sa));

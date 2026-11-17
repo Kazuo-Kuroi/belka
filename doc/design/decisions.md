@@ -1751,6 +1751,17 @@ Recorded 2026-11-07.
   The synchronous waits use the existing `sigwait` syscall (194).
   `sigwait` returns an error number directly and resumes after `EINTR`.
 
+## Delayed terminal suspend (2026-11-17)
+
+- POSIX.1-2001 reserves `VDSUSP` as an XSI extension. Belka follows
+  Solaris `termio(4I)` for timing: with `ISIG` and `IEXTEN` set, the
+  input queue marks the character and a foreground read posts `SIGTSTP`
+  when it reaches the mark. The mark is consumed, and a read returns
+  any preceding bytes before processing the remaining input on the
+  next read. `VLNEXT` quotes the character as usual.
+- [POSIX.1-2001 `<termios.h>`](https://www.gaertner.de/~neitzel/susv3/basedefs/termios.h.html)
+  and [Solaris `termio(4I)`](https://docs.oracle.com/cd/E88353_01/html/E37851/termio-4i.html).
+
 ## File systems
 
 1. **tmpfs**, for testing.

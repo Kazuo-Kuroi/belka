@@ -37,6 +37,7 @@
 /* Input queue entries: a character and these flags. */
 #define TQ_DELIM        0x100   /* ends a line (canonical mode) */
 #define TQ_EOF          0x200   /* end of file: ends a line, is not read */
+#define TQ_DSUSP        0x400   /* post a stop signal when read */
 
 struct tty {
         struct mutex    t_lock;
@@ -50,7 +51,8 @@ struct tty {
         size_t          t_inhead;
         size_t          t_incount;
         size_t          t_lines;        /* TQ_DELIM entries in t_inq */
-        char            t_line[TTY_LINE];
+        size_t          t_dsusp;        /* delayed suspends in t_inq */
+        uint16_t        t_line[TTY_LINE];
         size_t          t_linelen;
         int             t_stopped;      /* output stopped (VSTOP) */
         int             t_lnext;        /* the next character is literal */
