@@ -49,6 +49,7 @@ DB_SRCS         := $(DB)/db/db.c $(DB)/db/dbfile.c $(DB)/mpool/mpool.c \
                    rec_utils.c)
 
 COMPAT_SRCS     := usr/lib/compat/misc.c usr/lib/compat/signame.c \
+                   usr/lib/compat/lastlogx.c \
                    usr/lib/compat/parsedate.c \
                    $(NB)/lib/libc/gen/setmode.c \
                    usr/lib/compat/vis.c usr/lib/compat/crypt.c \
@@ -123,7 +124,7 @@ $(SYS_DIR)/init: $(INIT_OBJS) $(SYS_DEPS)
 # login: utmpx (not the old utmp); hashes from /etc/shadow; no PAM,
 # login classes, Kerberos or S/Key.
 LOGIN_CFLAGS    := -DNO_PW_AGING -DSUPPORT_UTMPX -DNO_UT_SS -DUPDWTMPX_VOID \
-                   -DNO_LASTLOGX -DBELKA_SHADOW
+                   -DBELKA_SHADOW
 LOGIN_OBJS      := $(SYS_OBJ)/login.o $(SYS_OBJ)/login-common.o \
                    $(SYS_OBJ)/copyrightstr.o
 $(SYS_OBJ)/login.o: $(NB)/usr.bin/login/login.c $(COMPAT_HDRS) $(MLIBC)

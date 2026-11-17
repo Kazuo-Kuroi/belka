@@ -504,6 +504,9 @@ test_login(const char *user, const char *password, const char *uid,
         say(m, line);
         CHECK(expect(m, "Password:", 5000));
         say(m, "new-Pass-2026\n");
+        /* login says when the user last logged in, and on which line. */
+        CHECK(expect(m, "Last login: ", 10000));
+        CHECK(expect(m, " on pts/", 5000));
         CHECK(expect(m, "$ ", 10000));
         say(m, "echo \"<$((40 + 2))>\"\n");
         CHECK(expect(m, "<42>", 5000));

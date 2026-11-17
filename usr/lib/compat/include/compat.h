@@ -202,6 +202,17 @@ int revoke(const char *);
 int issetugid(void);
 void setproctitle(const char *, ...);
 
+/* <utmpx.h>: each user's last login, as NetBSD keeps it (lastlogx.c). */
+#define _PATH_LASTLOGX  "/var/adm/lastlogx"
+struct lastlogx {
+        struct timeval          ll_tv;
+        char                    ll_line[32];
+        char                    ll_host[256];
+        struct sockaddr_storage ll_ss;
+};
+struct lastlogx *getlastlogx(const char *, uid_t, struct lastlogx *);
+int updlastlogx(const char *, uid_t, struct lastlogx *);
+
 /* <util.h> */
 int ttyaction(const char *, const char *, const char *);
 int sockaddr_snprintf(char *, size_t, const char *, const struct sockaddr *);
