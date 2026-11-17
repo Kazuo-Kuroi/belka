@@ -32,6 +32,7 @@ The paths are NetBSD's.
     lib/libutil/efun.c, lib/libc/stdlib/reallocarr.c
     lib/libutil/loginx.c, logoutx.c, logwtmpx.c    utmpx and wtmpx records
     bin/ed/                     ed(1); Belka builds it without DES
+    bin/hostname/               hostname(1)
     usr.bin/sed/                sed(1)
     usr.bin/grep/               grep(1), egrep, fgrep; without NLS catalogues
     external/historical/nawk/dist/   awk(1): the One True AWK, with its
