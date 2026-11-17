@@ -1,0 +1,30 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-16
+# SPDX-License-Identifier: MIT
+#
+# The terminal descriptions' database, compiled from its source when it
+# is missing or older (the image carries only the source).
+
+# PROVIDE: terminfo
+# REQUIRE: mountcritlocal
+# BEFORE: SERVERS
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="terminfo"
+start_cmd="terminfo_start"
+stop_cmd=":"
+
+terminfo_start()
+{
+        ti=/usr/share/misc/terminfo
+        if [ -f $ti ] && { [ ! -f $ti.cdb ] || [ $ti -nt $ti.cdb ]; }; then
+                echo 'Compiling the terminal descriptions.'
+                tic -x $ti
+        fi
+}
+
+load_rc_config $name
+run_rc_command "$1"

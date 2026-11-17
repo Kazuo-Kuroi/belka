@@ -1,0 +1,34 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-16
+# SPDX-License-Identifier: MIT
+#
+# The file systems /etc/vfstab marks to be mounted at boot (mount -a),
+# then /tmp open to all, as it must be (a tmpfs root starts as 0755).
+# Belka mounts them all at once, so this provides NetBSD's stages too.
+
+# PROVIDE: mountall mountcritlocal mountcritremote
+# REQUIRE: DISKS
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="mountall"
+start_cmd="mountall_start"
+stop_cmd="mountall_stop"
+
+mountall_start()
+{
+        echo 'Mounting all file systems...'
+        mount -a
+        chmod 1777 /tmp
+}
+
+mountall_stop()
+{
+        echo 'Unmounting all file systems...'
+        umount -a
+}
+
+load_rc_config $name
+run_rc_command "$1"
