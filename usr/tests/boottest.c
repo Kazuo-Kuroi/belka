@@ -350,6 +350,46 @@ test_utilities(void)
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
+/*
+ * After passwd changed user's password: /etc/passwd still says "x" for
+ * it; /etc/shadow is still root's, mode 0400, with a new hash and today
+ * as the day of the change; passwd's copy is gone.
+ */
+static void
+test_shadow(const char *user)
+{
+        char line[512], want[64];
+        struct stat st;
+        size_t ulen = strlen(user);
+        int seen = 0;
+        FILE *f;
+
+        CHECK(stat("/etc/shadow", &st) == 0 && st.st_uid == 0 &&
+            (st.st_mode & 07777) == 0400);
+        CHECK(stat("/etc/stmp", &st) == -1 && errno == ENOENT);
+        CHECK(stat("/etc/.pwd.lock", &st) == 0);
+        if ((f = fopen("/etc/passwd", "r")) != NULL) {
+                snprintf(want, sizeof(want), "%s:x:", user);
+                while (fgets(line, sizeof(line), f) != NULL)
+                        seen |= strncmp(line, want, strlen(want)) == 0;
+                fclose(f);
+        }
+        CHECK(seen);
+        seen = 0;
+        snprintf(want, sizeof(want), ":%ld:", (long)(time(NULL) / 86400));
+        if ((f = fopen("/etc/shadow", "r")) != NULL) {
+                while (fgets(line, sizeof(line), f) != NULL)
+                        if (strncmp(line, user, ulen) == 0 &&
+                            line[ulen] == ':' &&
+                            strncmp(line + ulen + 1, "$sha1$", 6) == 0 &&
+                            strstr(line, "belkatst") == NULL &&
+                            strstr(line, want) != NULL)
+                                seen = 1;
+                fclose(f);
+        }
+        CHECK(seen);
+}
+
 /* Logins through getty and login on a pseudo-terminal. */
 static void
 test_login(const char *user, const char *password, const char *uid,
@@ -387,6 +427,9 @@ test_login(const char *user, const char *password, const char *uid,
         say(m, "who\n");
         snprintf(want, sizeof(want), "%s ", user);
         CHECK(expect(m, want, 5000));
+        /* /etc/shadow is closed to the user. */
+        say(m, "cat /etc/shadow\n");
+        CHECK(expect(m, "/etc/shadow: Access denied", 5000));
         /* passwd changes the password, giving the old one first. */
         say(m, "passwd\n");
         CHECK(expect(m, "Old password:", 5000));
@@ -425,6 +468,7 @@ test_login(const char *user, const char *password, const char *uid,
         status = reap(pid, 10000);
         CHECK(status != -1);
         close(m);
+        test_shadow(user);
 }
 
 int

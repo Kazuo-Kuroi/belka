@@ -134,6 +134,8 @@ int sockaddr_snprintf(char *, size_t, const char *, const struct sockaddr *);
 
 /* <pwd.h> */
 const char *user_from_uid(uid_t, int);
+struct passwd;
+void compat_shadow(struct passwd *);
 char *crypt(const char *, const char *);
 
 /* <string.h> */

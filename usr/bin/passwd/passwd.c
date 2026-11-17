@@ -8,9 +8,13 @@
  * passwd [user]: change a password. A user changes their own, giving
  * the old one first; the superuser changes anyone's without it. The new
  * one is asked for twice, hashed with crypt(3)'s "$sha1$" scheme under a
- * new salt, and written to /etc/passwd, which keeps the hashes for now
- * (there is no shadow file): a copy is written to /etc/ptmp, which is
- * also the lock, and renamed over it. Set-user-ID root.
+ * new salt, and written to /etc/shadow with the day of the change, its
+ * third field. /etc/passwd says "x" for the password and is not changed.
+ *
+ * The file is replaced under the password files' lock (lckpwdf, a write
+ * lock on /etc/.pwd.lock, which every program changing them takes): a
+ * copy is written to /etc/stmp, mode 0400, and renamed over it.
+ * Set-user-ID root.
  */
 
 #define _DEFAULT_SOURCE
@@ -18,16 +22,18 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pwd.h>
+#include <shadow.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
-#define PASSWD          "/etc/passwd"
-#define PTMP            "/etc/ptmp"     /* the new copy, and the lock */
+#define SHADOW_FILE     "/etc/shadow"
+#define STMP            "/etc/stmp"     /* the new copy */
 #define ITERATIONS      24680           /* the rounds of HMAC-SHA1 */
 #define SALTLEN         8
 
@@ -58,35 +64,45 @@ new_setting(char *buf, size_t len)
         snprintf(buf, len, "$sha1$%u$%s$", rounds, salt);
 }
 
-/* Replace user's hash in /etc/passwd with hash; 0, or -1 with a reason. */
+/*
+ * Replace user's hash in /etc/shadow with hash, and its last change
+ * with today (days since 1970); 0, or -1 with a reason. The caller
+ * holds the password files' lock.
+ */
 static int
 rewrite(const char *user, const char *hash, const char **why)
 {
         size_t ulen = strlen(user), cap = 0;
+        long today = (long)(time(NULL) / 86400);
         char *line = NULL;
-        struct stat st;
         FILE *in, *out;
         int fd, found = 0;
         ssize_t n;
 
-        if ((fd = open(PTMP, O_WRONLY | O_CREAT | O_EXCL, 0644)) < 0) {
-                *why = errno == EEXIST ? PTMP " exists: the password file "
-                    "is busy; try again" : "cannot create " PTMP;
+        (void)unlink(STMP);             /* a copy a crash left */
+        if ((fd = open(STMP, O_WRONLY | O_CREAT | O_EXCL, 0400)) < 0) {
+                *why = "cannot create " STMP;
                 return -1;
         }
-        if ((in = fopen(PASSWD, "r")) == NULL ||
+        if ((in = fopen(SHADOW_FILE, "r")) == NULL ||
             (out = fdopen(fd, "w")) == NULL) {
-                *why = "cannot read " PASSWD;
+                *why = "cannot read " SHADOW_FILE;
+                if (in != NULL)
+                        fclose(in);
                 close(fd);
-                unlink(PTMP);
+                unlink(STMP);
                 return -1;
         }
         while ((n = getline(&line, &cap, in)) > 0) {
-                char *colon;
+                char *rest;
 
+                /* name:password:lastchg:min:max:warn:inactive:expire:flag */
                 if (strncmp(line, user, ulen) == 0 && line[ulen] == ':' &&
-                    (colon = strchr(line + ulen + 1, ':')) != NULL) {
-                        fprintf(out, "%s:%s%s", user, hash, colon);
+                    (rest = strchr(line + ulen + 1, ':')) != NULL) {
+                        char *after = strchr(rest + 1, ':');
+
+                        fprintf(out, "%s:%s:%ld%s", user, hash, today,
+                            after != NULL ? after : "::::::\n");
                         found = 1;
                 } else {
                         fputs(line, out);
@@ -95,22 +111,22 @@ rewrite(const char *user, const char *hash, const char **why)
         free(line);
         fclose(in);
         if (!found) {
-                *why = "user not in " PASSWD;
+                *why = "user not in " SHADOW_FILE;
                 fclose(out);
-                unlink(PTMP);
+                unlink(STMP);
                 return -1;
         }
         if (fflush(out) != 0 || fsync(fileno(out)) != 0 ||
-            fstat(fileno(out), &st) != 0) {
-                *why = "cannot write " PTMP;
+            fchmod(fileno(out), 0400) != 0) {
+                *why = "cannot write " STMP;
                 fclose(out);
-                unlink(PTMP);
+                unlink(STMP);
                 return -1;
         }
         fclose(out);
-        if (rename(PTMP, PASSWD) != 0) {
-                *why = "cannot replace " PASSWD;
-                unlink(PTMP);
+        if (rename(STMP, SHADOW_FILE) != 0) {
+                *why = "cannot replace " SHADOW_FILE;
+                unlink(STMP);
                 return -1;
         }
         return 0;
@@ -122,6 +138,7 @@ main(int argc, char **argv)
         char setting[64], newpw[256], *p, *hash;
         const char *why;
         struct passwd *pw;
+        struct spwd *sp;
         uid_t uid = getuid();
 
         if (argc > 2) {
@@ -133,15 +150,17 @@ main(int argc, char **argv)
                 die(argc == 2 ? "unknown user" : "who are you?");
         if (uid != 0 && pw->pw_uid != uid)
                 die("only the superuser may change another's password");
+        if ((sp = getspnam(pw->pw_name)) == NULL)
+                die("no entry in " SHADOW_FILE);
         printf("Changing the password of %s.\n", pw->pw_name);
 
         /* The old one, unless the superuser or there is none. */
-        if (uid != 0 && pw->pw_passwd[0] != '\0') {
+        if (uid != 0 && sp->sp_pwdp[0] != '\0') {
                 if ((p = getpass("Old password:")) == NULL)
                         die("cannot read the password");
-                hash = crypt(p, pw->pw_passwd);
+                hash = crypt(p, sp->sp_pwdp);
                 explicit_bzero(p, strlen(p));
-                if (hash == NULL || strcmp(hash, pw->pw_passwd) != 0) {
+                if (hash == NULL || strcmp(hash, sp->sp_pwdp) != 0) {
                         sleep(2);
                         die("that is not the password");
                 }
@@ -176,8 +195,13 @@ main(int argc, char **argv)
         signal(SIGINT, SIG_IGN);
         signal(SIGQUIT, SIG_IGN);
         signal(SIGTSTP, SIG_IGN);
-        if (rewrite(pw->pw_name, hash, &why) != 0)
+        if (lckpwdf() != 0)
+                die("the password files are busy; try again");
+        if (rewrite(pw->pw_name, hash, &why) != 0) {
+                ulckpwdf();
                 die(why);
+        }
+        ulckpwdf();
         printf("The password is changed.\n");
         return 0;
 }

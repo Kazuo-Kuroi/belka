@@ -13,7 +13,8 @@
 #   /tmp, /root
 #
 # Everything is owned by root, and login is set-user-ID, through
-# fakeroot(1). root has no password.
+# fakeroot(1). The password hashes are in /etc/shadow (mode 0400);
+# root has no password.
 #
 # With -t, the image is the boot test's: user "test" (uid 100, password
 # "belka-test", its hash written here) and an /etc/rc.local that runs
@@ -104,7 +105,8 @@ mkdir -p "$src/usr/share/misc"
 cp contrib/netbsd/share/terminfo/terminfo "$src/usr/share/misc/terminfo"
 cp "$libdir/ld.so.1" "$libdir/libc.so.1" "$src/usr/lib64/"
 
-for f in rc rc.conf ttys passwd group shells profile defaults/rc.conf; do
+for f in rc rc.conf ttys passwd shadow group shells profile \
+    defaults/rc.conf; do
         cp "etc/$f" "$src/etc/$f"
 done
 # The mount table is the kernel's (devfs).
@@ -116,8 +118,9 @@ if [ $test -eq 1 ]; then
         # crypt("belka-test", "$sha1$24680$belkatst$"); boottest logs in
         # with it, so Belka's crypt checks it.
         hash='$sha1$24680$belkatst$XycoewmXxvwRJYfMFY3Jpt0BG5Li'
-        echo "test:$hash:100:100:Boot test:/home/test:/bin/sh" \
+        echo "test:x:100:100:Boot test:/home/test:/bin/sh" \
             >> "$src/etc/passwd"
+        echo "test:$hash:$(($(date +%s) / 86400))::::::" >> "$src/etc/shadow"
         mkdir -p "$src/home/test"
         cat > "$src/etc/rc.local" <<'EOF'
 # The boot test: in the background, so that init goes on to multi-user.
@@ -133,6 +136,7 @@ $FAKEROOT sh -c '
         chmod 0755 "$src"/bin/* "$src"/sbin/* "$src"/usr/libexec/* \
             "$src"/usr/bin/*
         chmod 4555 "$src/usr/bin/login" "$src/usr/bin/passwd"
+        chmod 0400 "$src/etc/shadow"
         chmod 1777 "$src/tmp" "$src/var/tmp" "$src/var/tmp/vi.recover"
         chmod 0700 "$src/root"
         if [ -d "$src/home/test" ]; then

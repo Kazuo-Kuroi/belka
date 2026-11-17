@@ -20,6 +20,7 @@
 
 #include <errno.h>
 #include <pwd.h>
+#include <shadow.h>
 #include <stdio.h>
 #include <stdio_ext.h>
 #include <limits.h>
@@ -258,4 +259,27 @@ fpurge(FILE *fp)
 {
         __fpurge(fp);
         return 0;
+}
+
+/*
+ * pw's password, if it is "x", from /etc/shadow (getspnam): login and
+ * init check it (built with BELKA_SHADOW). pw is left alone if there is
+ * no shadow entry, which only root can read.
+ *
+ * pw is mlibc's getpwnam entry, whose fields that library allocates and
+ * frees at its next call; the hash takes the place of its "x" the same
+ * way, so that the library frees it in turn.
+ */
+void
+compat_shadow(struct passwd *pw)
+{
+        struct spwd *sp;
+        char *hash;
+
+        if (strcmp(pw->pw_passwd, "x") != 0 ||
+            (sp = getspnam(pw->pw_name)) == NULL ||
+            (hash = strdup(sp->sp_pwdp)) == NULL)
+                return;
+        free(pw->pw_passwd);
+        pw->pw_passwd = hash;
 }
