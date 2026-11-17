@@ -11,8 +11,8 @@
  *
  * It checks that it runs as root under init (process 1) with /dev
  * mounted; that an orphan goes to init; that /proc reports processes;
- * that the utilities work (usr/tests/utiltest.sh); on a
- * pseudo-terminal, that getty and login turn away a wrong password,
+ * that the utilities work (usr/tests/utiltest.sh, and their own suite);
+ * on a pseudo-terminal, that getty and login turn away a wrong password,
  * refuse root on a line /etc/ttys does not mark secure, and log the test
  * user in with the right password, to a shell with the user's IDs, home
  * and name, which who lists, and where passwd changes the password, so
@@ -351,6 +351,26 @@ test_utilities(void)
 }
 
 /*
+ * ksenon-utils' own suite (/usr/tests/xn/tests/run.sh, over the 45
+ * utilities in /usr/tests/xn/cmd), as on GNU/Linux: it prints each
+ * failed check and "N passed, M failed", and must find no failures.
+ */
+static void
+test_xn_suite(void)
+{
+        pid_t pid;
+        int status = -1;
+
+        if ((pid = fork()) == 0) {
+                execl("/bin/sh", "sh", "/usr/tests/xn/tests/run.sh",
+                    (char *)NULL);
+                _exit(127);
+        }
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+/*
  * After passwd changed user's password: /etc/passwd still says "x" for
  * it; /etc/shadow is still root's, mode 0400, with a new hash and today
  * as the day of the change; passwd's copy is gone.
@@ -483,6 +503,7 @@ main(int argc, char **argv)
         test_orphan();
         test_proc();
         test_utilities();
+        test_xn_suite();
         test_login(argv[1], argv[2], argv[3], argv[4]);
         test_utmpx(argv[1]);
         printf("boottest: %d failures\n", failures);

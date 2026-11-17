@@ -19,6 +19,7 @@
  */
 
 #include <errno.h>
+#include <grp.h>
 #include <pwd.h>
 #include <shadow.h>
 #include <stdio.h>
@@ -282,4 +283,72 @@ compat_shadow(struct passwd *pw)
                 return;
         free(pw->pw_passwd);
         pw->pw_passwd = hash;
+}
+
+const char *
+group_from_gid(gid_t gid, int nogroup)
+{
+        static char num[24];
+        struct group *gr = getgrgid(gid);
+
+        if (gr != NULL)
+                return gr->gr_name;
+        if (nogroup)
+                return NULL;
+        snprintf(num, sizeof(num), "%u", (unsigned int)gid);
+        return num;
+}
+
+/* Belka has no file flags (see compat.h). */
+int
+chflags(const char *path, unsigned long flags)
+{
+        (void)path;
+        (void)flags;
+        errno = EOPNOTSUPP;
+        return -1;
+}
+
+/* No flag names are known: any string is refused (find -flags none works). */
+int
+string_to_flags(char **sp, unsigned long *setp, unsigned long *clrp)
+{
+        (void)sp;
+        *setp = 0;
+        if (clrp != NULL)
+                *clrp = 0;
+        return 1;
+}
+
+/*
+ * strmode: the ten characters ls -l shows for a mode, a space, and a
+ * NUL, in buf (12 bytes): the type, then three each for the owner, the
+ * group and others, with the set-ID and sticky bits in the x places.
+ */
+void
+strmode(mode_t mode, char *buf)
+{
+        static const char rwx[] = "rwxrwxrwx";
+        char *p = buf;
+
+        switch (mode & S_IFMT) {
+        case S_IFDIR:   *p++ = 'd'; break;
+        case S_IFCHR:   *p++ = 'c'; break;
+        case S_IFBLK:   *p++ = 'b'; break;
+        case S_IFLNK:   *p++ = 'l'; break;
+        case S_IFIFO:   *p++ = 'p'; break;
+        case S_IFSOCK:  *p++ = 's'; break;
+        case S_IFREG:   *p++ = '-'; break;
+        default:        *p++ = '?'; break;
+        }
+        for (int i = 0; i < 9; i++)
+                *p++ = (mode & (0400 >> i)) ? rwx[i] : '-';
+        if (mode & S_ISUID)
+                buf[3] = buf[3] == 'x' ? 's' : 'S';
+        if (mode & S_ISGID)
+                buf[6] = buf[6] == 'x' ? 's' : 'S';
+        if (mode & S_ISVTX)
+                buf[9] = buf[9] == 'x' ? 't' : 'T';
+        *p++ = ' ';
+        *p = '\0';
 }

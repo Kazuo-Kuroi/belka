@@ -46,7 +46,9 @@ DB_SRCS         := $(DB)/db/db.c $(DB)/db/dbfile.c $(DB)/mpool/mpool.c \
                    rec_get.c rec_open.c rec_put.c rec_search.c rec_seq.c \
                    rec_utils.c)
 
-COMPAT_SRCS     := usr/lib/compat/misc.c \
+COMPAT_SRCS     := usr/lib/compat/misc.c usr/lib/compat/signame.c \
+                   usr/lib/compat/parsedate.c \
+                   $(NB)/lib/libc/gen/setmode.c \
                    usr/lib/compat/vis.c usr/lib/compat/crypt.c \
                    usr/lib/compat/crypt_to64.c \
                    $(NB)/lib/libc/gen/getttyent.c \
@@ -397,7 +399,32 @@ $(SYS_DIR)/grep: $(patsubst %,$(SYS_OBJ)/grep/%.o,$(GREP_SRCS)) \
 $(SYS_DIR)/awk: $(patsubst %,$(SYS_OBJ)/awk/%.o,$(AWK_SRCS)) $(SYS_DYNDEPS)
 	$(call SYS_DYNLINK,$(filter $(SYS_OBJ)/%.o,$^))
 
-TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi)
+# mktemp, seq, stat (readlink is a link to it), find, xargs, getconf:
+# NetBSD's, linked dynamically, each from its directory in usr.bin.
+# xargs's pathnames.h is Belka's (usr/lib/compat/xargs).
+FILE_TOOLS      := mktemp seq stat find xargs getconf
+FIND_SRCS       := find function ls main misc operator option
+XARGS_SRCS      := xargs strnsubst
+tool_srcs       = $(if $(filter find,$(1)),$(FIND_SRCS),$(if \
+                  $(filter xargs,$(1)),$(XARGS_SRCS),$(1)))
+
+define file_tool
+$(SYS_OBJ)/$(1)/%.o: $(NB)/usr.bin/$(1)/%.c $(wildcard $(NB)/usr.bin/$(1)/*.h) \
+                $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $$(dir $$@)
+	$$(LIBC_CC) $$(IMPORT_CFLAGS) $$(TOOL_XFLAGS) -I$(NB)/usr.bin/$(1) \
+	    -Iusr/lib/compat/$(1) -c -o $$@ $$<
+$(SYS_DIR)/$(1): $(patsubst %,$(SYS_OBJ)/$(1)/%.o,$(call tool_srcs,$(1))) \
+                $(SYS_DYNDEPS)
+	$$(call SYS_DYNLINK,$$(filter $(SYS_OBJ)/%.o,$$^))
+endef
+$(foreach t,$(FILE_TOOLS),$(eval $(call file_tool,$(t))))
+# stat as NetBSD builds it for the host: no st_flags, st_gen or birth time.
+TOOL_XFLAGS     :=
+$(SYS_OBJ)/stat/stat.o: TOOL_XFLAGS := -DHAVE_NBTOOL_CONFIG_H=1
+$(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
+
+TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS))
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(TEXT_PROGS)

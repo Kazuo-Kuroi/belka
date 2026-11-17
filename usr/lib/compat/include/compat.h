@@ -111,8 +111,82 @@ typedef void (*sig_t)(int);
 #define _PATH_CONSTTY   "/dev/constty"
 #include <paths.h>               /* the compat one: utmpx paths */
 
+/*
+ * <sys/stat.h>: BSD's file flags. Belka has none: st_flags reads one
+ * of struct stat's spare fields, which the kernel always zeroes, and
+ * chflags fails (misc.c).
+ */
+#define st_flags        __st_spare[0]
+#ifndef UF_IMMUTABLE
+#define UF_IMMUTABLE    0x00000002
+#define UF_APPEND       0x00000004
+#define SF_IMMUTABLE    0x00020000
+#define SF_APPEND       0x00040000
+#endif
+int chflags(const char *, unsigned long);
+int string_to_flags(char **, unsigned long *, unsigned long *);
+void strmode(mode_t, char *);
+
+/*
+ * Device numbers, Belka's way (the major in the upper 32 bits); not
+ * mlibc's <sys/sysmacros.h>, which has Linux's.
+ */
+#undef major
+#undef minor
+#undef makedev
+#define major(d)        ((unsigned int)((uint64_t)(d) >> 32))
+#define minor(d)        ((unsigned int)((uint64_t)(d) & 0xffffffffu))
+#define makedev(ma, mi) ((dev_t)(((uint64_t)(ma) << 32) | (uint32_t)(mi)))
+
+/* <limits.h>: exec's limit on arguments and environment (the kernel's). */
+#ifndef ARG_MAX
+#define ARG_MAX         65536
+#endif
+
+/* <unistd.h>: a pathconf name mlibc lacks; pathconf refuses it. */
+#ifndef _PC_SYNC_IO
+#define _PC_SYNC_IO     (-1)
+#endif
+
+/* <sys/stat.h>: BSD's old name for the sticky bit; setmode(3), getmode. */
+#ifndef S_ISTXT
+#define S_ISTXT         S_ISVTX
+#endif
+void *setmode(const char *);
+mode_t getmode(const void *, mode_t);
+
+/* <sys/time.h> */
+#ifndef timespeccmp
+#define timespeccmp(a, b, op) \
+        ((a)->tv_sec == (b)->tv_sec ? (a)->tv_nsec op (b)->tv_nsec : \
+        (a)->tv_sec op (b)->tv_sec)
+#endif
+
+/*
+ * <sys/statvfs.h>: NetBSD's names for System V's fields and flags.
+ * Belka's file systems are all local; MNT_LOCAL is a bit no f_flag has,
+ * which find (BELKA_ALL_LOCAL) sets itself.
+ */
+#include <sys/statvfs.h>
+#define f_fstypename    f_basetype
+#define MNT_RDONLY      ST_RDONLY
+#define MNT_LOCAL       0x40000000UL
+
+/* <signal.h>: BSD's ^T status signal; Belka has none, and sigaction
+ * refuses 0, so a handler for it is never installed. */
+#ifndef SIGINFO
+#define SIGINFO         0
+#endif
+
+/* <util.h>: a written date (parsedate.c, a small subset of NetBSD's). */
+time_t parsedate(const char *, const time_t *, const int *);
+
+/* <signal.h>: signal names without "SIG" (signame.c). */
+extern const char *const sys_signame[];
+
 /* <stdio.h> */
 int fpurge(FILE *);
+#define snprintf_ss     snprintf        /* NetBSD's signal-safe one */
 #define FPARSELN_UNESCESC       0x01
 #define FPARSELN_UNESCCONT      0x02
 #define FPARSELN_UNESCCOMM      0x04
@@ -134,6 +208,7 @@ int sockaddr_snprintf(char *, size_t, const char *, const struct sockaddr *);
 
 /* <pwd.h> */
 const char *user_from_uid(uid_t, int);
+const char *group_from_gid(gid_t, int);
 struct passwd;
 void compat_shadow(struct passwd *);
 char *crypt(const char *, const char *);

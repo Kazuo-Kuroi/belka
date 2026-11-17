@@ -94,6 +94,11 @@ for prog in sed grep awk; do
 done
 ln "$src/usr/bin/grep" "$src/usr/bin/egrep"
 ln "$src/usr/bin/grep" "$src/usr/bin/fgrep"
+# mktemp, seq, stat, find, xargs, getconf (NetBSD's); readlink is stat.
+for prog in mktemp seq stat find xargs getconf; do
+        cp "$sys/$prog" "$src/usr/bin/$prog"
+done
+ln "$src/usr/bin/stat" "$src/usr/bin/readlink"
 # vi (nvi): ex and view are vi; its recovery files go in
 # /var/tmp/vi.recover.
 cp "$sys/vi" "$src/usr/bin/vi"
@@ -115,6 +120,19 @@ ln -s ../dev/mnttab "$src/etc/mnttab"
 if [ $test -eq 1 ]; then
         install_prog boottest usr/tests/boottest
         cp usr/tests/utiltest.sh "$src/usr/tests/utiltest.sh"
+        # ksenon-utils' own suite, over a directory of just its 45
+        # utilities and their links, as its tests/run.sh expects (../cmd).
+        mkdir -p "$src/usr/tests/xn/cmd" "$src/usr/tests/xn/tests"
+        cp contrib/ksenon-utils/tests/run.sh "$src/usr/tests/xn/tests/run.sh"
+        for prog in "$sys"/xn/*; do
+                case ${prog##*/} in *.a) continue ;; esac
+                ln "$src/bin/${prog##*/}" "$src/usr/tests/xn/cmd/${prog##*/}"
+        done
+        for l in cp ln; do
+                ln "$src/bin/mv" "$src/usr/tests/xn/cmd/$l"
+        done
+        ln "$src/bin/chown" "$src/usr/tests/xn/cmd/chgrp"
+        ln "$src/bin/test" "$src/usr/tests/xn/cmd/["
         # crypt("belka-test", "$sha1$24680$belkatst$"); boottest logs in
         # with it, so Belka's crypt checks it.
         hash='$sha1$24680$belkatst$XycoewmXxvwRJYfMFY3Jpt0BG5Li'
