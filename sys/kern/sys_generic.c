@@ -30,6 +30,7 @@
 #include <sys/file.h>
 #include <sys/kmem.h>
 #include <sys/proc.h>
+#include <sys/socket.h>
 #include <sys/stream.h>
 #include <sys/stropts.h>
 #include <sys/resource.h>
@@ -51,7 +52,7 @@
 #include <vm/seg.h>
 
 /* Fault in a user buffer; errors are left for the copy to report. */
-static void
+void
 uio_prefault(void *ubuf, size_t len, enum uio_rw rw)
 {
         struct as *as = curproc->p_as;
@@ -115,8 +116,9 @@ rdwrv(int fd, struct iovec *iov, int iovcnt, off_t off, int positioned,
                 len += iov[i].iov_len;
         }
         vp = fp->f_vnode;
-        use_offset = !positioned && vp->v_stream == NULL;
+        use_offset = !positioned && vp->v_stream == NULL && vp->v_type != VSOCK;
         if (positioned && (vp->v_type == VCHR || vp->v_type == VFIFO ||
+            vp->v_type == VSOCK ||
             off < 0)) {
                 error = vp->v_type != VREG && vp->v_type != VDIR ? ESPIPE :
                     EINVAL;
@@ -290,7 +292,8 @@ sys_lseek(const uint64_t *args, uint64_t *rv)
 
         if (fp == NULL)
                 return EBADF;
-        if (fp->f_vnode->v_type == VFIFO || fp->f_vnode->v_stream != NULL) {
+        if (fp->f_vnode->v_type == VFIFO || fp->f_vnode->v_type == VSOCK ||
+            fp->f_vnode->v_stream != NULL) {
                 frele(fp);
                 return ESPIPE;
         }
@@ -433,6 +436,10 @@ sys_fcntl(const uint64_t *args, uint64_t *rv)
         case F_SETFL:
                 fp->f_flag = (fp->f_flag & ~FMASK_SETFL) |
                     (arg & FMASK_SETFL);
+                break;
+        case F_GETOWN:
+        case F_SETOWN:
+                error = sock_fcntl(fp->f_vnode, cmd, arg, rv);
                 break;
         case F_GETLK:
         case F_SETLK:

@@ -156,6 +156,34 @@ fd_alloc(struct proc *p, struct file *fp, int minfd, int *fdp)
         return 0;
 }
 
+/* Publish both ends together, with their close-on-exec flags. */
+int
+fd_alloc_pair(struct proc *p, struct file *files[2], int flags, int fds[2])
+{
+        int found = 0, error = 0;
+
+        mutex_lock(&p->p_lock);
+        for (int fd = 0; fd < fd_limit(p); fd++) {
+                if (fd >= p->p_nofile && (error = fd_grow(p, fd + 1)) != 0)
+                        break;
+                if (p->p_ofile[fd] == NULL) {
+                        fds[found++] = fd;
+                        if (found == 2)
+                                break;
+                }
+        }
+        if (found == 2) {
+                for (int i = 0; i < 2; i++) {
+                        p->p_ofile[fds[i]] = files[i];
+                        p->p_pofile[fds[i]] = (uint8_t)flags;
+                }
+        } else if (error == 0) {
+                error = EMFILE;
+        }
+        mutex_unlock(&p->p_lock);
+        return error;
+}
+
 /*
  * Put fp at descriptor fd exactly, closing what was there (dup2). The
  * table takes over the caller's reference.

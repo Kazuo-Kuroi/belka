@@ -1804,6 +1804,24 @@ Recorded 2026-11-07.
   [Solaris `close(2)`](https://docs.oracle.com/cd/E19683-01/816-5213/6mbcef4an/index.html),
   [Solaris STREAMS signal events](https://docs.oracle.com/cd/E53394_01/html/E54835/appmech3-30379.html).
 
+## Urgent data on local sockets (2026-11-17)
+
+- The first socket endpoint is an unnamed, connected `AF_UNIX`
+  `SOCK_STREAM` pair. Its receive queues support ordinary byte I/O,
+  `send` and `recv`, and one out-of-band byte at a time. The mark
+  separates ordinary bytes queued before and after the urgent byte.
+  `sockatmark` and `POLLPRI` expose this state.
+- `F_SETOWN` selects a process or process group and `F_GETOWN`
+  returns the selection. Urgent arrival posts `SIGURG` to eligible
+  recipients using the registration credentials. Process and group
+  identities prevent an old registration from signaling a recycled ID.
+- This local transport uses Belka's existing socket ABI constants.
+  Named sockets, STREAMS TPI providers, ancillary messages and
+  `SO_OOBINLINE` remain to be added.
+- [POSIX.1-2001 socket behavior](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_10.html),
+  [descriptor ownership](https://www.gaertner.de/~neitzel/susv3/basedefs/fcntl.h.html),
+  and [socketpair](https://www.gaertner.de/~neitzel/susv3/functions/socketpair.html).
+
 ## File systems
 
 1. **tmpfs**, for testing.

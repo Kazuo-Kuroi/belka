@@ -40,6 +40,7 @@
 #include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/signal.h>
+#include <sys/socket.h>
 #include <sys/spinlock.h>
 #include <sys/synch.h>
 #include <sys/sysent.h>
@@ -676,7 +677,7 @@ kill_group(int all, pid_t pgid, int sig, const siginfo_t *si, struct cred *cr)
 struct pgfind {
         pid_t           pf_pgid;
         pid_t           pf_sid;
-        int             pf_found;
+        uint64_t        pf_identity;
 };
 
 static void
@@ -685,7 +686,7 @@ pgid_one(struct proc *t, void *arg)
         struct pgfind *pf = arg;
 
         if (t->p_pgid == pf->pf_pgid && t->p_sid == pf->pf_sid)
-                pf->pf_found = 1;
+                pf->pf_identity = t->p_grpidentity;
 }
 
 /* Whether process group pgid exists in session sid. */
@@ -697,7 +698,79 @@ pgrp_in_session(pid_t pgid, pid_t sid)
         mutex_lock(&proctree_lock);
         proc_iterate_locked(pgid_one, &pf);
         mutex_unlock(&proctree_lock);
-        return pf.pf_found;
+        return pf.pf_identity != 0;
+}
+
+struct socksignal {
+        struct sockowner *ss_owner;
+        int             ss_found;
+        int             ss_post;
+};
+
+static void
+socksignal_one(struct proc *p, void *arg)
+{
+        struct socksignal *ss = arg;
+        struct sockowner *owner = ss->ss_owner;
+        int group = owner->so_id < 0;
+        uint64_t identity = group ? p->p_grpidentity : p->p_identity;
+
+        if (p->p_stat == SIDL || p->p_stat == SZOMB ||
+            (p->p_flags & P_SYSTEM) != 0 ||
+            (group ? p->p_pgid != -(int64_t)owner->so_id :
+            p->p_pid != owner->so_id))
+                return;
+        ss->ss_found = 1;
+        if (!sig_permitted(owner->so_cred, 0, p, SIGURG))
+                return;
+        if (!ss->ss_post)
+                owner->so_identity = identity;
+        else if (identity == owner->so_identity)
+                psignal(p, SIGURG);
+}
+
+static void
+socksignal_run(struct socksignal *ss)
+{
+        pid_t id = ss->ss_owner->so_id;
+
+        mutex_lock(&proctree_lock);
+        if (id < 0) {
+                proc_iterate_locked(socksignal_one, ss);
+        } else {
+                struct proc *p = proc_find_locked(id);
+
+                if (p != NULL)
+                        socksignal_one(p, ss);
+        }
+        mutex_unlock(&proctree_lock);
+}
+
+/* Validate a new owner and hold the credentials used to signal it. */
+int
+sockowner_set(struct sockowner *owner, pid_t id, struct cred *cr)
+{
+        struct socksignal ss = { owner, 0, 0 };
+
+        *owner = (struct sockowner){ .so_id = id };
+        if (id == 0)
+                return 0;
+        owner->so_cred = cr;
+        socksignal_run(&ss);
+        if (owner->so_identity == 0)
+                return ss.ss_found ? EPERM : ESRCH;
+        crhold(cr);
+        return 0;
+}
+
+void
+sockowner_signal(const struct sockowner *owner)
+{
+        struct sockowner snapshot = *owner;
+        struct socksignal ss = { &snapshot, 0, 1 };
+
+        if (snapshot.so_id != 0)
+                socksignal_run(&ss);
 }
 
 /*
@@ -1439,8 +1512,10 @@ sys_pgrpsys(const uint64_t *args, uint64_t *rv)
                 rv[0] = (uint64_t)p->p_pgid;
                 break;
         case 1:
-                if (p->p_sid != p->p_pid)
+                if (p->p_sid != p->p_pid) {
                         p->p_sid = p->p_pgid = p->p_pid;
+                        p->p_grpidentity = proc_identity_locked();
+                }
                 rv[0] = (uint64_t)p->p_pgid;
                 break;
         case 2:
@@ -1457,6 +1532,7 @@ sys_pgrpsys(const uint64_t *args, uint64_t *rv)
                         break;
                 }
                 p->p_sid = p->p_pgid = p->p_pid;
+                p->p_grpidentity = proc_identity_locked();
                 rv[0] = (uint64_t)p->p_pid;
                 break;
         case 5:
@@ -1472,14 +1548,16 @@ sys_pgrpsys(const uint64_t *args, uint64_t *rv)
                         error = EPERM;
                         break;
                 }
-                if (pgid != t->p_pid) {
+                if (pgid != t->p_pgid) {
                         struct pgfind pf = { pgid, p->p_sid, 0 };
 
                         proc_iterate_locked(pgid_one, &pf);
-                        if (!pf.pf_found) {
+                        if (pf.pf_identity == 0 && pgid != t->p_pid) {
                                 error = EPERM;
                                 break;
                         }
+                        t->p_grpidentity = pf.pf_identity != 0 ?
+                            pf.pf_identity : proc_identity_locked();
                 }
                 t->p_pgid = pgid;
                 break;

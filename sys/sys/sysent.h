@@ -41,6 +41,7 @@ sy_call_t sys_brk, sys_mmap, sys_munmap, sys_mprotect;
 /* kern_sig.c */
 sy_call_t sys_kill, sys_sigaction, sys_sigprocmask, sys_sigsuspend;
 sy_call_t sys_sigqueue;
+sy_call_t sys_socketpair, sys_send, sys_recv, sys_sockatmark;
 sy_call_t sys_sigpending, sys_sigaltstack, sys_signal, sys_pause;
 sy_call_t sys_context, sys_pgrpsys, sys_sigwait;
 /* kern_lwp.c */

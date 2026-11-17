@@ -178,6 +178,8 @@ struct proc {
 
         /* Process groups and sessions, under proctree_lock. */
         pid_t           p_pgid;
+        uint64_t        p_identity;     /* stable across PID reuse */
+        uint64_t        p_grpidentity;  /* stable while the group lives */
         pid_t           p_sid;
 
         /* Signals, under p_siglock. */
@@ -219,6 +221,7 @@ void proc_free(struct proc *);
 struct proc *proc_find(pid_t);
 struct proc *proc_find_locked(pid_t);
 void proc_iterate_locked(void (*)(struct proc *, void *), void *);
+uint64_t proc_identity_locked(void);
 /* kern_lwp.c */
 void lwp_sysinit(void);
 void lwp_sema_init(void);
@@ -284,6 +287,7 @@ int execargs_copyin_vec(struct execargs *, char *const *, int);
 
 /* kern_descrip.c */
 int fd_alloc(struct proc *, struct file *, int, int *);
+int fd_alloc_pair(struct proc *, struct file *[2], int, int [2]);
 int fd_install(struct proc *, struct file *, int);
 int fd_cloexec(struct proc *, int, int);
 struct file *fd_get(struct proc *, int);

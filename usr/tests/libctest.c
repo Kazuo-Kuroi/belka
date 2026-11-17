@@ -38,6 +38,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/times.h>
@@ -1944,6 +1945,84 @@ test_stream_signals(void)
         CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
 }
 
+static void
+on_urgent(int sig)
+{
+        (void)sig;
+}
+
+static void
+test_socket_urgent(void)
+{
+        const struct timespec now = { 0, 0 };
+        struct sigaction action = { 0 }, previous;
+        struct pollfd pfd;
+        sigset_t set, old;
+        char buf[8];
+        int fd[2], alias, status;
+        pid_t child, group = getpgrp();
+
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+            0, fd) != 0) {
+                CHECK(0);
+                return;
+        }
+        CHECK(fcntl(fd[0], F_GETFD) == FD_CLOEXEC);
+        CHECK((fcntl(fd[1], F_GETFL) & O_NONBLOCK) != 0);
+        CHECK(fcntl(fd[1], F_GETOWN) == 0);
+        CHECK(sigaction(SIGURG, NULL, &previous) == 0);
+        action.sa_handler = on_urgent;
+        sigemptyset(&action.sa_mask);
+        CHECK(sigaction(SIGURG, &action, NULL) == 0);
+        sigemptyset(&set);
+        sigaddset(&set, SIGURG);
+        CHECK(sigprocmask(SIG_BLOCK, &set, &old) == 0);
+
+        CHECK(fcntl(fd[1], F_SETOWN, getpid()) == 0);
+        alias = dup(fd[1]);
+        CHECK(alias >= 0 && fcntl(alias, F_GETOWN) == getpid());
+        if (alias >= 0)
+                close(alias);
+        CHECK(write(fd[0], "ab", 2) == 2);
+        CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
+        child = fork();
+        if (child == 0) {
+                if (send(fd[0], "!", 1, MSG_OOB) != 1 ||
+                    sigtimedwait(&set, NULL, &now) != -1 || errno != EAGAIN)
+                        _exit(1);
+                _exit(0);
+        }
+        CHECK(child > 0 && waitpid(child, &status, 0) == child &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        CHECK(sigtimedwait(&set, NULL, &now) == SIGURG);
+        CHECK(send(fd[0], "cd", 2, 0) == 2);
+        pfd = (struct pollfd){ fd[1], POLLPRI, 0 };
+        CHECK(poll(&pfd, 1, 0) == 1 && pfd.revents == POLLPRI);
+        CHECK(recv(fd[1], buf, sizeof(buf), MSG_OOB | MSG_PEEK) == 1 &&
+            buf[0] == '!');
+        CHECK(recv(fd[1], buf, sizeof(buf), MSG_OOB) == 1 && buf[0] == '!');
+        CHECK(sockatmark(fd[1]) == 0);
+        CHECK(read(fd[1], buf, sizeof(buf)) == 2 && memcmp(buf, "ab", 2) == 0);
+        CHECK(sockatmark(fd[1]) == 1);
+        CHECK(recv(fd[1], buf, sizeof(buf), 0) == 2 && memcmp(buf, "cd", 2) == 0);
+        CHECK(sockatmark(fd[1]) == 0 && poll(&pfd, 1, 0) == 0);
+
+        CHECK(fcntl(fd[1], F_SETOWN, -group) == 0);
+        CHECK(fcntl(fd[1], F_GETOWN) == -group);
+        CHECK(send(fd[0], "?", 1, MSG_OOB) == 1);
+        CHECK(sigtimedwait(&set, NULL, &now) == SIGURG);
+        CHECK(recv(fd[1], buf, sizeof(buf), MSG_OOB) == 1 && buf[0] == '?');
+        CHECK(fcntl(fd[1], F_SETOWN, 0) == 0);
+        CHECK(send(fd[0], "x", 1, MSG_OOB) == 1);
+        CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
+        close(fd[1]);
+        CHECK(read(fd[0], buf, sizeof(buf)) == 0);
+        CHECK(send(fd[0], "x", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
+        close(fd[0]);
+        CHECK(sigaction(SIGURG, &previous, NULL) == 0);
+        CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1960,6 +2039,7 @@ main(int argc, char **argv)
         test_fifos();
         test_poll();
         test_stream_signals();
+        test_socket_urgent();
         test_ppoll();
         test_rlimits();
         test_file_ops();

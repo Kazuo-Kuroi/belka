@@ -53,6 +53,7 @@ struct mutex proctree_lock;
 
 static struct proc *pidhash[PIDHASH];
 static pid_t nextpid = 1;
+static uint64_t next_identity;
 static struct kmem_zone *proc_zone;
 static volatile uint32_t nprocs;
 
@@ -110,6 +111,12 @@ proc_find_locked(pid_t pid)
         while (p != NULL && p->p_pid != pid)
                 p = p->p_hnext;
         return p;
+}
+
+uint64_t
+proc_identity_locked(void)
+{
+        return ++next_identity;
 }
 
 /* Call fn(p, arg) for every process but 0. proctree_lock is held. */
@@ -172,6 +179,7 @@ proc_alloc(struct proc *parent)
                 if (nextpid >= PID_MAX)
                         nextpid = 1;
         } while (proc_find_locked(p->p_pid) != NULL);
+        p->p_identity = proc_identity_locked();
         h = (unsigned int)p->p_pid % PIDHASH;
         p->p_hnext = pidhash[h];
         pidhash[h] = p;
@@ -179,6 +187,7 @@ proc_alloc(struct proc *parent)
         p->p_sibling = parent->p_children;
         parent->p_children = p;
         p->p_pgid = parent->p_pgid;
+        p->p_grpidentity = parent->p_grpidentity;
         p->p_sid = parent->p_sid;
         mutex_unlock(&proctree_lock);
         (void)atomic_inc_32_nv(&nprocs);
@@ -293,8 +302,10 @@ spawn(const char *path, char *const argv[], char *const envp[], pid_t *pidp,
          * A process the kernel starts leads a session of its own; init
          * stays in process 0's and makes its own with setsid().
          */
-        if (!isinit)
+        if (!isinit) {
                 p->p_pgid = p->p_sid = p->p_pid;
+                p->p_grpidentity = proc_identity_locked();
+        }
         p->p_stat = SRUN;
         if (isinit)
                 initproc = p;

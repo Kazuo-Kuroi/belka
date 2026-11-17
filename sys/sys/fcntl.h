@@ -32,6 +32,8 @@
 #define F_GETFL         3
 #define F_SETFL         4
 #define F_DUP2FD        9
+#define F_GETOWN        23
+#define F_SETOWN        24
 
 #define FD_CLOEXEC      1
 

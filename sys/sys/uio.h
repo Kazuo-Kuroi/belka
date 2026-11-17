@@ -49,5 +49,6 @@ struct uio {
  * describes, in direction rw, advancing uio. Returns 0 or an errno.
  */
 int uiomove(void *, size_t, enum uio_rw, struct uio *);
+void uio_prefault(void *, size_t, enum uio_rw);
 
 #endif /* _SYS_UIO_H_ */
