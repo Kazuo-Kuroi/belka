@@ -3,6 +3,7 @@
 /*-
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
+ * Portions Copyright 2026 Setsuna Software L.C.
  *
  * This code is derived from software contributed to Berkeley by
  * Donn Seeley at Berkeley Software Design, Inc.
@@ -694,6 +695,10 @@ single_user(void)
 		 */
 		typ = getttynam("console");
 		pp = getpwnam("root");
+#ifdef BELKA_SHADOW	/* Belka: the hash is in /etc/shadow */
+		if (pp != NULL)
+			compat_shadow(pp);
+#endif
 		if (typ && (from_securitylevel >=2 || (typ->ty_status
 		    & TTY_SECURE) == 0) && pp && *pp->pw_passwd != '\0') {
 			(void)fprintf(stderr,

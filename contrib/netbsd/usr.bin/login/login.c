@@ -347,6 +347,10 @@ main(int argc, char *argv[])
 		(void)strlcpy(tbuf, username, sizeof(tbuf));
 
 		pwd = getpwnam(username);
+#ifdef BELKA_SHADOW	/* Belka: the hash is in /etc/shadow */
+		if (pwd != NULL)
+			compat_shadow(pwd);
+#endif
 
 #ifdef LOGIN_CAP
 		/*
