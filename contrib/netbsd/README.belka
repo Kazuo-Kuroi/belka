@@ -45,6 +45,12 @@ The paths are NetBSD's.
                                 without its pathnames.h, whose licence has
                                 an advertising clause (Belka has its own)
     lib/libc/gen/setmode.c      setmode(3) and getmode, for find -perm
+    etc/rc.subr, etc/rc.d/      rc.subr, the functions rc.d scripts use, and
+                                the scripts DAEMON, LOGIN, NETWORKING,
+                                SERVERS, DISKS, CRITLOCALMOUNTED and local;
+                                not NetBSD's rc, which needs its own sh,
+                                nor rcorder, whose licence has an advertising
+                                clause (Belka has its own of each)
     lib/libcurses/              curses(3), over libterminfo; without
                                 inchstr.c and instr.c, whose licence has
                                 an advertising clause (Belka has its own)
@@ -64,6 +70,5 @@ Belka's changes to these files are kept as separate commits, each
 marked in the file.
 
 Not imported: NetBSD's bcrypt and its helpers in libcrypt, and
-libcurses's inchstr.c and instr.c, which carry a four-clause licence
-with an advertising clause, and the rc.d system, which Belka's minimal
-/etc/rc does not use yet.
+libcurses's inchstr.c and instr.c, and rcorder, which carry a
+four-clause licence with an advertising clause.
