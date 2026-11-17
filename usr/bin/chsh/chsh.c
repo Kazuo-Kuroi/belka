@@ -52,7 +52,7 @@ rewrite(const char *user, uid_t uid, const char *shell, uid_t caller)
         char temporary[] = "/etc/ptmp.XXXXXX";
         size_t size = 0, length = strlen(user);
         ssize_t count;
-        int fd = -1, found = 0, result = -1;
+        int fd = -1, created = 0, found = 0, result = -1;
 
         in = fopen("/etc/passwd", "r");
         if (in == NULL || fstat(fileno(in), &st) != 0)
@@ -60,6 +60,7 @@ rewrite(const char *user, uid_t uid, const char *shell, uid_t caller)
         fd = mkstemp(temporary);
         if (fd < 0)
                 goto done;
+        created = 1;
         out = fdopen(fd, "w");
         if (out == NULL)
                 goto done;
@@ -115,7 +116,7 @@ done:
                 fclose(out);
         if (fd >= 0)
                 close(fd);
-        if (result != 0)
+        if (created && result != 0)
                 unlink(temporary);
         return result;
 }

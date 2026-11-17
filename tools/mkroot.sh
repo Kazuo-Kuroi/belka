@@ -63,6 +63,7 @@ install_prog rcorder sbin/rcorder
 ln "$src/sbin/mount" "$src/sbin/umount"
 install_prog getty usr/libexec/getty
 install_prog login usr/bin/login
+install_prog chsh usr/bin/chsh
 install_prog mksh bin/mksh
 install_prog tcsh bin/tcsh
 mkdir -p "$src/usr/share/licenses/tcsh"
@@ -94,7 +95,7 @@ mkdir -p "$src/usr/share/licenses/stty"
 cp contrib/netbsd/bin/stty/NOTICE "$src/usr/share/licenses/stty/"
 # terminfo: the programs, the descriptions' source (/etc/rc compiles
 # the database), and ed.
-for prog in tic infocmp tput passwd su chsh less mandoc; do
+for prog in tic infocmp tput passwd su less mandoc; do
         cp "$sys/$prog" "$src/usr/bin/$prog"    # dynamic: not stripped
 done
 ln "$src/usr/bin/less" "$src/usr/bin/more"
