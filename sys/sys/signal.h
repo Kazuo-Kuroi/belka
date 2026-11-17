@@ -89,6 +89,9 @@ typedef struct siginfo {
                 struct {
                         uint64_t _addr;         /* faults */
                 } _fault;
+                struct {
+                        int64_t _band;          /* SIGPOLL */
+                } _poll;
                 uint8_t _pad[112];
         } _data;
 } siginfo_t;
@@ -100,12 +103,16 @@ typedef struct siginfo {
 #define si_utime        _data._proc._utime
 #define si_stime        _data._proc._stime
 #define si_addr         _data._fault._addr
+#define si_band         _data._poll._band
 
 /* si_code: sent by a process (kill), or by the kernel for a reason. */
 #define SI_USER         0
 #define SI_LWP          (-1)    /* sent by _lwp_kill */
 #define SI_QUEUE        (-2)    /* sent by sigqueue */
 #define SI_FROMUSER(sip) ((sip)->si_code <= 0)
+
+#define POLL_IN         1
+#define POLL_OUT        2
 
 #define ILL_ILLOPC      1
 #define ILL_PRVOPC      5

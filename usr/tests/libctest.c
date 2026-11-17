@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stropts.h>
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -1868,6 +1869,81 @@ test_itimers(void)
         sigaction(SIGPROF, &sa, NULL);
 }
 
+static void
+test_stream_signals(void)
+{
+        const struct timespec now = { 0, 0 };
+        const int mask = S_INPUT | S_RDNORM | S_OUTPUT;
+        char buf[4096] = { 0 };
+        struct pollfd pollfd;
+        sigset_t set, old;
+        siginfo_t info;
+        int fd, copy, events, status;
+        pid_t child;
+
+        CHECK(ioctl(-1, I_SETSIG, mask) == -1 && errno == EBADF);
+        fd = open("/dev/null", O_RDONLY);
+        CHECK(fd >= 0 && ioctl(fd, I_SETSIG, mask) == -1 && errno == ENOSTR);
+        if (fd >= 0)
+                close(fd);
+        fd = open("/dev/strloop", O_RDWR | O_NONBLOCK);
+        CHECK(fd >= 0);
+        if (fd < 0)
+                return;
+        CHECK(lseek(fd, 0, SEEK_SET) == -1 && errno == ESPIPE);
+        CHECK(pread(fd, buf, 1, 0) == -1 && errno == ESPIPE);
+        sigemptyset(&set);
+        sigaddset(&set, SIGPOLL);
+        if (sigprocmask(SIG_BLOCK, &set, &old) != 0) {
+                CHECK(0);
+                close(fd);
+                return;
+        }
+        CHECK(ioctl(fd, I_GETSIG, &events) == -1 && errno == EINVAL);
+        CHECK(ioctl(fd, I_SETSIG, -1) == -1 && errno == EINVAL);
+        CHECK(ioctl(fd, I_SETSIG, mask) == 0);
+        CHECK(ioctl(fd, I_GETSIG, &events) == 0 && events == mask);
+        CHECK(ioctl(fd, I_GETSIG, (int *)0) == -1 && errno == EFAULT);
+        CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
+        CHECK(read(fd, buf, 1) == -1 && errno == EAGAIN);
+
+        CHECK(write(fd, buf, sizeof(buf)) == sizeof(buf));
+        CHECK(sigtimedwait(&set, &info, &now) == SIGPOLL &&
+            info.si_code == POLL_IN && info.si_band == 0);
+        pollfd = (struct pollfd){ fd, POLLIN | POLLOUT, 0 };
+        CHECK(poll(&pollfd, 1, 0) == 1 && pollfd.revents == POLLIN);
+        CHECK(write(fd, "x", 1) == -1 && errno == EAGAIN);
+        CHECK(read(fd, buf, sizeof(buf)) == sizeof(buf));
+        CHECK(sigtimedwait(&set, &info, &now) == SIGPOLL &&
+            info.si_code == POLL_OUT && info.si_band == 0);
+        CHECK(poll(&pollfd, 1, 0) == 1 && pollfd.revents == POLLOUT);
+
+        child = fork();
+        if (child == 0) {
+                if (ioctl(fd, I_GETSIG, &events) != -1 || errno != EINVAL ||
+                    ioctl(fd, I_SETSIG, S_INPUT) != 0 || write(fd, "x", 1) != 1 ||
+                    sigtimedwait(&set, &info, &now) != SIGPOLL ||
+                    info.si_code != POLL_IN)
+                        _exit(1);
+                _exit(0);
+        }
+        CHECK(child > 0 && waitpid(child, &status, 0) == child &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        CHECK(sigtimedwait(&set, &info, &now) == SIGPOLL &&
+            info.si_code == POLL_IN);
+        CHECK(read(fd, buf, 1) == 1 && buf[0] == 'x');
+
+        copy = dup(fd);
+        CHECK(copy >= 0 && close(copy) == 0);
+        CHECK(ioctl(fd, I_GETSIG, &events) == -1 && errno == EINVAL);
+        CHECK(ioctl(fd, I_SETSIG, S_INPUT) == 0);
+        CHECK(ioctl(fd, I_SETSIG, 0) == 0);
+        CHECK(write(fd, "y", 1) == 1);
+        CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
+        close(fd);
+        CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1883,6 +1959,7 @@ main(int argc, char **argv)
         test_pipes();
         test_fifos();
         test_poll();
+        test_stream_signals();
         test_ppoll();
         test_rlimits();
         test_file_ops();

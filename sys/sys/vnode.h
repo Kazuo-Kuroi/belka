@@ -97,6 +97,7 @@ struct vnode {
 
         struct vpcache  v_pc;           /* its pages */
         struct reclock  *v_locks;       /* record locks (vfs_reclock.c) */
+        struct stdata   *v_stream;      /* stream head, set before publication */
 };
 
 /* VOP_INACTIVE results, for shared vnodes. */

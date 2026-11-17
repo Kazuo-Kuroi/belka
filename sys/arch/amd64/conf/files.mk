@@ -46,6 +46,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/sys_poll.c \
                    sys/kern/tty.c \
                    sys/kern/tty_pty.c \
+                   sys/kern/strhead.c \
                    sys/kern/spec_vnops.c \
                    sys/kern/vfs_bio.c \
                    sys/kern/vfs_dnlc.c \

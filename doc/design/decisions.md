@@ -1787,6 +1787,23 @@ Recorded 2026-11-07.
   [POSIX.1-2001 signal generation](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_04.html),
   [Solaris STREAMS Programming Guide](https://docs.oracle.com/cd/E53394_01/html/E54835/appmech3-30379.html).
 
+## STREAMS signal registration (2026-11-17)
+
+- The initial STREAMS endpoint is `/dev/strloop`. Each open creates a
+  private stream and bounded loopback queue. `read`, `write` and `poll`
+  exercise band-zero data and flow control through the normal file API.
+  Modules, priority band queues and `getmsg`/`putmsg` remain to be added.
+- `I_SETSIG` and `I_GETSIG` use the System V ioctl and mask values.
+  Registration is per process and stream. A forked process can register
+  on the inherited descriptor independently. Closing a descriptor for
+  the stream removes the closing process's registration, including
+  when another descriptor still refers to the stream. Ordinary data
+  arriving at the head and a full queue becoming writable generate
+  `SIGPOLL` with `POLL_IN` and `POLL_OUT` respectively and band zero.
+- [POSIX.1-2001 `<stropts.h>`](https://www.gaertner.de/~neitzel/susv3/basedefs/stropts.h.html),
+  [Solaris `close(2)`](https://docs.oracle.com/cd/E19683-01/816-5213/6mbcef4an/index.html),
+  [Solaris STREAMS signal events](https://docs.oracle.com/cd/E53394_01/html/E54835/appmech3-30379.html).
+
 ## File systems
 
 1. **tmpfs**, for testing.

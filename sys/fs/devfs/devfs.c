@@ -37,13 +37,15 @@
 #include <sys/proc.h>
 #include <sys/pty.h>
 #include <sys/specvn.h>
+#include <sys/stream.h>
 #include <sys/systm.h>
 #include <sys/tty.h>
 #include <sys/uio.h>
 #include <sys/vfs.h>
 #include <sys/vnode.h>
 
-enum { DV_ROOT, DV_PTS, DV_NULL, DV_ZERO, DV_TTY, DV_PTMX, DV_MNTTAB, DV_N };
+enum { DV_ROOT, DV_PTS, DV_NULL, DV_ZERO, DV_TTY, DV_PTMX, DV_MNTTAB,
+    DV_STRLOOP, DV_N };
 
 static struct specattr dv_attr[DV_N];
 static struct vnode dv_vn[DV_N];
@@ -68,6 +70,7 @@ static const struct {
         { "ptmx", DV_PTMX },
         { "mnttab", DV_MNTTAB },
         { "pts", DV_PTS },
+        { "strloop", DV_STRLOOP },
 };
 #define NNAMES  (sizeof(devfs_names) / sizeof(devfs_names[0]))
 
@@ -92,6 +95,8 @@ devfs_mount(struct vfs *vfsp, const void *data __unused,
                 [DV_PTMX] = { VCHR, 0666, makedev(DEV_PTM_MAJOR, 0xffff),
                     &devfs_cloneops },
                 [DV_MNTTAB] = { VREG, 0444, 0, &devfs_mntops },
+                [DV_STRLOOP] = { VCHR, 0666, makedev(DEV_STRLOOP_MAJOR, 0),
+                    &devfs_cloneops },
         };
 
         if (devfs_vfs != NULL)
@@ -369,6 +374,8 @@ clone_open(struct vnode **vpp, int flags, struct cred *cr)
 
         if (*vpp == &dv_vn[DV_PTMX])
                 return ptm_clone(vpp, flags, cr);
+        if (*vpp == &dv_vn[DV_STRLOOP])
+                return strloop_clone(vpp, cr);
         /* /dev/tty: the session's terminal, opened in its own right. */
         if ((vp = tty_ctty_vnode(curproc->p_sid)) == NULL)
                 return ENXIO;

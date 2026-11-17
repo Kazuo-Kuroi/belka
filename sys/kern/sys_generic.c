@@ -30,6 +30,8 @@
 #include <sys/file.h>
 #include <sys/kmem.h>
 #include <sys/proc.h>
+#include <sys/stream.h>
+#include <sys/stropts.h>
 #include <sys/resource.h>
 #include <sys/signal.h>
 #include <sys/spinlock.h>
@@ -96,7 +98,7 @@ rdwrv(int fd, struct iovec *iov, int iovcnt, off_t off, int positioned,
         struct vnode *vp;
         struct uio uio;
         uint64_t len = 0;
-        int ioflag = 0, error;
+        int ioflag = 0, error, use_offset;
 
         if (fp == NULL)
                 return EBADF;
@@ -113,11 +115,13 @@ rdwrv(int fd, struct iovec *iov, int iovcnt, off_t off, int positioned,
                 len += iov[i].iov_len;
         }
         vp = fp->f_vnode;
+        use_offset = !positioned && vp->v_stream == NULL;
         if (positioned && (vp->v_type == VCHR || vp->v_type == VFIFO ||
             off < 0)) {
-                frele(fp);
-                return vp->v_type != VREG && vp->v_type != VDIR ? ESPIPE :
+                error = vp->v_type != VREG && vp->v_type != VDIR ? ESPIPE :
                     EINVAL;
+                frele(fp);
+                return error;
         }
         if (rw == UIO_WRITE && (fp->f_flag & FAPPEND) != 0 && !positioned)
                 ioflag |= IO_APPEND;
@@ -141,9 +145,9 @@ rdwrv(int fd, struct iovec *iov, int iovcnt, off_t off, int positioned,
         uio.uio_rw = rw;
         for (int i = 0; i < iovcnt; i++)
                 uio_prefault(iov[i].iov_base, iov[i].iov_len, rw);
-        if (!positioned)
+        if (use_offset)
                 mutex_lock(&fp->f_offlock);
-        uio.uio_offset = positioned ? off : fp->f_offset;
+        uio.uio_offset = positioned ? off : use_offset ? fp->f_offset : 0;
         if (rw == UIO_READ)
                 error = VOP_READ(vp, &uio, ioflag, fp->f_cred);
         else
@@ -151,7 +155,7 @@ rdwrv(int fd, struct iovec *iov, int iovcnt, off_t off, int positioned,
         if (rw == UIO_WRITE && error == EFBIG && uio.uio_limit != UIO_NOLIMIT &&
             uio.uio_offset >= uio.uio_limit)
                 fsize_exceeded();
-        if (!positioned) {
+        if (use_offset) {
                 fp->f_offset = uio.uio_offset;
                 mutex_unlock(&fp->f_offlock);
         }
@@ -286,7 +290,7 @@ sys_lseek(const uint64_t *args, uint64_t *rv)
 
         if (fp == NULL)
                 return EBADF;
-        if (fp->f_vnode->v_type == VFIFO) {
+        if (fp->f_vnode->v_type == VFIFO || fp->f_vnode->v_stream != NULL) {
                 frele(fp);
                 return ESPIPE;
         }
@@ -444,18 +448,20 @@ sys_fcntl(const uint64_t *args, uint64_t *rv)
 }
 
 /*
- * ioctl(fd, cmd, arg): FIONBIO, FIOCLEX, and FIONCLEX here, for any
- * file; everything else goes to the vnode (a terminal), with arg as
- * given and the caller's credentials. Files have no ioctls: ENOTTY.
+ * Handle descriptor flags and STREAMS signal registration here. Other
+ * requests pass to the vnode with the argument and caller's credentials.
  */
 int
 sys_ioctl(const uint64_t *args, uint64_t *rv __unused)
 {
-        struct file *fp = fd_get(curproc, (int)args[0]);
+        struct file *fp;
         unsigned long cmd = (unsigned long)args[1];
         int32_t on;
         int error;
 
+        if (cmd == I_SETSIG || cmd == I_GETSIG)
+                return strsig_ioctl(curproc, (int)args[0], cmd, args[2]);
+        fp = fd_get(curproc, (int)args[0]);
         if (fp == NULL)
                 return EBADF;
         if (cmd == FIOCLEX || cmd == FIONCLEX) {

@@ -24,6 +24,7 @@
 #include <sys/file.h>
 #include <sys/kmem.h>
 #include <sys/proc.h>
+#include <sys/stream.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
 #include <sys/vnode.h>
@@ -175,6 +176,8 @@ fd_install(struct proc *p, struct file *fp, int fd)
                 return error;
         }
         old = p->p_ofile[fd];
+        if (old != NULL && old->f_vnode->v_stream != NULL)
+                strsig_close(old->f_vnode->v_stream, p);
         p->p_ofile[fd] = fp;
         p->p_pofile[fd] = 0;
         mutex_unlock(&p->p_lock);
@@ -204,6 +207,8 @@ fd_close(struct proc *p, int fd)
         mutex_lock(&p->p_lock);
         if (fd >= 0 && fd < p->p_nofile) {
                 fp = p->p_ofile[fd];
+                if (fp != NULL && fp->f_vnode->v_stream != NULL)
+                        strsig_close(fp->f_vnode->v_stream, p);
                 p->p_ofile[fd] = NULL;
         }
         mutex_unlock(&p->p_lock);
@@ -261,6 +266,8 @@ fd_close_if(struct proc *p, int exec_only)
                 if (p->p_ofile[fd] != NULL &&
                     (!exec_only || (p->p_pofile[fd] & FD_CLOEXEC) != 0)) {
                         fp = p->p_ofile[fd];
+                        if (fp->f_vnode->v_stream != NULL)
+                                strsig_close(fp->f_vnode->v_stream, p);
                         p->p_ofile[fd] = NULL;
                 }
                 mutex_unlock(&p->p_lock);

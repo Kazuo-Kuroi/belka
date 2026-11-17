@@ -18,6 +18,7 @@
 #include <sys/mman.h>
 #include <sys/signal.h>
 #include <sys/stat.h>
+#include <sys/stropts.h>
 #include <sys/termios.h>
 #include <sys/time.h>
 #include <sys/times.h>
