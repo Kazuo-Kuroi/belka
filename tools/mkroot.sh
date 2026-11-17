@@ -94,12 +94,44 @@ mkdir -p "$src/usr/share/licenses/stty"
 cp contrib/netbsd/bin/stty/NOTICE "$src/usr/share/licenses/stty/"
 # terminfo: the programs, the descriptions' source (/etc/rc compiles
 # the database), and ed.
-for prog in tic infocmp tput passwd su chsh less; do
+for prog in tic infocmp tput passwd su chsh less mandoc; do
         cp "$sys/$prog" "$src/usr/bin/$prog"    # dynamic: not stripped
 done
 ln "$src/usr/bin/less" "$src/usr/bin/more"
-mkdir -p "$src/usr/share/licenses/less"
-cp contrib/netbsd/external/bsd/less/dist/LICENSE "$src/usr/share/licenses/less/"
+for name in man apropos whatis makewhatis; do
+        ln "$src/usr/bin/mandoc" "$src/usr/bin/$name"
+done
+
+mkdir -p "$src/usr/share/man/man1" "$src/usr/share/man/man5" \
+    "$src/usr/share/man/man7" "$src/usr/share/man/man8"
+for section in 1 5 7 8; do
+        for page in contrib/mandoc/*.$section; do
+                case ${page##*/} in
+                catman.8|mandocd.8|man.cgi.8|demandoc.1|soelim.1) continue ;;
+                esac
+                cp "$page" "$src/usr/share/man/man$section/"
+        done
+done
+cp contrib/netbsd/bin/stty/stty.1 "$src/usr/share/man/man1/"
+cp contrib/netbsd/external/bsd/less/dist/less.1 \
+    "$src/usr/share/man/man1/less.1"
+ln "$src/usr/share/man/man1/less.1" "$src/usr/share/man/man1/more.1"
+sed -e 's/@PACKAGE_VERSION@/6.24.16/g' \
+    -e 's/@PACKAGE_ORIGIN@/Astron/g' -e 's/@PACKAGE_DATE@/2025-07-09/g' \
+    -e 's/@PACKAGE_ENGLISH_DATE@/July 9, 2025/g' \
+    -e 's|@PACKAGE_BUGREPORT@|https://www.tcsh.org/|g' \
+    -e 's|@PACKAGE_MAILLIST@|https://www.tcsh.org/|g' contrib/tcsh/tcsh.man.in \
+    > "$src/usr/share/man/man1/tcsh.1"
+cp usr/bin/chsh/chsh.1 "$src/usr/share/man/man1/"
+
+for name in less mandoc zlib; do
+        mkdir -p "$src/usr/share/licenses/$name"
+done
+cp contrib/netbsd/external/bsd/less/dist/LICENSE \
+    "$src/usr/share/licenses/less/"
+cp contrib/mandoc/LICENSE contrib/mandoc/NOTICE "$src/usr/share/licenses/mandoc/"
+cp contrib/zlib/README "$src/usr/share/licenses/zlib/"
+
 cp usr/bin/clear/clear.sh "$src/usr/bin/clear"
 # sed, grep and awk (NetBSD's); egrep and fgrep are grep.
 for prog in sed grep awk; do

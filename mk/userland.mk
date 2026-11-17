@@ -491,6 +491,46 @@ $(SYS_DIR)/$(1): $(patsubst %,$(SYS_OBJ)/$(1)/%.o,$(call tool_srcs,$(1))) \
 endef
 $(foreach t,$(FILE_TOOLS),$(eval $(call file_tool,$(t))))
 
+# zlib is mandoc's dependency for compressed manual pages.
+ZLIB            := contrib/zlib
+ZLIB_SRCS       := adler32 crc32 deflate infback inffast inflate inftrees \
+                   trees zutil compress uncompr gzclose gzlib gzread gzwrite
+ZLIB_OBJS       := $(addprefix $(SYS_OBJ)/zlib/,$(addsuffix .o,$(ZLIB_SRCS)))
+ZLIB_LIB        := $(SYS_DIR)/libz.a
+
+$(SYS_OBJ)/zlib/%.o: $(ZLIB)/%.c $(wildcard $(ZLIB)/*.h) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -I$(ZLIB) -c -o $@ $<
+
+$(ZLIB_LIB): $(ZLIB_OBJS)
+	rm -f $@
+	ar rcs $@ $^
+
+# mandoc's database and formatting commands share one executable.
+MANDOC          := contrib/mandoc
+MANDOC_SRCS     := man man_macro man_validate att lib mdoc mdoc_argv \
+                   mdoc_macro mdoc_state mdoc_validate st eqn roff roff_validate \
+                   tbl tbl_data tbl_layout tbl_opts arch chars mandoc mandoc_aux \
+                   mandoc_msg mandoc_ohash mandoc_xr msec preconv read tag \
+                   eqn_html html man_html mdoc_html roff_html tbl_html \
+                   eqn_term man_term mdoc_term roff_term term term_ascii term_ps \
+                   term_tab term_tag tbl_term dbm dbm_map mansearch dba \
+                   dba_array dba_read dba_write mandocdb main manpath mdoc_man \
+                   mdoc_markdown out tree compat_ohash compat_reallocarray \
+                   compat_recallocarray
+MANDOC_OBJS     := $(addprefix $(SYS_OBJ)/mandoc/,$(addsuffix .o,$(MANDOC_SRCS)))
+MANDOC_HDRS     := $(wildcard $(MANDOC)/*.h $(MANDOC)/*.in \
+                   usr/lib/compat/mandoc/*.h)
+
+$(SYS_OBJ)/mandoc/%.o: $(MANDOC)/%.c $(MANDOC_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -Iusr/lib/compat/mandoc -I$(MANDOC) \
+	    -I$(ZLIB) -c -o $@ $<
+
+$(SYS_DIR)/mandoc: $(MANDOC_OBJS) $(SYS_OBJ)/usr/lib/compat/mandoc/output.o \
+                     $(ZLIB_LIB) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(MANDOC_OBJS) $(SYS_OBJ)/usr/lib/compat/mandoc/output.o $(ZLIB_LIB))
+
 # less also provides its POSIX more interface through argv[0].
 LESS            := $(NB)/external/bsd/less/dist
 LESS_SRCS       := main screen brac ch charset cmdbuf command cvt decode edit \
@@ -542,7 +582,7 @@ $(SYS_OBJ)/stat/stat.o: TOOL_XFLAGS := -DHAVE_NBTOOL_CONFIG_H=1
 $(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
 
 TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS) \
-                   hostname stty chsh less)
+                   hostname stty chsh less mandoc)
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
@@ -621,8 +661,11 @@ ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
                    $(LIBC_SOS) usr/bin/clear/clear.sh \
                    contrib/netbsd/share/terminfo/terminfo \
                    contrib/tcsh/Copyright contrib/tcsh/NOTICE \
-                   contrib/netbsd/bin/stty/NOTICE usr/bin/chsh/chsh.1 tools/mkroot.sh \
+                   contrib/netbsd/bin/stty/NOTICE tools/mkroot.sh \
+                   $(wildcard contrib/mandoc/*.[1578] contrib/mandoc/NOTICE \
                    contrib/netbsd/external/bsd/less/dist/LICENSE \
+                   contrib/netbsd/external/bsd/less/dist/less.1 \
+                   contrib/zlib/README usr/bin/chsh/chsh.1) \
                    $(wildcard etc/* etc/defaults/* etc/rc.d/* \
                    contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 

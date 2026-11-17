@@ -1920,6 +1920,21 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
 - The console test checks end and beginning jumps, a forward search,
   more-style paging, and terminal restoration on exit.
 
+## Manual pages and mandoc (2026-11-17)
+
+- mandoc 1.14.6 supplies man, apropos, whatis, and makewhatis from one
+  executable. Its upstream ISC and BSD licences are retained. zlib 1.3.1
+  supplies compressed-page input under the zlib licence. Release URLs
+  and archive checksums are in the imports' README.belka files.
+- The target configuration is in usr/lib/compat/mandoc. The formatter's
+  wide-character writes are converted to bytes, because it shares stdout
+  with byte-oriented output and mlibc enforces stream orientation.
+- Installed pages live in /usr/share/man. The manpages rc.d script
+  creates mandoc.db on the first boot. Administrators can rebuild it
+  with makewhatis /usr/share/man after installing more pages.
+- Boot tests cover man and mdoc formatting, UTF-8, indexed and unindexed
+  lookup, and apropos and whatis searches. less is the default pager.
+
 ## File systems
 
 1. **tmpfs**, for testing.

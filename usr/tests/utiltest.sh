@@ -44,13 +44,14 @@ status() {
         name=$1
         want=$2
         shift 2
-        "$@" >/dev/null 2>&1
+        diagnostics=$("$@" 2>&1)
         st=$?
         if [ "$st" -eq "$want" ]; then
                 pass=$((pass + 1))
         else
                 fail=$((fail + 1))
                 echo "utiltest: FAIL $name: status $st, want $want"
+                printf '%s\n' "$diagnostics"
         fi
 }
 
@@ -281,6 +282,22 @@ status who 0 who
 # Pagers preserve their input when used in pipelines.
 check "less pipe" pager-pipe sh -c 'printf "pager-pipe\n" | less'
 check "more pipe" pager-pipe sh -c 'printf "pager-pipe\n" | more'
+
+status "mandoc man macro" 0 sh -c 'mandoc -Tascii /usr/share/man/man1/less.1 > formatted'
+status "mandoc output" 0 grep -q LESS formatted
+status "mandoc mdoc macro" 0 sh -c 'mandoc -Tascii /usr/share/man/man1/stty.1 > formatted'
+status "man lookup" 0 sh -c 'MANPAGER=cat man stty > formatted'
+status "man content" 0 grep -q STTY formatted
+mkdir -p manual-fixture/man1
+cp /usr/share/man/man1/stty.1 manual-fixture/man1/
+status "man fallback lookup" 0 sh -c 'MANPAGER=cat man -M "$PWD/manual-fixture" stty > formatted'
+status "man fallback content" 0 grep -q STTY formatted
+status "tcsh manual" 0 sh -c 'MANPAGER=cat man tcsh > formatted'
+status "mandoc UTF-8" 0 sh -c 'mandoc -Tutf8 /usr/share/man/man1/stty.1 > formatted'
+status "makewhatis" 0 makewhatis /usr/share/man
+status "apropos lookup" 0 sh -c 'apropos stty | grep -q stty'
+status "whatis lookup" 0 sh -c 'whatis chsh | grep -q chsh'
+status "man missing" 5 sh -c 'man belka-no-such-manual >/dev/null 2>&1'
 
 cd /
 rm -rf "$work"
