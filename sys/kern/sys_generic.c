@@ -376,6 +376,20 @@ fcntl_lock(struct proc *p, int fd, struct file *fp, int cmd, uint64_t uaddr)
         return 0;
 }
 
+/* flock(fd, op): BSD's whole-file lock, owned by the open file. */
+int
+sys_flock(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        int error;
+
+        if (fp == NULL)
+                return EBADF;
+        error = reclock_flock(fp, (int)args[1]);
+        frele(fp);
+        return error;
+}
+
 int
 sys_fcntl(const uint64_t *args, uint64_t *rv)
 {

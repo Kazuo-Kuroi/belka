@@ -59,12 +59,13 @@ fhold(struct file *fp)
         (void)atomic_inc_32_nv(&fp->f_count);
 }
 
-/* Drop a reference; the last closes the vnode. */
+/* Drop a reference; the last drops its flock lock and closes the vnode. */
 void
 frele(struct file *fp)
 {
         if (atomic_dec_32_nv(&fp->f_count) != 0)
                 return;
+        reclock_release(fp->f_vnode, fp);      /* its flock lock */
         (void)VOP_CLOSE(fp->f_vnode, fp->f_flag, fp->f_cred);
         VN_RELE(fp->f_vnode);
         crfree(fp->f_cred);

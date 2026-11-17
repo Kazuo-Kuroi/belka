@@ -1272,7 +1272,7 @@ test_locks(void)
         pid_t me = getpid(), pid;
         struct sigaction sa;
         struct flock fl;
-        int fd, fd2, ro, pfd[2], st;
+        int fd, fd2, fd3, fd4, ro, pfd[2], st, n;
         char c;
 
         fd = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
@@ -1422,7 +1422,7 @@ test_locks(void)
         CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
             WEXITSTATUS(st) == 0);
 
-        /* flock and lockf, over the same locks. */
+        /* fcntl's locks and flock's meet: each refuses the other. */
         if ((pid = fork()) == 0) {
                 int bad = 0;
 
@@ -1433,20 +1433,74 @@ test_locks(void)
         }
         CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
             WEXITSTATUS(st) == 0);
-        CHECK(flock(fd, LOCK_UN) == 0);
-        if ((pid = fork()) == 0) {
-                int bad = 0;
+        CHECK(flock(fd, LOCK_UN) == 0);         /* ours are not flock's */
+        CHECK(held(fd, 0, 1, F_UNLCK, 0, 0, 0));
+        CHECK(lk(fd, F_SETLK, F_UNLCK, SEEK_SET, 0, 0, NULL) == 0);
 
-                /* Free now: a shared lock, then our own made exclusive. */
-                bad |= flock(fd, LOCK_SH | LOCK_NB) != 0;
-                bad |= (lseek(fd, 0, SEEK_SET) != 0 ||
-                    lockf(fd, F_TLOCK, 0) != 0) << 1;
-                bad |= !held(fd, 0, 0, F_UNLCK, 0, 0, 0) << 2;
-                bad |= (flock(fd, LOCK_UN) != 0) << 3;
-                _exit(bad);
-        }
+        /*
+         * A flock lock belongs to the open file: one a child sets on the
+         * file it shares with us is ours too, outlives the child, and is
+         * seen by our own fcntl (l_pid -1) as another owner's.
+         */
+        if ((pid = fork()) == 0)
+                _exit(flock(fd, LOCK_SH | LOCK_NB) != 0);
         CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
             WEXITSTATUS(st) == 0);
+        CHECK(held(fd, 0, 1, F_RDLCK, 0, 0, -1));
+        CHECK(lseek(fd, 0, SEEK_SET) == 0 && lockf(fd, F_TLOCK, 0) == -1 &&
+            (errno == EAGAIN || errno == EACCES));
+        CHECK(flock(fd, LOCK_EX | LOCK_NB) == 0);       /* converted */
+        CHECK(flock(fd, LOCK_UN) == 0);
+        CHECK(held(fd, 0, 0, F_UNLCK, 0, 0, 0));
+
+        /*
+         * Another open file of the same process is another owner. A dup
+         * shares the lock: closing one of the two keeps it, closing the
+         * last drops it.
+         */
+        fd2 = open(name, O_RDWR);
+        fd3 = open(name, O_RDONLY);     /* flock needs no write access */
+        CHECK(fd2 >= 0 && fd3 >= 0);
+        CHECK(flock(fd3, LOCK_EX) == 0);
+        CHECK(flock(fd2, LOCK_SH | LOCK_NB) == -1 && errno == EWOULDBLOCK);
+        fd4 = dup(fd3);
+        close(fd3);
+        CHECK(flock(fd2, LOCK_SH | LOCK_NB) == -1 && errno == EWOULDBLOCK);
+        close(fd4);
+        CHECK(flock(fd2, LOCK_SH | LOCK_NB) == 0);
+
+        /* A wait for a flock lock ends when the holder lets it go. */
+        CHECK(flock(fd2, LOCK_EX) == 0);
+        CHECK(pipe(pfd) == 0);
+        if ((pid = fork()) == 0) {
+                int own = open(name, O_RDONLY), r;
+
+                close(pfd[0]);
+                (void)write(pfd[1], "w", 1);
+                r = flock(own, LOCK_EX);
+                _exit(own < 0 || r != 0);
+        }
+        close(pfd[1]);
+        CHECK(read(pfd[0], &c, 1) == 1);
+        close(pfd[0]);
+        usleep(200000);
+        CHECK(waitpid(pid, &st, WNOHANG) == 0);         /* still waiting */
+        CHECK(flock(fd2, LOCK_UN) == 0);
+        CHECK(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
+            WEXITSTATUS(st) == 0);
+        close(fd2);
+
+        /*
+         * There are only so many locks: alternate bytes, each a lock of
+         * its own, run out with ENOLCK; an unlock still works then, and
+         * the close gives them all back.
+         */
+        for (n = 0; n < 20000; n++)
+                if (lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 2 * n, 1, NULL) != 0)
+                        break;
+        CHECK(n < 20000 && errno == ENOLCK);
+        CHECK(lk(fd, F_SETLK, F_UNLCK, SEEK_SET, 0, 0, NULL) == 0);
+        CHECK(lk(fd, F_SETLK, F_WRLCK, SEEK_SET, 0, 0, NULL) == 0);
         CHECK(lk(fd, F_GETLK, F_RDLCK, SEEK_SET, 0, 0, &fl) == 0 &&
             fl.l_type == F_UNLCK);
 

@@ -24,6 +24,7 @@ sy_call_t sys_exec;
 /* sys_generic.c */
 sy_call_t sys_read, sys_write, sys_pread, sys_pwrite, sys_lseek, sys_close;
 sy_call_t sys_dup, sys_fcntl, sys_ioctl, sys_getdents, sys_ftruncate;
+sy_call_t sys_flock;
 sy_call_t sys_readv, sys_writev, sys_fsync, sys_fchmod, sys_fchown;
 sy_call_t sys_fstat;
 /* vfs_syscalls.c */

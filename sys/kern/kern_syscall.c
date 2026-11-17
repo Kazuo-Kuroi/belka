@@ -209,6 +209,7 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_pollsys] = sys_pollsys,
         [SYS_getrusage] = sys_getrusage,
         [SYS_utimensat] = sys_utimensat,
+        [SYS_flock] = sys_flock,
         [SYS_setuid] = sys_setuid,
         [SYS_seteuid] = sys_seteuid,
         [SYS_setgid] = sys_setgid,
