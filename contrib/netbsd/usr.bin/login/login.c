@@ -561,6 +561,45 @@ main(int argc, char *argv[])
 
 	}
 #endif
+#ifdef BELKA_SHADOW	/* Belka: System V's ageing, from /etc/shadow */
+	{
+		struct compat_age age;
+		long today = (long)(now.tv_sec / SECSPERDAY);
+		time_t when;
+
+		if (compat_shadow_age(pwd->pw_name, &age) == 0) {
+			if (age.expire > 0) {
+				when = (time_t)age.expire * SECSPERDAY;
+				if (today >= age.expire) {
+					(void)printf("Sorry -- your account "
+					    "has expired.\n");
+					sleepexit(EXIT_FAILURE);
+				} else if (age.warn >= 0 && !quietlog &&
+				    today >= age.expire - age.warn)
+					(void)printf("Warning: your account "
+					    "expires on %s", ctime(&when));
+			}
+			if (age.lastchg == 0) {
+				need_chpass = 1;
+			} else if (age.lastchg > 0 && age.max >= 0) {
+				long due = age.lastchg + age.max;
+
+				when = (time_t)due * SECSPERDAY;
+				if (age.inact >= 0 && today >= due + age.inact) {
+					(void)printf("Sorry -- your account "
+					    "is inactive: the password "
+					    "expired on %s", ctime(&when));
+					sleepexit(EXIT_FAILURE);
+				} else if (today >= due) {
+					need_chpass = 1;
+				} else if (age.warn >= 0 && !quietlog &&
+				    today >= due - age.warn)
+					(void)printf("Warning: your password "
+					    "expires on %s", ctime(&when));
+			}
+		}
+	}
+#endif
 	/* Nothing else left to fail -- really log in. */
 	update_db(quietlog, rootlogin, fflag);
 
