@@ -1775,6 +1775,18 @@ Recorded 2026-11-07.
 - [POSIX.1-2001 `<termios.h>`](https://www.gaertner.de/~neitzel/susv3/basedefs/termios.h.html)
   and [Solaris `termio(4I)`](https://docs.oracle.com/cd/E88353_01/html/E37851/termio-4i.html).
 
+## Asynchronous and real-time signal options (2026-11-17)
+
+- Belka reports `_POSIX_ASYNCHRONOUS_IO` and `_POSIX_REALTIME_SIGNALS`
+  as unsupported in `<unistd.h>` and through `sysconf`. Both are
+  options in [POSIX.1-2001 `<unistd.h>`](https://www.gaertner.de/~neitzel/susv3/basedefs/unistd.h.html).
+  `sigqueue` for the existing standard signals remains available.
+- POSIX AIO completion with `SIGEV_SIGNAL` posts the signal selected
+  by the application in `aio_sigevent`. STREAMS readiness via
+  `I_SETSIG` and `SIGPOLL` is a separate interface.
+  [POSIX.1-2001 signal generation](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_04.html),
+  [Solaris STREAMS Programming Guide](https://docs.oracle.com/cd/E53394_01/html/E54835/appmech3-30379.html).
+
 ## File systems
 
 1. **tmpfs**, for testing.
