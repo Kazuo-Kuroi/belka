@@ -362,6 +362,8 @@ test_xn_suite(void)
         int status = -1;
 
         if ((pid = fork()) == 0) {
+                /* Moves across file systems: /var/tmp (the root) from /tmp. */
+                setenv("XDEVDIR", "/var/tmp", 1);
                 execl("/bin/sh", "sh", "/usr/tests/xn/tests/run.sh",
                     (char *)NULL);
                 _exit(127);
@@ -450,6 +452,9 @@ test_login(const char *user, const char *password, const char *uid,
         /* /etc/shadow is closed to the user. */
         say(m, "cat /etc/shadow\n");
         CHECK(expect(m, "/etc/shadow: Access denied", 5000));
+        /* So is mount. */
+        say(m, "/sbin/mount /dev/vd1 /mnt\n");
+        CHECK(expect(m, "only the superuser may mount", 5000));
         /* passwd changes the password, giving the old one first. */
         say(m, "passwd\n");
         CHECK(expect(m, "Old password:", 5000));

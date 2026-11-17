@@ -47,7 +47,7 @@ STRIP=${STRIP:-strip}
 src=$(mktemp -d)
 trap 'rm -rf "$src"' EXIT
 
-mkdir -p "$src/bin" "$src/sbin" "$src/usr/bin" "$src/usr/libexec" \
+mkdir -p "$src/bin" "$src/sbin" "$src/mnt" "$src/usr/bin" "$src/usr/libexec" \
     "$src/usr/tests" "$src/usr/lib64" "$src/etc/defaults" "$src/dev" \
     "$src/proc" "$src/tmp" "$src/root" "$src/home" "$src/var/adm" \
     "$src/var/tmp"
@@ -58,6 +58,8 @@ install_prog() {        # program destination
 install_prog init sbin/init
 install_prog reboot sbin/reboot
 ln "$src/sbin/reboot" "$src/sbin/halt"
+install_prog mount sbin/mount
+ln "$src/sbin/mount" "$src/sbin/umount"
 install_prog getty usr/libexec/getty
 install_prog login usr/bin/login
 install_prog mksh bin/mksh
@@ -110,7 +112,7 @@ mkdir -p "$src/usr/share/misc"
 cp contrib/netbsd/share/terminfo/terminfo "$src/usr/share/misc/terminfo"
 cp "$libdir/ld.so.1" "$libdir/libc.so.1" "$src/usr/lib64/"
 
-for f in rc rc.conf ttys passwd shadow group shells profile \
+for f in rc rc.conf ttys passwd shadow group shells profile vfstab \
     defaults/rc.conf; do
         cp "etc/$f" "$src/etc/$f"
 done

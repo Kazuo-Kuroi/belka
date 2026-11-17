@@ -69,6 +69,7 @@ MKDISK          := build/tools/mkdisk
 EXT2_1K         := build/test-ext2-1k.img
 EXT2_4K         := build/test-ext2-4k.img
 E2FSCK          ?= /sbin/e2fsck
+MKE2FS          ?= /sbin/mke2fs
 DEBUGFS         ?= /sbin/debugfs
 
 KERNEL          := $(BUILD)/belka
@@ -481,10 +482,14 @@ test-reboot: $(REBOOT_ISO) $(LIBC_BINS)
 test-boot: $(BOOT_ISO) $(ROOT_DEPS) $(SYS_DIR)/boottest usr/tests/utiltest.sh \
                 contrib/ksenon-utils/tests/run.sh
 	$(MKROOT_TEST)
+	$(MKDATA_TEST)
 	QEMU_EXPECT="boottest: 0 failures$$(printf '\nlogin: ')" \
 	    sh tools/qemu-test.sh pass $(BUILD)/test-boot-serial.log \
-	    $(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_TEST_IMG)) -cdrom $(BOOT_ISO)
+	    $(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_TEST_IMG)) -cdrom $(BOOT_ISO) \
+	    -drive file=$(DATA_TEST_IMG),if=none,id=vd1,format=raw \
+	    -device virtio-blk-pci,drive=vd1,disable-legacy=on
 	$(E2FSCK) -fn $(ROOT_TEST_IMG)
+	$(E2FSCK) -fn $(DATA_TEST_IMG)
 
 # A session at the console, typed through a socket by tools/condrive
 # (usr/tests/console.script), on a fresh copy of the normal root image:

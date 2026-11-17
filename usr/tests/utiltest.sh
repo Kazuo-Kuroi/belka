@@ -121,10 +121,35 @@ check "touch -t" "Jan 1 2010" sh -c 'touch -t 201001011200 t1 && set -- $(ls -l 
 check "touch -r" "Jan 1 2010" sh -c 'touch -r t1 t2 && set -- $(ls -l t2) && echo $6 $7 $8'
 
 # The mount table and statvfs.
-check "mnttab root" "vd0 / ext2fs" sh -c 'set -- $(head -n 1 /etc/mnttab) && echo $1 $2 $3'
+check "mnttab root" "/dev/vd0 / ext2fs" sh -c 'set -- $(head -n 1 /etc/mnttab) && echo $1 $2 $3'
 check "df -P /" "/" sh -c 'set -- $(df -P / | tail -n 1) && echo $6'
 check "df -P /dev" "/dev" sh -c 'set -- $(df -P /dev | tail -n 1) && echo $6'
 status "df blocks" 0 sh -c 'set -- $(df -P / | tail -n 1) && test "$2" -gt 0 && test "$4" -gt 0'
+
+# mount and umount (mount(2), umount(2)): /etc/rc mounted /tmp from
+# /etc/vfstab; the boot test's second disk, vd1, is blank ext2.
+check "vfstab: /tmp" "swap /tmp tmpfs" awk '$2 == "/tmp" { print $1, $2, $3 }' /etc/mnttab
+check "/tmp mode" "drwxrwxrwt" field 1 ls -ld /tmp
+check "mount lists" "/ on /dev/vd0 read/write" sh -c 'mount | head -n 1 | { read m on s rw rest; echo $m $on $s $rw; }'
+check "ls -l vd1" "b 6, 1" sh -c 'set -- $(ls -l /dev/vd1) && echo ${1%${1#?}} $5 $6'
+status "mount vd1" 0 mount /dev/vd1 /mnt
+check "mnttab vd1" "/dev/vd1 /mnt ext2fs rw" awk '$1 == "/dev/vd1" { print $1, $2, $3, $4 }' /etc/mnttab
+check "df vd1" "/dev/vd1 /mnt" sh -c 'set -- $(df -P /mnt | tail -n 1) && echo $1 $6'
+check "write on vd1" "on vd1" sh -c 'echo "on vd1" > /mnt/f && cat /mnt/f'
+status "mount twice" 1 mount /dev/vd1 /mnt
+status "umount busy" 1 sh -c 'cd /mnt && umount /mnt'
+status "umount" 0 umount /mnt
+check "unmounted" "" awk '$1 == "/dev/vd1"' /etc/mnttab
+status "mount -r" 0 mount -r /dev/vd1 /mnt
+check "read-only kept" "on vd1" cat /mnt/f
+status "write refused" 1 sh -c 'echo x > /mnt/g'
+check "mount says ro" "read-only" sh -c 'mount | grep "^/mnt " | { read m on s ro rest; echo $ro; }'
+status "umount by device" 0 umount /dev/vd1
+status "mount tmpfs" 0 mount -F tmpfs swap /mnt
+check "move across" "f" sh -c 'echo z > /tmp/acrossf && mv /tmp/acrossf /mnt/f && ls /mnt && test ! -e /tmp/acrossf'
+status "umount tmpfs" 0 umount /mnt
+status "mount no type" 1 mount swap /mnt
+status "mount not a disk" 1 mount -F ext2fs /dev/null /mnt
 
 # Devices, the terminal and processes.
 check "ls -l console" "c 1, 0" sh -c 'set -- $(ls -l /dev/console) && echo ${1%${1#?}} $5 $6'

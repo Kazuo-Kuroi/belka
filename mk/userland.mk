@@ -8,6 +8,7 @@
 #
 #   /sbin/init          NetBSD's (contrib/netbsd/sbin/init)
 #   /sbin/reboot, halt  Belka's (usr/sbin/reboot), through uadmin
+#   /sbin/mount, umount Belka's (usr/sbin/mount), System V's, over vfstab
 #   /usr/libexec/getty  Belka's (usr/sbin/getty)
 #   /usr/bin/login      NetBSD's (contrib/netbsd/usr.bin/login)
 #   /bin/sh, /bin/mksh  mksh R59c (contrib/mksh)
@@ -150,6 +151,12 @@ $(SYS_OBJ)/reboot.o: usr/sbin/reboot/reboot.c $(MLIBC)
 	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
 $(SYS_DIR)/reboot: $(SYS_OBJ)/reboot.o $(SYS_DEPS)
 	$(call SYS_LINK,$(SYS_OBJ)/reboot.o)
+
+$(SYS_OBJ)/mount.o: usr/sbin/mount/mount.c $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
+$(SYS_DIR)/mount: $(SYS_OBJ)/mount.o $(SYS_DEPS)
+	$(call SYS_LINK,$(SYS_OBJ)/mount.o)
 
 # mksh, configured by hand (usr/lib/compat/mksh-config.h) rather than
 # by its Build.sh, with its option tables made by tools/mksh-genopt.awk
@@ -429,7 +436,7 @@ TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS))
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(TEXT_PROGS)
 
-SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mksh)
+SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mount mksh)
 
 sys-progs: $(SYS_PROGS)
 
@@ -508,6 +515,10 @@ $(ROOT_IMG): $(ROOT_DEPS)
 	sh tools/mkroot.sh $@ $(SYS_DIR) $(LIBC_SODIR)
 
 MKROOT_TEST     = sh tools/mkroot.sh -t $(ROOT_TEST_IMG) $(SYS_DIR) $(LIBC_SODIR)
+# The boot test's second disk (vd1), blank, for mount: made afresh.
+DATA_TEST_IMG   := build/data-test-$(TOOLCHAIN)$(LDSUFFIX).img
+MKDATA_TEST     = rm -f $(DATA_TEST_IMG) && $(MKE2FS) -q -F -t ext2 -b 1024 \
+                  -L belkadata $(DATA_TEST_IMG) 8M
 
 root-image: $(ROOT_IMG)
 

@@ -1,0 +1,17 @@
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-16
+# SPDX-License-Identifier: MIT
+#
+# /etc/vfstab: the file systems mount(1M) knows, System V's table. Each
+# line has seven fields, "-" for none:
+#
+#   special  fsckdev  mount_point  type  fsckpass  at_boot  options
+#
+# /etc/rc mounts those whose at_boot is "yes" (mount -a). The root is
+# mounted by the kernel, and so are devfs on /dev and /proc, which are
+# not listed.
+#
+#special	fsckdev	mountp	fstype	fsckpass	at_boot	options
+/dev/vd0	-	/	ext2fs	1	no	-
+swap	-	/tmp	tmpfs	-	yes	-

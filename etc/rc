@@ -25,6 +25,11 @@ fi
 
 echo "Starting Belka multi-user."
 
+# The file systems /etc/vfstab marks to be mounted at boot; then /tmp
+# open to all, as it must be (a tmpfs root starts as 0755).
+mount -a
+chmod 1777 /tmp
+
 # The terminal descriptions are compiled here, from their source, when
 # the database is missing or older (the image carries only the source).
 ti=/usr/share/misc/terminfo
