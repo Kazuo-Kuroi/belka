@@ -1886,6 +1886,17 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
   to the login shell. tcsh selects `wait4` for child resource accounting.
 - [Upstream tcsh release](https://astron.com/pub/tcsh/tcsh-6.24.16.tar.gz).
 
+## Terminal settings utility (2026-11-17)
+
+- NetBSD's BSD-licensed stty runs over Belka's System V termios.
+  The port maps numerical baud rates to System V speed codes and uses
+  tcflow for output start and stop. Tables expose the available flags
+  and control characters.
+- The gfmt1 save and restore path handles shared canonical and raw
+  control-character slots and restores both speeds through cfsetispeed
+  and cfsetospeed. The console test exercises echo, saved settings,
+  window dimensions, and a baud-rate change.
+
 ## File systems
 
 1. **tmpfs**, for testing.

@@ -491,6 +491,19 @@ $(SYS_DIR)/$(1): $(patsubst %,$(SYS_OBJ)/$(1)/%.o,$(call tool_srcs,$(1))) \
 endef
 $(foreach t,$(FILE_TOOLS),$(eval $(call file_tool,$(t))))
 
+# stty: NetBSD's terminal settings utility.
+STTY_SRCS       := cchar gfmt key modes print stty
+STTY_OBJS       := $(addprefix $(SYS_OBJ)/stty/,$(addsuffix .o,$(STTY_SRCS))) \
+                   $(SYS_OBJ)/usr/lib/compat/stty/speed.o
+
+$(SYS_OBJ)/stty/%.o: $(NB)/bin/stty/%.c $(wildcard $(NB)/bin/stty/*.h) \
+                    $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -c -o $@ $<
+
+$(SYS_DIR)/stty: $(STTY_OBJS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(STTY_OBJS))
+
 # hostname: NetBSD's, over sethostname (sysinfo, System V's), in /bin.
 $(SYS_OBJ)/hostname.o: $(NB)/bin/hostname/hostname.c $(COMPAT_HDRS) $(MLIBC)
 	@mkdir -p $(dir $@)
@@ -503,7 +516,7 @@ $(SYS_OBJ)/stat/stat.o: TOOL_XFLAGS := -DHAVE_NBTOOL_CONFIG_H=1
 $(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
 
 TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS) \
-                   hostname)
+                   hostname stty)
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
@@ -581,7 +594,8 @@ ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
                    $(LIBC_SOS) usr/bin/clear/clear.sh \
                    contrib/netbsd/share/terminfo/terminfo \
-                   contrib/tcsh/Copyright contrib/tcsh/NOTICE tools/mkroot.sh \
+                   contrib/tcsh/Copyright contrib/tcsh/NOTICE \
+                   contrib/netbsd/bin/stty/NOTICE tools/mkroot.sh \
                    $(wildcard etc/* etc/defaults/* etc/rc.d/* \
                    contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 

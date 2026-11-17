@@ -21,6 +21,22 @@ expect root
 send echo $((6 * 7))\r
 expect 42
 
+# stty saves and restores System V termios and reports the window size.
+send saved=$(stty -g)\r
+send stty -echo\r
+send echo stty-noecho-$((7 * 9))\r
+expect stty-noecho-63
+send stty "$saved"\r
+send echo stty-restored-$((8 * 9))\r
+expect stty-restored-72
+send stty rows 24 columns 80\r
+send stty size\r
+expect \r\n24\x2080
+send stty 9600\r
+send stty speed\r
+expect \r\n9600
+send stty "$saved"\r
+
 # Line editing: ^P twice brings back the line before last.
 send a=5\r
 send echo $((a * 111))\r

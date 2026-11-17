@@ -89,6 +89,9 @@ ln "$src/bin/chown" "$src/bin/chgrp"
 ln "$src/bin/test" "$src/bin/["
 cp "$sys/ps" "$src/bin/ps"            # dynamic: not stripped
 cp "$sys/hostname" "$src/bin/hostname"
+cp "$sys/stty" "$src/bin/stty"
+mkdir -p "$src/usr/share/licenses/stty"
+cp contrib/netbsd/bin/stty/NOTICE "$src/usr/share/licenses/stty/"
 # terminfo: the programs, the descriptions' source (/etc/rc compiles
 # the database), and ed.
 for prog in tic infocmp tput passwd su; do
