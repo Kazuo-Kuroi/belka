@@ -187,6 +187,11 @@ struct proc {
         struct ksigaction p_sigact[NSIG];
         k_sigset_t      p_sigpend;
         siginfo_t       p_siginfo[NSIG];
+        unsigned int    p_signqueued;
+        struct {
+                struct lwp *sq_target; /* NULL for a process signal */
+                siginfo_t sq_info;
+        } p_sigqueue[SIGQUEUE_MAX];
         uint64_t        p_sigreturn;    /* the library's return trampoline */
         int             p_sigflags;     /* PS_* */
         int             p_stopped;      /* stopped by a signal */
@@ -252,8 +257,9 @@ unsigned int proc_count(void);
 /* kern_sig.c */
 void sig_proc_init(struct proc *, struct proc *);
 void sig_exec(struct proc *);
-void sigtoproc(struct proc *, int, const siginfo_t *);
-void sigtolwp_locked(struct proc *, struct lwp *, int, const siginfo_t *);
+int sigtoproc(struct proc *, int, const siginfo_t *);
+int sigtolwp_locked(struct proc *, struct lwp *, int, const siginfo_t *);
+void sig_lwp_exit_locked(struct lwp *);
 void sig_recalc_lwp(struct proc *, struct lwp *);
 void sig_recalc_all(struct proc *);
 void sig_nudge_lwp(struct lwp *);

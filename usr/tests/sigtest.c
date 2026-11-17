@@ -327,6 +327,8 @@ test_sigqueue(void)
             info.si_signo == SIGUSR1 && info.si_code == SI_QUEUE &&
             info.si_pid == self && info.si_uid == getuid() &&
             info.si_value.sival_ptr == &signo);
+        CHECK(sigtimedwait(&set, &info, &now) == SIGUSR1 &&
+            info.si_code == SI_QUEUE && info.si_value.sival_int == 7);
         CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
 
         sigemptyset(&empty);
@@ -355,6 +357,50 @@ test_sigqueue(void)
                 CHECK(waitpid(child, &status, 0) == child &&
                     WIFEXITED(status) && WEXITSTATUS(status) == 0);
         }
+        CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
+}
+
+/* Real-time priority, FIFO payloads, and queue saturation and reuse. */
+static void
+test_realtime(void)
+{
+        const struct timespec now = { 0, 0 };
+        sigset_t set, old, pending;
+        siginfo_t info;
+        long capacity = sysconf(_SC_SIGQUEUE_MAX);
+        pid_t self = getpid();
+
+        CHECK(sysconf(_SC_RTSIG_MAX) == SIGRTMAX - SIGRTMIN + 1);
+        CHECK(capacity == 32);
+        sigemptyset(&set);
+        sigaddset(&set, SIGRTMIN);
+        sigaddset(&set, SIGRTMAX);
+        if (sigprocmask(SIG_BLOCK, &set, &old) != 0) {
+                CHECK(0);
+                return;
+        }
+        CHECK(sigqueue(self, SIGRTMAX, (union sigval){ .sival_int = 9 }) == 0);
+        for (int i = 0; i < 31; i++)
+                CHECK(sigqueue(self, SIGRTMIN,
+                    (union sigval){ .sival_int = i }) == 0);
+        CHECK(sigqueue(self, SIGRTMIN, (union sigval){ 0 }) == -1 &&
+            errno == EAGAIN);
+        CHECK(sigpending(&pending) == 0 &&
+            sigismember(&pending, SIGRTMIN) == 1 &&
+            sigismember(&pending, SIGRTMAX) == 1);
+        for (int i = 0; i < 31; i++)
+                CHECK(sigtimedwait(&set, &info, &now) == SIGRTMIN &&
+                    info.si_code == SI_QUEUE && info.si_value.sival_int == i);
+        CHECK(sigtimedwait(&set, &info, &now) == SIGRTMAX &&
+            info.si_value.sival_int == 9);
+        CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
+
+        CHECK(kill(self, SIGRTMAX) == 0);
+        CHECK(kill(self, SIGRTMAX) == 0);
+        CHECK(sigtimedwait(&set, &info, &now) == SIGRTMAX && info.si_code == SI_USER);
+        CHECK(signal(SIGRTMAX, SIG_IGN) != SIG_ERR);
+        CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
+        CHECK(set_default(SIGRTMAX) == 0);
         CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
 }
 
@@ -686,6 +732,7 @@ main(int argc, char **argv)
         test_alarm();
         test_sigsuspend();
         test_sigqueue();
+        test_realtime();
         test_defaults();
         test_restart();
         test_stop();

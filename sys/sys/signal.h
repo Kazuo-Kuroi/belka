@@ -57,8 +57,11 @@
 #define SIGLWP          33
 #define SIGAIO          34
 
-#define MAXSIG          34
-#define NSIG            35
+#define SIGRTMIN        35
+#define SIGRTMAX        64
+#define MAXSIG          SIGRTMAX
+#define NSIG            (MAXSIG + 1)
+#define SIGQUEUE_MAX    32
 
 /* A set of signals: bit (sig - 1) of the 128. */
 typedef struct {
