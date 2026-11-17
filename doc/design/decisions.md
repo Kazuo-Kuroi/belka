@@ -1627,8 +1627,9 @@ Recorded 2026-11-07.
   changes their own password after giving the old one, the superuser
   anyone's. The new one is asked twice, hashed with `$sha1$` under a new
   salt (8 characters, about 18,500 to 24,680 rounds), and written to
-  `/etc/passwd` through `/etc/ptmp`, the lock, renamed over it. There is
-  no shadow file yet, so the hashes are in `/etc/passwd`.
+  `/etc/passwd` through `/etc/ptmp`, the lock, renamed over it. There was
+  no shadow file yet, so the hashes were in `/etc/passwd` (until
+  2026-11-16; see The shadow password file).
 - **Tests:** in boottest's session the test user changes the password;
   then the old one is refused and the new one logs in. Writing the old
   hash back makes it fail.
@@ -1687,21 +1688,57 @@ Recorded 2026-11-07.
   descriptor for the file, and so at exit.
 - **Waiting:** `F_SETLKW` sleeps until the range is free, ends with
   `EINTR` (or a restart) for a signal, and fails with `EDEADLK` when the
-  wait would close a circle of waiting processes; each waiter records
-  whose lock it waits for.
+  wait would close a circle of waiting owners. Each waiting thread (not
+  process: two LWPs of one process may wait at once) puts the owner it
+  acts for and the one it waits for on a list of waiters, which the
+  check follows.
+- **flock (2026-11-16)** is BSD's, a call of its own (228): a whole-file
+  lock owned by the open file, so dups and a fork's child share it, and
+  it goes with `LOCK_UN` or the file's last close. A change is made as
+  BSD makes it, by giving the lock up first, so two holders of a shared
+  lock asking for an exclusive one do not wait for each other; flock's
+  waits are not checked for deadlock, as in BSD. flock and fcntl locks
+  meet in one list and refuse each other, as any two owners' locks do;
+  `F_GETLK` reports a flock lock with `l_pid` -1.
+- **A limit:** at most `reclock_max` (8192) locks in all; a request that
+  needs more fails with `ENOLCK`, rather than letting a process exhaust
+  kernel memory (a KM_SLEEP allocation that cannot be met panics). An
+  unlock that splits nothing needs no new record, so it always works.
 - **Structure:** each vnode has a list of its locks (`v_locks`), and one
   mutex covers them all, with one synchronisation variable that is
   broadcast whenever a lock goes or weakens. Per-vnode locking can come
   if contention shows. A lock set while another LWP closed the
   descriptor is dropped again, as the close would have taken it.
 - **struct flock** is Belka's native layout, the C library's: no
-  `l_sysid`, which only remote locks use.
-- **flock** is mlibc's, a record lock over the whole file. Belka has no
-  locks belonging to open files, so these too are the process's: a dup
-  or a fork does not share them, as BSD's would.
+  `l_sysid`, which only remote locks use. Remote locks are postponed.
+- **Not done:** mandatory locking (System V's set-group-ID files whose
+  reads and writes honour the locks) is left out for now.
 - **Tests:** libctest on ext2 and tmpfs (conflicts, splitting, ranges,
-  close and exit, waiting, `EDEADLK`, `EINTR`, flock, lockf); utiltest
-  checks that a second ex cannot write a file the first has locked.
+  close and exit, waiting, `EDEADLK`, `EINTR`, lockf; flock's sharing by
+  dup and fork, its other open files, waits, meeting fcntl; `ENOLCK`);
+  utiltest checks that a second ex cannot write a file the first has
+  locked.
+
+## The shadow password file (2026-11-16)
+
+- **/etc/shadow** holds the hashes, in System V's nine fields (name,
+  hash, day of the last change, then ageing fields left empty), root's
+  and mode 0400. `/etc/passwd` says `x`. The hashing is unchanged
+  (`$sha1$`); a stronger scheme waits for PAM.
+- **Readers:** login and init (NetBSD's, patched under `BELKA_SHADOW`)
+  take the hash through `compat_shadow`, which puts it in place of the
+  `x` in mlibc's getpwnam entry. That library allocates each field and
+  frees it at its next call, so the hash is handed over the same way.
+- **passwd** reads and writes `/etc/shadow` and records the day of the
+  change. It holds the password files' lock while it writes:
+  `lckpwdf()`, now in mlibc, a write lock on `/etc/.pwd.lock` tried each
+  second for up to 15 seconds, as System V has it. It writes
+  `/etc/stmp`, mode 0400, and renames it over `/etc/shadow`.
+- **Ageing:** the fields are kept but not enforced; login is still built
+  without password ageing.
+- **Tests:** boottest: the user cannot read `/etc/shadow`; after passwd
+  it is still root's and 0400, with a new hash and today's date; the old
+  password fails and the new one works.
 
 ## File systems
 
