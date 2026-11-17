@@ -213,7 +213,7 @@ ext2fs_create(struct vnode *dvp, const char *nm, struct vattr *va, int excl,
 
         if (em->em_ronly)
                 return EROFS;
-        if (va->va_type != VREG && va->va_type != VFIFO)
+        if (va->va_type != VREG && va->va_type != VFIFO && va->va_type != VSOCK)
                 return EINVAL;
         if (is_dot(nm))
                 return EEXIST;
@@ -234,8 +234,11 @@ ext2fs_create(struct vnode *dvp, const char *nm, struct vattr *va, int excl,
                 mutex_unlock(&em->em_lock);
                 return error == ENOENT ? ENOENT : error;
         }
-        if ((error = ext2fs_newinode(em, dp, (uint16_t)((va->va_type == VFIFO ?
-            S_IFIFO : S_IFREG) | (va->va_mode & 07777)), va, &ip)) == 0) {
+        int kind = va->va_type == VFIFO ? S_IFIFO :
+            va->va_type == VSOCK ? S_IFSOCK : S_IFREG;
+
+        if ((error = ext2fs_newinode(em, dp,
+            (uint16_t)(kind | (va->va_mode & 07777)), va, &ip)) == 0) {
                 if ((error = ext2fs_direnter(dp, nm, ip->i_number,
                     ext2fs_ftype(va->va_type))) != 0) {
                         ip->i_din.e2di_nlink = 0;

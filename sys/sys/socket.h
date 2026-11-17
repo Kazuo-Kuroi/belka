@@ -16,8 +16,14 @@
 #define MSG_DONTWAIT    0x0040
 #define MSG_NOSIGNAL    0x4000
 
-#ifdef _KERNEL
 #include <stdint.h>
+
+struct sockaddr_un {
+        uint16_t        sun_family;
+        char            sun_path[108];
+};
+
+#ifdef _KERNEL
 #include <sys/types.h>
 
 struct cred;
@@ -30,6 +36,7 @@ struct sockowner {
 };
 
 int sock_fcntl(struct vnode *, int, int, uint64_t *);
+void sock_init(void);
 int sockowner_set(struct sockowner *, pid_t, struct cred *);
 void sockowner_signal(const struct sockowner *);
 #endif

@@ -287,6 +287,7 @@ int execargs_copyin_vec(struct execargs *, char *const *, int);
 
 /* kern_descrip.c */
 int fd_alloc(struct proc *, struct file *, int, int *);
+int fd_alloc_flags(struct proc *, struct file *, int, int, int *);
 int fd_alloc_pair(struct proc *, struct file *[2], int, int [2]);
 int fd_install(struct proc *, struct file *, int);
 int fd_cloexec(struct proc *, int, int);

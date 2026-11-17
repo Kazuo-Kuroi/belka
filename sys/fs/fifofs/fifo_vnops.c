@@ -40,6 +40,7 @@
 
 #include <sys/cred.h>
 #include <sys/errno.h>
+#include <sys/fcntl.h>
 #include <sys/file.h>
 #include <sys/kmem.h>
 #include <sys/poll.h>
@@ -610,32 +611,45 @@ fifo_vp(struct vnode *realvp, struct vnode **vpp)
  * pipe(): two descriptors, returned in %rax and %rdx as in System V,
  * the first open for reading the pipe and the second for writing it.
  */
-int
-sys_pipe(const uint64_t *args __unused, uint64_t *rv)
+static int
+pipe_create(int flags, uint64_t *rv)
 {
         struct proc *p = curproc;
         struct fifonode *fn = fifo_alloc();
         struct vnode *vp = &fn->fn_vnode;
-        struct file *rfp, *wfp;
-        int rfd, wfd, error;
+        struct file *files[2];
+        int fds[2], error, status = flags & O_NONBLOCK;
 
         fn->fn_readers = 1;
         fn->fn_writers = 1;
         VN_HOLD(vp);                    /* the read end's */
         VN_HOLD(vp);                    /* the write end's */
-        rfp = falloc(vp, FREAD);
-        wfp = falloc(vp, FWRITE);
-        if ((error = fd_alloc(p, rfp, 0, &rfd)) != 0) {
-                frele(rfp);
-                frele(wfp);
+        files[0] = falloc(vp, FREAD | status);
+        files[1] = falloc(vp, FWRITE | status);
+        error = fd_alloc_pair(p, files, (flags & O_CLOEXEC) != 0 ?
+            FD_CLOEXEC : 0, fds);
+        if (error != 0) {
+                frele(files[0]);
+                frele(files[1]);
                 return error;
         }
-        if ((error = fd_alloc(p, wfp, 0, &wfd)) != 0) {
-                (void)fd_close(p, rfd);
-                frele(wfp);
-                return error;
-        }
-        rv[0] = (uint64_t)rfd;
-        rv[1] = (uint64_t)wfd;
+        rv[0] = (uint64_t)fds[0];
+        rv[1] = (uint64_t)fds[1];
         return 0;
+}
+
+int
+sys_pipe(const uint64_t *args __unused, uint64_t *rv)
+{
+        return pipe_create(0, rv);
+}
+
+int
+sys_pipe2(const uint64_t *args, uint64_t *rv)
+{
+        int flags = (int)args[0];
+
+        if ((flags & ~(O_NONBLOCK | O_CLOEXEC)) != 0)
+                return EINVAL;
+        return pipe_create(flags, rv);
 }

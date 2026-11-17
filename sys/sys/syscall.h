@@ -150,7 +150,13 @@
 #define SYS_send        231
 #define SYS_recv        232
 #define SYS_sockatmark  233
+#define SYS_pipe2       234
+#define SYS_socket      235
+#define SYS_bind        236
+#define SYS_listen      237
+#define SYS_connect     238
+#define SYS_accept      239
 
-#define NSYSCALL        234     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        240     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

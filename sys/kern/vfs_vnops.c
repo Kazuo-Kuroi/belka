@@ -205,6 +205,10 @@ again:
                 VN_RELE(vp);
                 return error;
         }
+        if (vp->v_type == VSOCK) {
+                VN_RELE(vp);
+                return ENXIO;
+        }
         if (vp->v_type == VFIFO) {
                 /* A named FIFO: open the FIFO node that stands for it. */
                 struct vnode *fvp;
@@ -437,8 +441,9 @@ vn_mkdirat(struct vnode *sdir, const char *path, mode_t mode)
  * Make a node of type type (only VFIFO so far; there are no device
  * files yet) through VOP_CREATE, failing with EEXIST if path exists.
  */
-int
-vn_mknodat(struct vnode *sdir, const char *path, enum vtype type, mode_t mode)
+static int
+vn_mknode(struct vnode *sdir, const char *path, enum vtype type, mode_t mode,
+    struct vnode **vpp)
 {
         struct cred *cr = CRED();
         char name[MAXNAMELEN];
@@ -446,8 +451,6 @@ vn_mknodat(struct vnode *sdir, const char *path, enum vtype type, mode_t mode)
         struct vattr va;
         int error;
 
-        if (type != VFIFO)
-                return EINVAL;
         if ((error = vn_parent(sdir, path, &dvp, name, &vp,
             NO_FOLLOW)) != 0)
                 return error;
@@ -460,11 +463,30 @@ vn_mknodat(struct vnode *sdir, const char *path, enum vtype type, mode_t mode)
         va.va_mask = AT_TYPE | AT_MODE;
         va.va_type = type;
         va.va_mode = mode & 07777;
-        if ((error = vn_newattr(dvp, &va, cr)) == 0 &&
-            (error = VOP_CREATE(dvp, name, &va, EXCL, &vp, cr)) == 0)
-                VN_RELE(vp);
+        if ((error = vn_newattr(dvp, &va, cr)) == 0)
+                error = VOP_CREATE(dvp, name, &va, EXCL, vpp, cr);
         VN_RELE(dvp);
         return error;
+}
+
+int
+vn_mknodat(struct vnode *sdir, const char *path, enum vtype type, mode_t mode)
+{
+        struct vnode *vp;
+        int error;
+
+        if (type != VFIFO)
+                return EINVAL;
+        error = vn_mknode(sdir, path, type, mode, &vp);
+        if (error == 0)
+                VN_RELE(vp);
+        return error;
+}
+
+int
+vn_mksock(const char *path, struct vnode **vpp)
+{
+        return vn_mknode(NULL, path, VSOCK, 0777, vpp);
 }
 
 int

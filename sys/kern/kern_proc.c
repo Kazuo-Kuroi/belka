@@ -30,6 +30,7 @@
 #include <sys/proc.h>
 #include <sys/schedclass.h>
 #include <sys/signal.h>
+#include <sys/socket.h>
 #include <sys/synch.h>
 #include <sys/time.h>
 #include <sys/systm.h>
@@ -79,6 +80,7 @@ proc_init(void)
         proc_zone = kmem_zone_init(sizeof(struct proc), "proc");
         lwp_sysinit();
         mutex_init(&proctree_lock, "proctree");
+        sock_init();
         mutex_init(&proc0.p_lock, "proc");
         sv_init(&proc0.p_waitsv, "wait");
         proc0.p_pid = 0;

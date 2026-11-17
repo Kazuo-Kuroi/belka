@@ -1822,6 +1822,19 @@ Recorded 2026-11-07.
   [descriptor ownership](https://www.gaertner.de/~neitzel/susv3/basedefs/fcntl.h.html),
   and [socketpair](https://www.gaertner.de/~neitzel/susv3/functions/socketpair.html).
 
+## Pathname sockets and pipe creation (2026-11-17)
+
+- Local stream sockets expose `socket`, `bind`, `listen`, `connect`,
+  `accept`, and `accept4`. Binding creates a socket inode on tmpfs or
+  ext2 and associates the listener with its vnode. Rename and unlink
+  have normal filesystem semantics. Closing leaves the pathname in
+  place and releases queued endpoint files. Accepted streams use the
+  same data and urgent signal path as socket pairs.
+- POSIX pipes and named FIFOs share fifofs. `pipe2` installs both
+  descriptors with nonblocking and close-on-exec flags atomically.
+- [POSIX.1-2001 local sockets](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_10.html)
+  and [accept](https://www.gaertner.de/~neitzel/susv3/functions/accept.html).
+
 ## File systems
 
 1. **tmpfs**, for testing.

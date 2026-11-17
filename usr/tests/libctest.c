@@ -29,6 +29,7 @@
 #include <sched.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +44,7 @@
 #include <sys/time.h>
 #include <sys/times.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -2023,6 +2025,85 @@ test_socket_urgent(void)
         CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
 }
 
+static void
+test_named_socket(const char *prefix)
+{
+        struct sockaddr_un addr = { .sun_family = AF_UNIX }, peer;
+        char original[sizeof(addr.sun_path)], buf[4];
+        socklen_t size = sizeof(peer);
+        struct pollfd pfd;
+        struct stat st;
+        int listener, client, accepted;
+
+        snprintf(original, sizeof(original), "%s/local-%d", prefix, getpid());
+        snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/listener-%d",
+            prefix, getpid());
+        unlink(original);
+        unlink(addr.sun_path);
+        listener = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        client = socket(AF_UNIX, SOCK_STREAM, 0);
+        CHECK(listener >= 0 && client >= 0);
+        if (listener < 0 || client < 0)
+                goto out;
+        CHECK(bind(listener, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+        CHECK(bind(client, (struct sockaddr *)&addr, sizeof(addr)) == -1 &&
+            errno == EADDRINUSE);
+        CHECK(lstat(addr.sun_path, &st) == 0 && S_ISSOCK(st.st_mode));
+        CHECK(listen(listener, 2) == 0);
+        CHECK(accept(listener, NULL, NULL) == -1 && errno == EAGAIN);
+        CHECK(rename(addr.sun_path, original) == 0);
+        CHECK(connect(client, (struct sockaddr *)&addr, sizeof(addr)) == -1 &&
+            errno == ENOENT);
+        strcpy(addr.sun_path, original);
+        CHECK(connect(client, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+        pfd = (struct pollfd){ listener, POLLIN, 0 };
+        CHECK(poll(&pfd, 1, 0) == 1 && pfd.revents == POLLIN);
+        CHECK(unlink(original) == 0);
+        accepted = accept4(listener, (struct sockaddr *)&peer, &size,
+            SOCK_CLOEXEC);
+        CHECK(accepted >= 0);
+        if (accepted >= 0) {
+                CHECK(peer.sun_family == AF_UNIX &&
+                    size == offsetof(struct sockaddr_un, sun_path));
+                CHECK(fcntl(accepted, F_GETFD) == FD_CLOEXEC);
+                CHECK(write(client, "ok", 2) == 2);
+                CHECK(read(accepted, buf, 2) == 2 && memcmp(buf, "ok", 2) == 0);
+                CHECK(send(accepted, "go", 2, 0) == 2);
+                CHECK(recv(client, buf, 2, 0) == 2 && memcmp(buf, "go", 2) == 0);
+                close(accepted);
+                CHECK(read(client, buf, sizeof(buf)) == 0);
+        }
+out:
+        if (client >= 0)
+                close(client);
+        if (listener >= 0)
+                close(listener);
+        unlink(original);
+        unlink(addr.sun_path);
+}
+
+static void
+test_pipe_flags(void)
+{
+        int fd[2];
+        char byte;
+
+        if (pipe2(fd, O_NONBLOCK | O_CLOEXEC) != 0) {
+                CHECK(0);
+                return;
+        }
+        for (int i = 0; i < 2; i++) {
+                CHECK(fcntl(fd[i], F_GETFD) == FD_CLOEXEC);
+                CHECK((fcntl(fd[i], F_GETFL) & O_NONBLOCK) != 0);
+        }
+        CHECK(read(fd[0], &byte, 1) == -1 && errno == EAGAIN);
+        CHECK(write(fd[1], "x", 1) == 1);
+        CHECK(read(fd[0], &byte, 1) == 1 && byte == 'x');
+        close(fd[1]);
+        CHECK(read(fd[0], &byte, 1) == 0);
+        close(fd[0]);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2036,10 +2117,13 @@ main(int argc, char **argv)
         test_misc();
         test_clocks();
         test_pipes();
+        test_pipe_flags();
         test_fifos();
         test_poll();
         test_stream_signals();
         test_socket_urgent();
+        test_named_socket("");
+        test_named_socket(dir);
         test_ppoll();
         test_rlimits();
         test_file_ops();

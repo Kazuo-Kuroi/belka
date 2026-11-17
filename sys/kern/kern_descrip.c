@@ -128,7 +128,7 @@ fd_grow(struct proc *p, int n)
  * over the caller's reference.
  */
 int
-fd_alloc(struct proc *p, struct file *fp, int minfd, int *fdp)
+fd_alloc_flags(struct proc *p, struct file *fp, int minfd, int flags, int *fdp)
 {
         int fd, error;
 
@@ -150,10 +150,16 @@ fd_alloc(struct proc *p, struct file *fp, int minfd, int *fdp)
                         break;
         }
         p->p_ofile[fd] = fp;
-        p->p_pofile[fd] = 0;
+        p->p_pofile[fd] = (uint8_t)flags;
         mutex_unlock(&p->p_lock);
         *fdp = fd;
         return 0;
+}
+
+int
+fd_alloc(struct proc *p, struct file *fp, int minfd, int *fdp)
+{
+        return fd_alloc_flags(p, fp, minfd, 0, fdp);
 }
 
 /* Publish both ends together, with their close-on-exec flags. */

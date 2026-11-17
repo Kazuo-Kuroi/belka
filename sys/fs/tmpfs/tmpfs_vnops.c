@@ -277,7 +277,7 @@ tmpfs_create(struct vnode *dvp, const char *nm, struct vattr *va, int excl,
         struct tmpnode *tn;
         int error;
 
-        if (va->va_type != VREG && va->va_type != VFIFO)
+        if (va->va_type != VREG && va->va_type != VFIFO && va->va_type != VSOCK)
                 return EINVAL;
         if (is_dot(nm))
                 return EEXIST;
