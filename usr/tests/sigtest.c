@@ -372,6 +372,8 @@ test_realtime(void)
 
         CHECK(sysconf(_SC_RTSIG_MAX) == SIGRTMAX - SIGRTMIN + 1);
         CHECK(capacity == 32);
+        CHECK(strcmp(strsignal(SIGRTMIN), "SIGRTMIN+0") == 0);
+        CHECK(strcmp(strsignal(SIGRTMAX), "SIGRTMIN+29") == 0);
         sigemptyset(&set);
         sigaddset(&set, SIGRTMIN);
         sigaddset(&set, SIGRTMAX);

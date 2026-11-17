@@ -1777,6 +1777,8 @@ Recorded 2026-11-07.
 
 ## Asynchronous and real-time signal options (2026-11-17)
 
+The real-time option is superseded by [Real-time signals](#real-time-signals-2026-11-17).
+
 - Belka reports `_POSIX_ASYNCHRONOUS_IO` and `_POSIX_REALTIME_SIGNALS`
   as unsupported in `<unistd.h>` and through `sysconf`. Both are
   options in [POSIX.1-2001 `<unistd.h>`](https://www.gaertner.de/~neitzel/susv3/basedefs/unistd.h.html).
@@ -1848,6 +1850,7 @@ Recorded 2026-11-07.
   the result available without posting a signal. Standard signals
   still coalesce. Cancellation, list I/O, and `SIGEV_THREAD` remain
   open, so the complete POSIX AIO option is still unavailable.
+  Queued delivery is extended by [Real-time signals](#real-time-signals-2026-11-17).
 - [POSIX.1-2001 asynchronous reads](https://www.gaertner.de/~neitzel/susv3/functions/aio_read.html)
   and [signal generation](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_04.html).
 
