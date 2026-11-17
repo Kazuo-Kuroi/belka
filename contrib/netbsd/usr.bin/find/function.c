@@ -3,6 +3,7 @@
 /*-
  * Copyright (c) 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
+ * Portions Copyright 2026 Setsuna Software L.C.
  *
  * This code is derived from software contributed to Berkeley by
  * Cimarron D. Taylor of the University of California, Berkeley.
@@ -1099,6 +1100,9 @@ f_fstype(PLAN *plan, FTSENT *entry)
 		 * always copy both of them.
 		 */
 		val = sb.f_flag;
+#ifdef BELKA_ALL_LOCAL	/* Belka: every file system is local */
+		val |= MNT_LOCAL;
+#endif
 		strlcpy(fstype, sb.f_fstypename, sizeof(fstype));
 	}
 	switch (plan->flags) {
