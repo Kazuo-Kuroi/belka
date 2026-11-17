@@ -279,10 +279,30 @@ status date 0 date -u +%Y
 status sleep 0 sleep 1
 status who 0 who
 
-# Pagers preserve their input when used in pipelines.
+# Archive round trips preserve names, bytes, symlinks, and hard links.
+mkdir archive-src archive-out archive-pax archive-cpio
+printf 'archive-data\n' > archive-src/file
+ln archive-src/file archive-src/hard
+ln -s file archive-src/link
+mkfifo archive-src/fifo
+status "tar create" 0 tar -cf test.tar archive-src
+status "tar extract" 0 sh -c 'cd archive-out && tar -xf ../test.tar'
+status "tar bytes" 0 cmp archive-src/file archive-out/archive-src/file
+check "tar symlink" file readlink archive-out/archive-src/link
+check "tar hard links" 2 stat -f %l archive-out/archive-src/file
+check "tar fifo" prw-r--r-- stat -f %Sp archive-out/archive-src/fifo
+status "pax create" 0 pax -w -x ustar -f test.pax archive-src
+status "pax extract" 0 sh -c 'cd archive-pax && pax -r -f ../test.pax'
+status "pax bytes" 0 cmp archive-src/file archive-pax/archive-src/file
+status "pax copy" 0 pax -r -w archive-src archive-cpio
+status "pax copy bytes" 0 cmp archive-src/file archive-cpio/archive-src/file
+status "cpio create" 0 sh -c 'printf "archive-src/file\n" | cpio -o > test.cpio'
+status "cpio extract" 0 sh -c 'cd archive-cpio && cpio -i < ../test.cpio'
+status "archive truncated input" 1 sh -c 'printf bad | tar -tf - >/dev/null 2>&1'
+
+# Pager output is usable in pipelines, and mandoc indexes installed pages.
 check "less pipe" pager-pipe sh -c 'printf "pager-pipe\n" | less'
 check "more pipe" pager-pipe sh -c 'printf "pager-pipe\n" | more'
-
 status "mandoc man macro" 0 sh -c 'mandoc -Tascii /usr/share/man/man1/less.1 > formatted'
 status "mandoc output" 0 grep -q LESS formatted
 status "mandoc mdoc macro" 0 sh -c 'mandoc -Tascii /usr/share/man/man1/stty.1 > formatted'

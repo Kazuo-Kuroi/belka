@@ -106,3 +106,12 @@ strunvis(char *dst, const char *src)
         *d = '\0';
         return (int)(d - dst);
 }
+
+
+/* Single-byte interface used when pax lists names on a terminal. */
+char *
+vis(char *dst, int c, int flags, int nextc)
+{
+        (void)nextc;
+        return dst + vis1(dst, (unsigned char)c, flags);
+}

@@ -1935,6 +1935,22 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
 - Boot tests cover man and mdoc formatting, UTF-8, indexed and unindexed
   lookup, and apropos and whatis searches. less is the default pager.
 
+## Archive utilities (2026-11-17)
+
+- NetBSD's pax supplies /bin/pax, /bin/tar, and /bin/cpio from one
+  executable, preserving its BSD notices. The import uses the same
+  netbsd-10 revision recorded in contrib/netbsd/README.belka.
+- SMALL excludes mtree specification input and alternate account
+  databases. Archive ownership uses the system passwd and group files.
+  Compression options invoke external compression programs.
+- The Belka adapters supply account-name lookups, default signal
+  re-raising, and no-follow mode changes. Symlink modes have no
+  representation on Belka; ordinary files are chmodded without
+  following links. Terminal filename listings use the existing vis
+  encoding through its single-character interface.
+- Boot tests exercise tar, ustar pax, pax copy mode, cpio, payload
+  integrity, hard links, symlinks, FIFOs, and malformed input.
+
 ## File systems
 
 1. **tmpfs**, for testing.

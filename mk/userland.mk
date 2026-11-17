@@ -491,6 +491,21 @@ $(SYS_DIR)/$(1): $(patsubst %,$(SYS_OBJ)/$(1)/%.o,$(call tool_srcs,$(1))) \
 endef
 $(foreach t,$(FILE_TOOLS),$(eval $(call file_tool,$(t))))
 
+# NetBSD pax, with its tar and cpio command-line interfaces.
+PAX_SRCS        := ar_io ar_subs buf_subs file_subs ftree gen_subs getoldopt \
+                   options pat_rep pax sel_subs tables tar tty_subs cpio
+PAX_OBJS        := $(addprefix $(SYS_OBJ)/pax/,$(addsuffix .o,$(PAX_SRCS)))
+
+$(SYS_OBJ)/pax/%.o: $(NB)/bin/pax/%.c $(wildcard $(NB)/bin/pax/*.h) \
+                   $(wildcard usr/lib/compat/pax/*.h) $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DSMALL -DHAVE_NBTOOL_CONFIG_H=1 \
+	    -DHAVE_LUTIMES=1 -Iusr/lib/compat/pax \
+	    -include usr/lib/compat/pax/config.h -c -o $@ $<
+
+$(SYS_DIR)/pax: $(PAX_OBJS) $(SYS_OBJ)/usr/lib/compat/pax/compat.o $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(PAX_OBJS) $(SYS_OBJ)/usr/lib/compat/pax/compat.o)
+
 # zlib is mandoc's dependency for compressed manual pages.
 ZLIB            := contrib/zlib
 ZLIB_SRCS       := adler32 crc32 deflate infback inffast inflate inftrees \
@@ -582,7 +597,7 @@ $(SYS_OBJ)/stat/stat.o: TOOL_XFLAGS := -DHAVE_NBTOOL_CONFIG_H=1
 $(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
 
 TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS) \
-                   hostname stty chsh less mandoc)
+                   hostname stty chsh less mandoc pax)
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
@@ -663,6 +678,7 @@ ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
                    contrib/tcsh/Copyright contrib/tcsh/NOTICE \
                    contrib/netbsd/bin/stty/NOTICE tools/mkroot.sh \
                    $(wildcard contrib/mandoc/*.[1578] contrib/mandoc/NOTICE \
+                   contrib/netbsd/bin/pax/*.1 contrib/netbsd/bin/pax/NOTICE \
                    contrib/netbsd/external/bsd/less/dist/LICENSE \
                    contrib/netbsd/external/bsd/less/dist/less.1 \
                    contrib/zlib/README usr/bin/chsh/chsh.1) \

@@ -32,6 +32,7 @@ The paths are NetBSD's.
     lib/libutil/efun.c, lib/libc/stdlib/reallocarr.c
     lib/libutil/loginx.c, logoutx.c, logwtmpx.c    utmpx and wtmpx records
     bin/ed/                     ed(1); Belka builds it without DES
+    bin/pax/                   pax(1), tar(1), cpio(1), SMALL configuration
     external/bsd/less/dist/     less(1), more(1), using the BSD Less License
     bin/stty/                  stty(1), with System V termios adaptations
     bin/hostname/               hostname(1)
@@ -76,3 +77,14 @@ marked in the file.
 Not imported: NetBSD's bcrypt and its helpers in libcrypt, and
 libcurses's inchstr.c and instr.c, and rcorder, which carry a
 four-clause licence with an advertising clause.
+
+
+Additional utility port details (2026-11-17):
+- stty omits unavailable BSD controls, uses System V baud codes, and
+  restores speeds through the standard termios functions. Its gfmt1
+  parser keeps control-character values hexadecimal.
+- less uses the included BSD-style Less License. Belka's definitions are
+  in usr/lib/compat/less, using POSIX signals and the termcap API.
+- pax builds with SMALL (mtree specification input and alternate user
+  databases omitted), using the system passwd/group files. Belka's shims
+  are in usr/lib/compat/pax. Compression flags invoke external programs.

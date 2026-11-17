@@ -27,6 +27,7 @@
 
 __BEGIN_DECLS
 
+char *vis(char *, int, int, int);
 int strvis(char *, const char *, int);
 int strnvis(char *, size_t, const char *, int);
 int strunvis(char *, const char *);

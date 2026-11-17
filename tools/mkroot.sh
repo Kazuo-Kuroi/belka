@@ -101,6 +101,9 @@ ln "$src/usr/bin/less" "$src/usr/bin/more"
 for name in man apropos whatis makewhatis; do
         ln "$src/usr/bin/mandoc" "$src/usr/bin/$name"
 done
+cp "$sys/pax" "$src/bin/pax"
+ln "$src/bin/pax" "$src/bin/tar"
+ln "$src/bin/pax" "$src/bin/cpio"
 
 mkdir -p "$src/usr/share/man/man1" "$src/usr/share/man/man5" \
     "$src/usr/share/man/man7" "$src/usr/share/man/man8"
@@ -112,7 +115,9 @@ for section in 1 5 7 8; do
                 cp "$page" "$src/usr/share/man/man$section/"
         done
 done
-cp contrib/netbsd/bin/stty/stty.1 "$src/usr/share/man/man1/"
+cp contrib/netbsd/bin/stty/stty.1 contrib/netbsd/bin/pax/pax.1 \
+    contrib/netbsd/bin/pax/tar.1 contrib/netbsd/bin/pax/cpio.1 \
+    "$src/usr/share/man/man1/"
 cp contrib/netbsd/external/bsd/less/dist/less.1 \
     "$src/usr/share/man/man1/less.1"
 ln "$src/usr/share/man/man1/less.1" "$src/usr/share/man/man1/more.1"
@@ -124,12 +129,13 @@ sed -e 's/@PACKAGE_VERSION@/6.24.16/g' \
     > "$src/usr/share/man/man1/tcsh.1"
 cp usr/bin/chsh/chsh.1 "$src/usr/share/man/man1/"
 
-for name in less mandoc zlib; do
+for name in less mandoc pax zlib; do
         mkdir -p "$src/usr/share/licenses/$name"
 done
 cp contrib/netbsd/external/bsd/less/dist/LICENSE \
     "$src/usr/share/licenses/less/"
 cp contrib/mandoc/LICENSE contrib/mandoc/NOTICE "$src/usr/share/licenses/mandoc/"
+cp contrib/netbsd/bin/pax/NOTICE "$src/usr/share/licenses/pax/"
 cp contrib/zlib/README "$src/usr/share/licenses/zlib/"
 
 cp usr/bin/clear/clear.sh "$src/usr/bin/clear"
