@@ -1868,6 +1868,24 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
   the notification and retries if the receiving queue is full.
 - [POSIX.1-2001 signal generation and delivery](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_04.html).
 
+## tcsh interactive shell (2026-11-17)
+
+- tcsh 6.24.16 is imported from the upstream release with its notices
+  retained. Its archive checksum and the local patch are recorded in
+  `contrib/tcsh/README.belka`.
+- The GNU make build cross-compiles an 8-bit shell against mlibc and
+  the NetBSD terminfo termcap interface. Target configuration lives in
+  `usr/lib/compat/tcsh`. Generated declarations use the target
+  preprocessor and host text tools.
+- The root image installs `/bin/tcsh`, registers it in `/etc/shells`,
+  and includes its licence notices in `/usr/share/licenses/tcsh`.
+  mksh serves init, rc, and the initial login shell. Users can start
+  tcsh explicitly.
+- The console test covers version reporting, history recall, pathname
+  completion, suspend, foreground resume, interruption, and returning
+  to the login shell. tcsh selects `wait4` for child resource accounting.
+- [Upstream tcsh release](https://astron.com/pub/tcsh/tcsh-6.24.16.tar.gz).
+
 ## File systems
 
 1. **tmpfs**, for testing.

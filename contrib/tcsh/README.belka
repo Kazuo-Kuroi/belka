@@ -1,0 +1,16 @@
+Selected tcsh 6.24.16 source files from the upstream release.
+The upstream notices are retained, including Copyright.
+
+Source: https://astron.com/pub/tcsh/tcsh-6.24.16.tar.gz
+SHA-256: 4208cf4630fb64d91d81987f854f9570a5a0e8a001a92827def37d0ed8f37364
+
+Belka's build configuration and platform definitions live in
+usr/lib/compat/tcsh. mk/userland.mk builds the shell against mlibc and
+the NetBSD terminfo compatibility library.
+
+The sh.proc.c wait4 selection also accepts HAVE_WAIT4. Belka selects
+this path because mlibc's wait3 discards resource accounting while wait4
+supports the waitsys accounting interface. Local sessions are configured
+without REMOTEHOST lookup.
+
+NOTICE collects the source redistribution notices for the root image.

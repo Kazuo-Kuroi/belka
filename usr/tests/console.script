@@ -53,6 +53,34 @@ send \x03
 send echo "done-$((1 + 1))"\r
 expect done-2
 
+# tcsh is available from the mksh login shell. Exercise history, file
+# completion, and terminal job control on the same console.
+send /bin/tcsh -f\r
+sleep 500
+send set prompt = 'tcsh-test% '\r
+expect tcsh-test%\x20
+send echo tcsh-version-$version\r
+expect tcsh-version-tcsh\x206.24.16
+send echo tcsh-history-`echo 24`\r
+expect tcsh-history-24
+send \x10\r
+expect tcsh-history-24
+send touch /tmp/tcsh-completion-target\r
+send echo /tmp/tcsh-completion-t\x09\r
+expect \r\n/tmp/tcsh-completion-target
+send /bin/sleep 30\r
+sleep 1000
+send \x1a
+expect Suspended
+send fg\r
+expect /bin/sleep 30
+sleep 500
+send \x03
+send echo tcsh-interrupt-$status\r
+expect tcsh-interrupt-1
+send exit\r
+expect #\x20
+
 # Out, and in again: init starts a new getty.
 send exit\r
 expect login:\x20 15000

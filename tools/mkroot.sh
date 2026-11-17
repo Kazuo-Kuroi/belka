@@ -64,6 +64,9 @@ ln "$src/sbin/mount" "$src/sbin/umount"
 install_prog getty usr/libexec/getty
 install_prog login usr/bin/login
 install_prog mksh bin/mksh
+install_prog tcsh bin/tcsh
+mkdir -p "$src/usr/share/licenses/tcsh"
+cp contrib/tcsh/Copyright contrib/tcsh/NOTICE "$src/usr/share/licenses/tcsh/"
 ln "$src/bin/mksh" "$src/bin/sh"
 
 # The utilities (ksenon-utils): cp and ln are mv, chgrp is chown, [ is

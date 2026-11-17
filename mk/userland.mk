@@ -216,6 +216,50 @@ TI_SRCS         := compile curterm setupterm term termcap ti tparm tputs
 TI_LIB          := $(SYS_DIR)/libterminfo.a
 TI_HDRS         := $(wildcard $(TI)/*.h usr/lib/compat/terminfo/*)
 
+# tcsh uses libterminfo's termcap interface. Its custom printf accepts
+# %S for short strings, so GCC's standard printf format checks do not apply.
+TCSH            := contrib/tcsh
+TCSH_PORT       := usr/lib/compat/tcsh
+TCSH_OBJ        := $(SYS_OBJ)/tcsh
+TCSH_SRCS       := sh sh.dir sh.dol sh.err sh.exec sh.char sh.exp sh.file \
+                   sh.func sh.glob sh.hist sh.init sh.lex sh.misc sh.parse \
+                   sh.print sh.proc sh.sem sh.set sh.time glob dotlock \
+                   mi.termios tw.help tw.init tw.parse tw.spell tw.comp \
+                   tw.color ed.chared ed.refresh ed.screen ed.init \
+                   ed.inputl ed.defns ed.xmap ed.term tc.alloc tc.bind \
+                   tc.const tc.disc tc.func tc.nls tc.os tc.printf \
+                   tc.prompt tc.sched tc.sig tc.str tc.vers tc.who
+TCSH_OBJS       := $(addprefix $(TCSH_OBJ)/,$(addsuffix .o,$(TCSH_SRCS)) machine.o)
+TCSH_CFLAGS     := $(IMPORT_CFLAGS) -I$(TCSH_OBJ) -I$(TCSH_PORT) -I$(TCSH) \
+                   -I$(TI) -Iusr/lib/compat/terminfo -Wno-format
+TCSH_HDRS       := $(wildcard $(TCSH)/*.h $(TCSH_PORT)/*.h) $(TI_HDRS)
+TCSH_GEN        := $(addprefix $(TCSH_OBJ)/,ed.defns.h sh.err.h tc.const.h)
+
+$(TCSH_OBJ)/ed.defns.h: $(TCSH)/ed.defns.c
+	@mkdir -p $(dir $@)
+	LC_ALL=C awk '/^#define/ && /[FV]_/' $< > $@.tmp && mv $@.tmp $@
+
+$(TCSH_OBJ)/sh.err.h: $(TCSH)/sh.err.c
+	@mkdir -p $(dir $@)
+	LC_ALL=C awk '/^#define/ && /ERR_/' $< > $@.tmp && mv $@.tmp $@
+
+$(TCSH_OBJ)/tc.const.h: $(TCSH)/tc.const.c $(TCSH_HDRS) $(MLIBC) \
+                       $(TCSH_OBJ)/ed.defns.h $(TCSH_OBJ)/sh.err.h
+	$(LIBC_CC) $(TCSH_CFLAGS) -E -D_h_tc_const $< > $@.i
+	LC_ALL=C sed -n 's/^\(Char STR[a-zA-Z0-9_]*\) *\[ *\].*/extern \1[];/p' \
+	    $@.i | LC_ALL=C sort -u > $@.tmp
+	test -s $@.tmp && mv $@.tmp $@
+	rm -f $@.i
+
+$(TCSH_OBJ)/%.o: $(TCSH)/%.c $(TCSH_HDRS) $(TCSH_GEN)
+	$(LIBC_CC) $(TCSH_CFLAGS) -c -o $@ $<
+
+$(TCSH_OBJ)/machine.o: $(TCSH_PORT)/machine.c $(TCSH_HDRS) $(TCSH_GEN)
+	$(LIBC_CC) $(TCSH_CFLAGS) -c -o $@ $<
+
+$(SYS_DIR)/tcsh: $(TCSH_OBJS) $(TI_LIB) $(SYS_DEPS)
+	$(call SYS_LINK,$(TCSH_OBJS) $(TI_LIB))
+
 $(TI_OBJ)/hash.c: $(TI)/term.h tools/terminfo-hash.awk
 	@mkdir -p $(dir $@)
 	LC_ALL=C awk -f tools/terminfo-hash.awk $(TI)/term.h > $@.tmp && \
@@ -465,7 +509,7 @@ TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
 
 SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mount rcorder \
-                   mksh)
+                   mksh tcsh)
 
 sys-progs: $(SYS_PROGS)
 
@@ -537,7 +581,7 @@ ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
                    $(LIBC_SOS) usr/bin/clear/clear.sh \
                    contrib/netbsd/share/terminfo/terminfo \
-                   tools/mkroot.sh \
+                   contrib/tcsh/Copyright contrib/tcsh/NOTICE tools/mkroot.sh \
                    $(wildcard etc/* etc/defaults/* etc/rc.d/* \
                    contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 
