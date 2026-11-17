@@ -151,6 +151,9 @@ status "umount tmpfs" 0 umount /mnt
 status "mount no type" 1 mount swap /mnt
 status "mount not a disk" 1 mount -F ext2fs /dev/null /mnt
 
+# su: root becomes anyone without a password.
+check "su as root" "test" su test -c 'id -un'
+
 # rcorder: PROVIDE, REQUIRE, BEFORE and KEYWORD, as /etc/rc uses them.
 mkdir rco
 printf '# PROVIDE: c\n# REQUIRE: b\n' > rco/c

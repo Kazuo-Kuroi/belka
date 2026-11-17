@@ -87,7 +87,7 @@ ln "$src/bin/test" "$src/bin/["
 cp "$sys/ps" "$src/bin/ps"            # dynamic: not stripped
 # terminfo: the programs, the descriptions' source (/etc/rc compiles
 # the database), and ed.
-for prog in tic infocmp tput passwd; do
+for prog in tic infocmp tput passwd su; do
         cp "$sys/$prog" "$src/usr/bin/$prog"    # dynamic: not stripped
 done
 cp usr/bin/clear/clear.sh "$src/usr/bin/clear"
@@ -147,6 +147,10 @@ if [ $test -eq 1 ]; then
         echo "test:x:100:100:Boot test:/home/test:/bin/sh" \
             >> "$src/etc/passwd"
         echo "test:$hash:$(($(date +%s) / 86400))::::::" >> "$src/etc/shadow"
+        # A second user with the same password, for su's check of one.
+        echo "test2:x:101:100:Boot test 2:/home/test:/bin/sh" \
+            >> "$src/etc/passwd"
+        echo "test2:$hash:$(($(date +%s) / 86400))::::::" >> "$src/etc/shadow"
         mkdir -p "$src/home/test"
         cat > "$src/etc/rc.local" <<'EOF'
 # The boot test: in the background, so that init goes on to multi-user.
@@ -161,7 +165,8 @@ $FAKEROOT sh -c '
         chown -R 0:0 "$src"
         chmod 0755 "$src"/bin/* "$src"/sbin/* "$src"/usr/libexec/* \
             "$src"/usr/bin/* "$src"/etc/rc.d/*
-        chmod 4555 "$src/usr/bin/login" "$src/usr/bin/passwd"
+        chmod 4555 "$src/usr/bin/login" "$src/usr/bin/passwd" \
+            "$src/usr/bin/su"
         chmod 0400 "$src/etc/shadow"
         chmod 1777 "$src/tmp" "$src/var/tmp" "$src/var/tmp/vi.recover"
         chmod 0700 "$src/root"

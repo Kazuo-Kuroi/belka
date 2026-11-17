@@ -381,6 +381,18 @@ $(SYS_OBJ)/passwd.o: usr/bin/passwd/passwd.c $(MLIBC)
 $(SYS_DIR)/passwd: $(SYS_OBJ)/passwd.o $(SYS_DYNDEPS)
 	$(call SYS_DYNLINK,$<)
 
+# su: NetBSD's, without PAM, login classes, Kerberos or S/Key, and so
+# without changing groups (ALLOW_GROUP_CHANGE); the hash from
+# /etc/shadow. Only those in group wheel may become root, as in NetBSD.
+# Set-user-ID root.
+SU_OBJS         := $(SYS_OBJ)/su/su.o $(SYS_OBJ)/su/suutil.o
+$(SYS_OBJ)/su/%.o: $(NB)/usr.bin/su/%.c $(NB)/usr.bin/su/suutil.h \
+                $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DBELKA_SHADOW -c -o $@ $<
+$(SYS_DIR)/su: $(SU_OBJS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(SU_OBJS))
+
 # sed, grep and awk: NetBSD's, linked dynamically. grep has no gzip,
 # bzip2 or message catalogues; egrep and fgrep are links to it. awk is
 # the One True AWK, with the parser its dist ships (ytab.c, proctab.c),
@@ -441,7 +453,7 @@ $(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
 TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS))
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
-                   $(SYS_DIR)/passwd $(TEXT_PROGS)
+                   $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
 
 SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mount rcorder \
                    mksh)

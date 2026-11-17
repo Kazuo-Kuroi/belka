@@ -352,3 +352,18 @@ strmode(mode_t mode, char *buf)
         *p++ = ' ';
         *p = '\0';
 }
+
+/*
+ * consttime_memequal: whether the n bytes at a and b are the same (1)
+ * or not (0), taking as long whatever they are, for comparing secrets.
+ */
+int
+consttime_memequal(const void *a, const void *b, size_t n)
+{
+        const volatile unsigned char *p = a, *q = b;
+        unsigned char diff = 0;
+
+        for (size_t i = 0; i < n; i++)
+                diff |= p[i] ^ q[i];
+        return diff == 0;
+}

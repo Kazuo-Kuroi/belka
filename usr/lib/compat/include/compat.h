@@ -215,6 +215,7 @@ char *crypt(const char *, const char *);
 
 /* <string.h> */
 void *explicit_memset(void *, int, size_t);
+int consttime_memequal(const void *, const void *, size_t);
 
 /* <err.h> */
 void errc(int, int, const char *, ...) __attribute__((__noreturn__));

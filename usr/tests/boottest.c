@@ -452,6 +452,21 @@ test_login(const char *user, const char *password, const char *uid,
         /* /etc/shadow is closed to the user. */
         say(m, "cat /etc/shadow\n");
         CHECK(expect(m, "/etc/shadow: Access denied", 5000));
+        /*
+         * su: the user is not in group wheel, so may not become root; may
+         * become test2 with its password, not with a wrong one.
+         */
+        say(m, "su root -c true\n");
+        CHECK(expect(m, "correct secondary group (wheel)", 5000));
+        say(m, "su test2 -c \"echo '<'\\$(id -un)'>'\"\n");
+        CHECK(expect(m, "Password:", 5000));
+        snprintf(line, sizeof(line), "%s\n", password);
+        say(m, line);
+        CHECK(expect(m, "<test2>", 10000));
+        say(m, "su test2 -c true\n");
+        CHECK(expect(m, "Password:", 5000));
+        say(m, "not-the-password\n");
+        CHECK(expect(m, "Sorry", 10000));
         /* So is mount. */
         say(m, "/sbin/mount /dev/vd1 /mnt\n");
         CHECK(expect(m, "only the superuser may mount", 5000));
