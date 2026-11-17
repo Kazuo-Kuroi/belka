@@ -10,6 +10,7 @@ The paths are NetBSD's.
 
     sbin/init/                  init(8)
     usr.bin/login/              login(1), without PAM (login.c, common.c)
+    usr.bin/su/                 su(1), without PAM (su.c, suutil.c)
     include/ttyent.h            )
     lib/libc/gen/getttyent.c    ) /etc/ttys, for init and login
     lib/libc/stdio/fparseln.c   )
