@@ -36,6 +36,7 @@ The paths are NetBSD's.
     external/bsd/less/dist/     less(1), more(1), using the BSD Less License
     bin/stty/                  stty(1), with System V termios adaptations
     bin/hostname/               hostname(1)
+    usr.bin/gzip/              gzip(1), gunzip, gzcat, zcat, over zlib
     usr.bin/sed/                sed(1)
     usr.bin/grep/               grep(1), egrep, fgrep; without NLS catalogues
     external/historical/nawk/dist/   awk(1): the One True AWK, with its
