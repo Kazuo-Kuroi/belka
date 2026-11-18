@@ -204,6 +204,15 @@ test_files(void)
                 fclose(f);
         }
         CHECK(stat(path("/libctest.tmp"), &st) == 0 && st.st_size == 8895);
+        f = fopen(path("/libctest.tmp"), "r");
+        CHECK(f != NULL);
+        if (f != NULL) {
+                fd = fileno(f);
+                CHECK(freopen(path("/libctest.tmp"), "r", f) == f);
+                CHECK(fileno(f) == fd);
+                CHECK(read(fd, line, 4) == 4 && memcmp(line, "line", 4) == 0);
+                CHECK(fclose(f) == 0);
+        }
         CHECK(rename(path("/libctest.tmp"), path("/libctest.mv")) == 0);
         CHECK(unlink(path("/libctest.mv")) == 0);
         CHECK(unlink(path("/libctest.mv")) == -1 && errno == ENOENT);
