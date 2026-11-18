@@ -1965,6 +1965,19 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
   checking, truncation, refusal to overwrite, metadata preservation,
   tar -z round trips, and compressed mandoc input.
 
+## Source comparison and patches (2026-11-17)
+
+- NetBSD's newer BSD diff and netbsd-10 patch provide /usr/bin/diff and
+  /usr/bin/patch. The diff revision is recorded in its README.belka,
+  because netbsd-10 used GNU diffutils. The individual BSD licences
+  and notices, including Caldera's advertising clause, are retained.
+- patch uses POSIX.1-2001 posix_madvise and derives directory-name
+  lengths from d_name. It runs over the existing regex and compat
+  library.
+- Boot tests cover diff statuses, unified and recursive diffs, applying
+  and reversing patches, dry runs, path stripping, rejected hunks,
+  and preservation of an unmatched file.
+
 ## File systems
 
 1. **tmpfs**, for testing.

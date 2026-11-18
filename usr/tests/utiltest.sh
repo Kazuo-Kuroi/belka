@@ -333,6 +333,30 @@ status "tar gzip bytes" 0 cmp archive-src/file gzip-tar-out/archive-src/file
 status "mandoc gzip input" 0 sh -c 'gzip -n -c /usr/share/man/man1/stty.1 > stty.1.gz && mandoc -Tascii stty.1.gz > formatted'
 status "mandoc gzip content" 0 grep -q STTY formatted
 
+# NetBSD diff/patch produce and apply source changes in both directions.
+printf 'one\ntwo\nthree\n' > diff-old
+printf 'one\nTWO\nthree\nfour\n' > diff-new
+status "diff same" 0 diff diff-old diff-old
+status "diff differs" 1 sh -c 'diff -u diff-old diff-new > changes.diff'
+status "diff missing input" 2 diff diff-missing diff-new
+cp diff-old patch-target
+status "patch unified" 0 patch patch-target changes.diff
+status "patch bytes" 0 cmp patch-target diff-new
+status "patch reverse" 0 patch -R patch-target changes.diff
+status "patch reverse bytes" 0 cmp patch-target diff-old
+status "patch dry run" 0 patch -C patch-target changes.diff
+status "patch dry run bytes" 0 cmp patch-target diff-old
+mkdir diff-tree-old diff-tree-new patch-tree
+cp diff-old diff-tree-old/file
+cp diff-new diff-tree-new/file
+cp diff-old patch-tree/file
+status "diff recursive" 1 sh -c 'diff -ru diff-tree-old diff-tree-new > tree.diff'
+status "patch directory strip" 0 sh -c 'cd patch-tree && patch -p1 < ../tree.diff'
+status "patch directory bytes" 0 cmp patch-tree/file diff-new
+status "patch mismatch" 1 sh -c 'printf "unrelated\n" > mismatch && patch -f mismatch changes.diff'
+check "patch mismatch preserved" unrelated cat mismatch
+status "patch rejects" 0 test -s mismatch.rej
+
 # Pager output is usable in pipelines, and mandoc indexes installed pages.
 check "less pipe" pager-pipe sh -c 'printf "pager-pipe\n" | less'
 check "more pipe" pager-pipe sh -c 'printf "pager-pipe\n" | more'

@@ -36,6 +36,7 @@ The paths are NetBSD's.
     external/bsd/less/dist/     less(1), more(1), using the BSD Less License
     bin/stty/                  stty(1), with System V termios adaptations
     bin/hostname/               hostname(1)
+    usr.bin/patch/             patch(1), with POSIX madvise and dirent adaptations
     usr.bin/gzip/              gzip(1), gunzip, gzcat, zcat, over zlib
     usr.bin/sed/                sed(1)
     usr.bin/grep/               grep(1), egrep, fgrep; without NLS catalogues
@@ -89,3 +90,9 @@ Additional utility port details (2026-11-17):
 - pax builds with SMALL (mtree specification input and alternate user
   databases omitted), using the system passwd/group files. Belka's shims
   are in usr/lib/compat/pax. Compression flags invoke external programs.
+
+
+usr.bin/diff is from a newer pinned NetBSD revision, recorded in its
+README.belka, to use NetBSD's BSD diff implementation. Its notices
+include Caldera's four-clause BSD licence and the University of
+California's licence. They are retained in the sources and NOTICE.

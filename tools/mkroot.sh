@@ -135,12 +135,13 @@ sed -e 's/@PACKAGE_VERSION@/6.24.16/g' \
     -e 's|@PACKAGE_MAILLIST@|https://www.tcsh.org/|g' contrib/tcsh/tcsh.man.in \
     > "$src/usr/share/man/man1/tcsh.1"
 cp usr/bin/chsh/chsh.1 contrib/netbsd/usr.bin/gzip/gzip.1 \
+    contrib/netbsd/usr.bin/diff/diff.1 contrib/netbsd/usr.bin/patch/patch.1 \
     "$src/usr/share/man/man1/"
 for name in gunzip gzcat zcat; do
         ln "$src/usr/share/man/man1/gzip.1" "$src/usr/share/man/man1/$name.1"
 done
 
-for name in less mandoc pax zlib; do
+for name in less mandoc pax zlib diff patch; do
         mkdir -p "$src/usr/share/licenses/$name"
 done
 cp contrib/netbsd/external/bsd/less/dist/LICENSE \
@@ -148,10 +149,12 @@ cp contrib/netbsd/external/bsd/less/dist/LICENSE \
 cp contrib/mandoc/LICENSE contrib/mandoc/NOTICE "$src/usr/share/licenses/mandoc/"
 cp contrib/netbsd/bin/pax/NOTICE "$src/usr/share/licenses/pax/"
 cp contrib/zlib/README "$src/usr/share/licenses/zlib/"
+cp contrib/netbsd/usr.bin/diff/NOTICE "$src/usr/share/licenses/diff/"
+cp contrib/netbsd/usr.bin/patch/NOTICE "$src/usr/share/licenses/patch/"
 
 cp usr/bin/clear/clear.sh "$src/usr/bin/clear"
 # sed, grep and awk (NetBSD's); egrep and fgrep are grep.
-for prog in sed grep awk; do
+for prog in sed grep awk diff patch; do
         cp "$sys/$prog" "$src/usr/bin/$prog"
 done
 ln "$src/usr/bin/grep" "$src/usr/bin/egrep"

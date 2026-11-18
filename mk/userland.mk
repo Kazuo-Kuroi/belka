@@ -491,6 +491,26 @@ $(SYS_DIR)/$(1): $(patsubst %,$(SYS_OBJ)/$(1)/%.o,$(call tool_srcs,$(1))) \
 endef
 $(foreach t,$(FILE_TOOLS),$(eval $(call file_tool,$(t))))
 
+# NetBSD's BSD diff and patch.
+DIFF_SRCS       := diff diffdir diffreg xmalloc pr
+PATCH_SRCS      := patch pch inp util backupfile mkpath
+
+$(SYS_OBJ)/diff/%.o: $(NB)/usr.bin/diff/%.c $(wildcard $(NB)/usr.bin/diff/*.h) \
+                    $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -c -o $@ $<
+
+$(SYS_OBJ)/patch/%.o: $(NB)/usr.bin/patch/%.c $(wildcard $(NB)/usr.bin/patch/*.h) \
+                     $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -c -o $@ $<
+
+$(SYS_DIR)/diff: $(addprefix $(SYS_OBJ)/diff/,$(addsuffix .o,$(DIFF_SRCS))) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(filter $(SYS_OBJ)/diff/%.o,$^))
+
+$(SYS_DIR)/patch: $(addprefix $(SYS_OBJ)/patch/,$(addsuffix .o,$(PATCH_SRCS))) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(filter $(SYS_OBJ)/patch/%.o,$^))
+
 # NetBSD pax, with its tar and cpio command-line interfaces.
 PAX_SRCS        := ar_io ar_subs buf_subs file_subs ftree gen_subs getoldopt \
                    options pat_rep pax sel_subs tables tar tty_subs cpio
@@ -608,7 +628,7 @@ $(SYS_OBJ)/stat/stat.o: TOOL_XFLAGS := -DHAVE_NBTOOL_CONFIG_H=1
 $(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
 
 TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS) \
-                   hostname stty chsh less mandoc pax gzip)
+                   hostname stty chsh less mandoc pax gzip diff patch)
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
@@ -691,6 +711,8 @@ ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
                    $(wildcard contrib/mandoc/*.[1578] contrib/mandoc/NOTICE \
                    contrib/netbsd/bin/pax/*.1 contrib/netbsd/bin/pax/NOTICE \
                    contrib/netbsd/usr.bin/gzip/gzip.1 contrib/netbsd/usr.bin/gzip/NOTICE \
+                   contrib/netbsd/usr.bin/diff/diff.1 contrib/netbsd/usr.bin/diff/NOTICE \
+                   contrib/netbsd/usr.bin/patch/patch.1 contrib/netbsd/usr.bin/patch/NOTICE \
                    contrib/netbsd/external/bsd/less/dist/LICENSE \
                    contrib/netbsd/external/bsd/less/dist/less.1 \
                    contrib/zlib/README usr/bin/chsh/chsh.1) \

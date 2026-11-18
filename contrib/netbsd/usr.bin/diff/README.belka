@@ -1,0 +1,5 @@
+NetBSD's BSD-licensed diff, from NetBSD/src revision f9b15934110837111a54a68f97c66f770032824e.
+Source: https://github.com/NetBSD/src/tree/f9b15934110837111a54a68f97c66f770032824e/usr.bin/diff
+
+This newer revision supplies the BSD implementation replacing GNU diffutils.
+The original notices and licences are retained.
