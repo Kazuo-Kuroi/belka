@@ -48,7 +48,7 @@ DB_SRCS         := $(DB)/db/db.c $(DB)/db/dbfile.c $(DB)/mpool/mpool.c \
                    rec_get.c rec_open.c rec_put.c rec_search.c rec_seq.c \
                    rec_utils.c)
 
-COMPAT_SRCS     := usr/lib/compat/misc.c usr/lib/compat/signame.c \
+COMPAT_SRCS     := usr/lib/compat/accounts.c usr/lib/compat/misc.c usr/lib/compat/signame.c \
                    usr/lib/compat/lastlogx.c \
                    usr/lib/compat/parsedate.c \
                    $(NB)/lib/libc/gen/setmode.c \
@@ -420,7 +420,7 @@ $(SYS_DIR)/vi: $(patsubst %,$(NVI_OBJ)/%.o,$(NVI_SRCS)) $(CU_LIB) $(TI_LIB) \
 	$(call SYS_DYNLINK,$(filter $(NVI_OBJ)/%.o,$^) $(CU_LIB) $(TI_LIB))
 
 # passwd: Belka's own (usr/bin/passwd), over the compat library's crypt.
-$(SYS_OBJ)/passwd.o: usr/bin/passwd/passwd.c $(MLIBC)
+$(SYS_OBJ)/passwd.o: usr/bin/passwd/passwd.c usr/lib/compat/include/accounts.h $(MLIBC)
 	@mkdir -p $(dir $@)
 	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
 $(SYS_DIR)/passwd: $(SYS_OBJ)/passwd.o $(SYS_DYNDEPS)
@@ -490,6 +490,15 @@ $(SYS_DIR)/$(1): $(patsubst %,$(SYS_OBJ)/$(1)/%.o,$(call tool_srcs,$(1))) \
 	$$(call SYS_DYNLINK,$$(filter $(SYS_OBJ)/%.o,$$^))
 endef
 $(foreach t,$(FILE_TOOLS),$(eval $(call file_tool,$(t))))
+
+# System V text user/group administration and transaction recovery.
+$(SYS_OBJ)/accounts.o: usr/sbin/accounts/accounts.c \
+                       usr/lib/compat/include/accounts.h $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
+
+$(SYS_DIR)/accounts: $(SYS_OBJ)/accounts.o $(SYS_DEPS)
+	$(call SYS_LINK,$(SYS_OBJ)/accounts.o)
 
 # NetBSD's BSD diff and patch.
 DIFF_SRCS       := diff diffdir diffreg xmalloc pr
@@ -596,7 +605,7 @@ $(SYS_DIR)/less: $(LESS_OBJS) $(TI_LIB) $(SYS_DYNDEPS)
 	$(call SYS_DYNLINK,$(LESS_OBJS) $(TI_LIB))
 
 # chsh edits the System V passwd file using the shared password-file lock.
-$(SYS_OBJ)/chsh.o: usr/bin/chsh/chsh.c $(MLIBC)
+$(SYS_OBJ)/chsh.o: usr/bin/chsh/chsh.c usr/lib/compat/include/accounts.h $(MLIBC)
 	@mkdir -p $(dir $@)
 	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
 
@@ -634,7 +643,7 @@ TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
 
 SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mount rcorder \
-                   mksh tcsh)
+                   mksh tcsh accounts)
 
 sys-progs: $(SYS_PROGS)
 
@@ -715,7 +724,7 @@ ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
                    contrib/netbsd/usr.bin/patch/patch.1 contrib/netbsd/usr.bin/patch/NOTICE \
                    contrib/netbsd/external/bsd/less/dist/LICENSE \
                    contrib/netbsd/external/bsd/less/dist/less.1 \
-                   contrib/zlib/README usr/bin/chsh/chsh.1) \
+                   contrib/zlib/README usr/bin/chsh/chsh.1 usr/sbin/accounts/accounts.8) \
                    $(wildcard etc/* etc/defaults/* etc/rc.d/* \
                    contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 

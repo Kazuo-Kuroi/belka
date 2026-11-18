@@ -1,0 +1,136 @@
+.\" Copyright (c) 2026 Setsuna Software L.C.
+.\" Created: 2026-11-17
+.\" SPDX-License-Identifier: MIT
+.Dd November 17, 2026
+.Dt USERADD 8
+.Os Belka
+.Sh NAME
+.Nm useradd ,
+.Nm usermod ,
+.Nm userdel ,
+.Nm groupadd ,
+.Nm groupmod ,
+.Nm groupdel ,
+.Nm acctrecover
+.Nd administer local text user and group accounts
+.Sh SYNOPSIS
+.Nm useradd
+.Op Fl m
+.Op Fl u Ar uid
+.Op Fl g Ar group
+.Op Fl G Ar groups
+.Op Fl d Ar home
+.Op Fl s Ar shell
+.Op Fl c Ar comment
+.Ar name
+.Nm usermod
+.Op Fl u Ar uid
+.Op Fl g Ar group
+.Op Fl G Ar groups
+.Op Fl d Ar home
+.Op Fl s Ar shell
+.Op Fl c Ar comment
+.Op Fl l Ar login
+.Ar name
+.Nm userdel
+.Ar name
+.Nm groupadd
+.Op Fl g Ar gid
+.Ar name
+.Nm groupmod
+.Op Fl g Ar gid
+.Op Fl n Ar name
+.Ar group
+.Nm groupdel
+.Ar group
+.Nm acctrecover
+.Sh DESCRIPTION
+These commands allow the superuser to maintain the local
+.Pa /etc/passwd ,
+.Pa /etc/shadow ,
+and
+.Pa /etc/group
+files.
+They share the password-file lock with
+.Xr passwd 1
+and
+.Xr chsh 1 .
+.Pp
+.Nm useradd
+creates a password-locked account with group
+.Dq users ,
+home
+.Pa /home/name ,
+and shell
+.Pa /bin/sh
+by default.
+Use
+.Xr passwd 1
+to set the initial password.
+Automatic user and group identifiers are selected from unused values
+in the range 1000 through 59999.
+.Pp
+The options have the following meanings:
+.Bl -tag -width "-G groups"
+.It Fl u Ar uid
+Set a unique numeric user identifier.
+.It Fl g Ar group
+For user commands, select an existing primary group by name or number.
+For group commands, set a unique numeric group identifier.
+.It Fl G Ar groups
+Set supplementary groups from a comma-separated list of group names or numbers.
+An empty list clears supplementary membership.
+.It Fl d Ar home
+Set an absolute home directory path.
+.It Fl s Ar shell
+Set an absolute path to an executable shell.
+.It Fl c Ar comment
+Set the account comment.
+.It Fl m
+Create the home directory for a new user and assign its ownership.
+An existing directory is used as supplied.
+.It Fl l Ar login
+Rename a user, updating shadow and supplementary membership.
+.It Fl n Ar name
+Rename a group.
+.El
+.Pp
+.Nm usermod
+changes the specified account fields.
+Identifier and home changes update the account records.
+File ownership and home contents are administered separately with
+.Xr chown 1
+and file utilities.
+.Nm groupmod
+also updates users whose primary group has the old numeric identifier.
+.Nm groupdel
+refuses to remove a primary group.
+.Nm userdel
+removes the account, shadow record, and supplementary memberships.
+Home contents can be removed separately with
+.Xr rm 1 .
+.Pp
+Names begin with a letter or underscore and contain letters, digits,
+underscores, dots, or hyphens.
+Names must be shorter than LOGIN_NAME_MAX.
+Numeric identifiers range from zero through INT_MAX, matching the
+current libc account parser.
+Passwd records must fit within the libc record buffer.
+The supplementary group limit is obtained through sysconf.
+.Sh RECOVERY
+Updates stage all three files in the root-only
+.Pa /etc/.accttxn
+directory.
+A ready marker records complete, synced backups and replacements before
+publication.
+A committed marker records successful publication of all three files.
+.Pp
+.Nm acctrecover
+rolls back an interrupted update or removes a completed transaction's backups.
+It runs at boot before services, and every account-file writer performs
+recovery when acquiring the shared lock.
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr chsh 1 ,
+.Xr passwd 1

@@ -474,6 +474,10 @@ test_login(const char *user, const char *password, const char *uid,
         /* So is mount. */
         say(m, "/sbin/mount /dev/vd1 /mnt\n");
         CHECK(expect(m, "only the superuser may mount", 5000));
+        say(m, "/usr/sbin/useradd unauthorized-account\n");
+        CHECK(expect(m, "only the superuser", 5000));
+        say(m, "/usr/sbin/groupadd unauthorized-group\n");
+        CHECK(expect(m, "only the superuser", 5000));
         /* chsh enforces ownership, listed shells, and authentication. */
         struct stat passwd_before;
 

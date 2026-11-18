@@ -47,7 +47,7 @@ STRIP=${STRIP:-strip}
 src=$(mktemp -d)
 trap 'rm -rf "$src"' EXIT
 
-mkdir -p "$src/bin" "$src/sbin" "$src/mnt" "$src/usr/bin" "$src/usr/libexec" \
+mkdir -p "$src/bin" "$src/sbin" "$src/mnt" "$src/usr/bin" "$src/usr/sbin" "$src/usr/libexec" \
     "$src/usr/tests" "$src/usr/lib64" "$src/etc/defaults" "$src/dev" \
     "$src/proc" "$src/tmp" "$src/root" "$src/home" "$src/var/adm" \
     "$src/var/tmp"
@@ -55,6 +55,10 @@ mkdir -p "$src/bin" "$src/sbin" "$src/mnt" "$src/usr/bin" "$src/usr/libexec" \
 install_prog() {        # program destination
         $STRIP --strip-debug -o "$src/$2" "$sys/$1"
 }
+install_prog accounts usr/sbin/useradd
+for name in usermod userdel groupadd groupmod groupdel acctrecover; do
+        ln "$src/usr/sbin/useradd" "$src/usr/sbin/$name"
+done
 install_prog init sbin/init
 install_prog reboot sbin/reboot
 ln "$src/sbin/reboot" "$src/sbin/halt"
@@ -134,6 +138,10 @@ sed -e 's/@PACKAGE_VERSION@/6.24.16/g' \
     -e 's|@PACKAGE_BUGREPORT@|https://www.tcsh.org/|g' \
     -e 's|@PACKAGE_MAILLIST@|https://www.tcsh.org/|g' contrib/tcsh/tcsh.man.in \
     > "$src/usr/share/man/man1/tcsh.1"
+cp usr/sbin/accounts/accounts.8 "$src/usr/share/man/man8/useradd.8"
+for name in usermod userdel groupadd groupmod groupdel acctrecover; do
+        ln "$src/usr/share/man/man8/useradd.8" "$src/usr/share/man/man8/$name.8"
+done
 cp usr/bin/chsh/chsh.1 contrib/netbsd/usr.bin/gzip/gzip.1 \
     contrib/netbsd/usr.bin/diff/diff.1 contrib/netbsd/usr.bin/patch/patch.1 \
     "$src/usr/share/man/man1/"
@@ -231,7 +239,7 @@ $FAKEROOT sh -c '
         src=$1
         chown -R 0:0 "$src"
         chmod 0755 "$src"/bin/* "$src"/sbin/* "$src"/usr/libexec/* \
-            "$src"/usr/bin/* "$src"/etc/rc.d/*
+            "$src"/usr/bin/* "$src"/usr/sbin/* "$src"/etc/rc.d/*
         chmod 4555 "$src/usr/bin/login" "$src/usr/bin/passwd" \
             "$src/usr/bin/su" "$src/usr/bin/chsh"
         chmod 0400 "$src/etc/shadow"

@@ -14,7 +14,7 @@
 #
 # Prints "utiltest: N failures" and exits with N.
 
-PATH=/bin:/sbin:/usr/bin
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
 LC_ALL=C
 TZ=UTC0
@@ -356,6 +356,98 @@ status "patch directory bytes" 0 cmp patch-tree/file diff-new
 status "patch mismatch" 1 sh -c 'printf "unrelated\n" > mismatch && patch -f mismatch changes.diff'
 check "patch mismatch preserved" unrelated cat mismatch
 status "patch rejects" 0 test -s mismatch.rej
+
+# Local account administration uses passwd/shadow/group as one transaction.
+status "groupadd" 0 groupadd -g 2200 acct-primary
+status "groupadd supplementary" 0 groupadd -g 2201 acct-extra
+status "useradd" 0 useradd -m -u 2200 -g acct-primary -G acct-extra -s /bin/tcsh -c 'Account test' acct-test
+check "useradd uid" 2200 id -u acct-test
+check "useradd gid" 2200 id -g acct-test
+status "useradd supplementary" 0 sh -c 'id -Gn acct-test | grep -q acct-extra'
+check "useradd locked" LK sh -c 'set -- $(passwd -s acct-test); echo $2'
+check "useradd home owner" 2200 stat -f %u /home/acct-test
+check "useradd home group" 2200 stat -f %g /home/acct-test
+status "useradd duplicate" 1 useradd acct-test
+status "useradd duplicate uid" 1 useradd -u 2200 acct-duplicate
+status "groupadd duplicate gid" 1 groupadd -g 2200 acct-duplicate
+status "useradd invalid name" 1 useradd 'bad:name'
+status "useradd invalid field" 1 useradd -c 'bad:comment' acct-invalid
+status "useradd invalid shell" 1 useradd -s /bin/not-a-shell acct-invalid
+status "useradd unknown group" 1 useradd -g acct-missing acct-invalid
+status "useradd unknown supplementary group" 1 useradd -G acct-missing acct-invalid
+status "failed useradd absent" 1 id acct-invalid
+status "groupdel primary refused" 1 groupdel acct-primary
+status "groupmod" 0 groupmod -g 2202 -n acct-primary-new acct-primary
+check "groupmod primary migration" 2202 id -g acct-test
+status "usermod" 0 usermod -l acct-renamed -u 2203 -G '' -s /bin/sh -c Updated acct-test
+check "usermod uid" 2203 id -u acct-renamed
+check "usermod comment" Updated awk -F: '$1 == "acct-renamed" { print $5 }' /etc/passwd
+check "usermod shell" /bin/sh awk -F: '$1 == "acct-renamed" { print $7 }' /etc/passwd
+check "usermod shadow name" LK sh -c 'set -- $(passwd -s acct-renamed); echo $2'
+status "usermod clears supplementary" 1 sh -c 'id -Gn acct-renamed | grep -q acct-extra'
+status "usermod old name absent" 1 id acct-test
+status "usermod adds supplementary" 0 usermod -G acct-extra acct-renamed
+status "usermod renames supplementary" 0 usermod -l acct-final acct-renamed
+check "renamed supplementary member" acct-final awk -F: '$1 == "acct-extra" { print $4 }' /etc/group
+status "userdel" 0 userdel acct-final
+status "userdel passwd absent" 1 id acct-final
+status "userdel shadow absent" 1 sh -c 'grep -q "^acct-final:" /etc/shadow'
+check "userdel removes supplementary" "" awk -F: '$1 == "acct-extra" { print $4 }' /etc/group
+status "groupdel primary" 0 groupdel acct-primary-new
+status "groupdel supplementary" 0 groupdel acct-extra
+status "account journal clean" 1 test -e /etc/.accttxn
+status "home separately removable" 0 rmdir /home/acct-test
+
+# Reconstruct an interrupted publication, then recover its original files.
+cp /etc/passwd account-passwd-before
+cp /etc/shadow account-shadow-before
+cp /etc/group account-group-before
+mkdir -m 700 /etc/.accttxn
+ln /etc/passwd /etc/.accttxn/0.old
+ln /etc/shadow /etc/.accttxn/1.old
+ln /etc/group /etc/.accttxn/2.old
+touch /etc/.accttxn/ready
+sed 's/Superuser/Interrupted update/' /etc/passwd > /etc/acct-test-new
+mv /etc/acct-test-new /etc/passwd
+status "account rollback" 0 acctrecover
+status "account passwd restored" 0 cmp account-passwd-before /etc/passwd
+status "account shadow restored" 0 cmp account-shadow-before /etc/shadow
+status "account group restored" 0 cmp account-group-before /etc/group
+status "account rollback cleanup" 1 test -e /etc/.accttxn
+check "shadow mode preserved" 400 stat -f %Lp /etc/shadow
+status "account writers serialize" 0 sh -c 'groupadd acct-parallel-a & first=$!; groupadd acct-parallel-b & second=$!; wait "$first"; a=$?; wait "$second"; b=$?; [ "$a" -eq 0 ] && [ "$b" -eq 0 ]'
+first_gid=$(awk -F: '$1 == "acct-parallel-a" { print $3 }' /etc/group)
+second_gid=$(awk -F: '$1 == "acct-parallel-b" { print $3 }' /etc/group)
+status "parallel unique groups" 0 test "$first_gid" != "$second_gid"
+status "parallel first group" 0 groupdel acct-parallel-a
+status "parallel second group" 0 groupdel acct-parallel-b
+
+# A committed transaction keeps its published data during cleanup.
+mkdir -m 700 /etc/.accttxn
+ln /etc/passwd /etc/.accttxn/0.old
+ln /etc/shadow /etc/.accttxn/1.old
+ln /etc/group /etc/.accttxn/2.old
+touch /etc/.accttxn/committed
+sed 's/Superuser/Committed account update/' /etc/passwd > /etc/acct-test-new
+mv /etc/acct-test-new /etc/passwd
+status "account committed cleanup" 0 acctrecover
+status "account committed data retained" 0 grep -q 'Committed account update' /etc/passwd
+status "restore root comment" 0 usermod -c Superuser root
+status "restored root record" 0 cmp account-passwd-before /etc/passwd
+status "oversized uid refused" 1 useradd -u 4294967295 acct-invalid
+# passwd-file writers also recover before making their own update.
+mkdir -m 700 /etc/.accttxn
+ln /etc/passwd /etc/.accttxn/0.old
+ln /etc/shadow /etc/.accttxn/1.old
+ln /etc/group /etc/.accttxn/2.old
+touch /etc/.accttxn/ready
+sed 's/Superuser/Interrupted writer update/' /etc/passwd > /etc/acct-test-new
+mv /etc/acct-test-new /etc/passwd
+status "chsh recovers account update" 0 chsh -s /bin/sh root
+status "chsh recovered data" 0 cmp account-passwd-before /etc/passwd
+status "chsh recovery cleanup" 1 test -e /etc/.accttxn
+
+
 
 # Pager output is usable in pipelines, and mandoc indexes installed pages.
 check "less pipe" pager-pipe sh -c 'printf "pager-pipe\n" | less'

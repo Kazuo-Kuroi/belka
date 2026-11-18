@@ -48,6 +48,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../../lib/compat/include/accounts.h"
+
 #define SHADOW_FILE     "/etc/shadow"
 #define STMP            "/etc/stmp"     /* the new copy */
 #define LOCKED          "*LK*"
@@ -231,13 +233,13 @@ commit(const char *user, const struct change *c)
         signal(SIGINT, SIG_IGN);
         signal(SIGQUIT, SIG_IGN);
         signal(SIGTSTP, SIG_IGN);
-        if (lckpwdf() != 0)
+        if (acct_lock() != 0)
                 die("the password files are busy; try again");
         if (rewrite(user, c, &why) != 0) {
-                ulckpwdf();
+                acct_unlock();
                 die(why);
         }
-        ulckpwdf();
+        acct_unlock();
 }
 
 /* passwd -s: the state of sp, as System V prints it. */

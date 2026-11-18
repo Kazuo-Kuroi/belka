@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* Change the shell in System V's text passwd file under lckpwdf(). */
+/* Change the shell in System V's text passwd file under acct_lock(). */
 
 #define _DEFAULT_SOURCE
 
@@ -18,6 +18,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include "../../lib/compat/include/accounts.h"
 
 char *crypt(const char *, const char *);
 
@@ -176,7 +178,7 @@ main(int argc, char **argv)
         signal(SIGINT, SIG_IGN);
         signal(SIGQUIT, SIG_IGN);
         signal(SIGTSTP, SIG_IGN);
-        if (lckpwdf() != 0)
+        if (acct_lock() != 0)
                 die("the password files are busy; try again");
         if (caller != 0) {
                 struct spwd *sp = getspnam(user);
@@ -184,7 +186,7 @@ main(int argc, char **argv)
                 int valid;
 
                 if (sp == NULL) {
-                        ulckpwdf();
+                        acct_unlock();
                         die("cannot read the account password");
                 }
                 password = getpass("Password: ");
@@ -195,15 +197,15 @@ main(int argc, char **argv)
                 if (password != NULL)
                         explicit_bzero(password, strlen(password));
                 if (!valid) {
-                        ulckpwdf();
+                        acct_unlock();
                         die("authentication failed");
                 }
         }
         if (rewrite(user, target, shell, caller) != 0) {
-                ulckpwdf();
+                acct_unlock();
                 die("cannot update /etc/passwd");
         }
-        ulckpwdf();
+        acct_unlock();
         free(user);
         free(input);
         puts("The shell is changed.");

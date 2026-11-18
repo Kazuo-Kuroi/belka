@@ -1978,6 +1978,37 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
   and reversing patches, dry runs, path stripping, rejected hunks,
   and preservation of an unmatched file.
 
+## Local account administration (2026-11-17)
+
+- Belka's MIT-licensed useradd, usermod, userdel, groupadd, groupmod, and
+  groupdel maintain System V text passwd, shadow, and group files.
+  NetBSD's user tools require master.passwd and pw_mkdb, so this utility
+  uses Belka's existing account format.
+- New users start with a locked password. The default primary group is
+  users, home is /home/name, and shell is /bin/sh. Options cover explicit
+  identifiers, primary and supplementary groups, comments, homes, shells,
+  user/group renaming, and creation of home directories.
+- User renaming updates shadow and supplementary memberships. Group GID
+  changes update primary-group references. User deletion removes the
+  account and memberships. Files and home contents are administered
+  through the existing file utilities.
+- The shared accounts helper takes the existing lckpwdf lock. It stages
+  replacements and hard-linked backups for all three files in the
+  root-only /etc/.accttxn directory on the same file system. A synced
+  ready marker precedes publication; a committed marker follows the
+  synced renames. Recovery rolls back an interrupted publication or
+  cleans up a completed transaction. This is recoverable publication
+  across the text files; readers can run between individual renames.
+- The accounts rc.d script runs acctrecover before services. passwd and
+  chsh also recover under the same lock before writing. Names and passwd
+  records respect the current libc parser's limits; identifiers fit its
+  signed integer representation, and supplementary groups respect the
+  sysconf limit.
+- Boot tests cover administration, locked passwords, permissions, name
+  and identifier collisions, root-only access, concurrent writers,
+  reconstructed interrupted and committed transactions, and recovery
+  through chsh.
+
 ## File systems
 
 1. **tmpfs**, for testing.
