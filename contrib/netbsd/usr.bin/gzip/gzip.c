@@ -1119,8 +1119,10 @@ copymodes(int fd, const struct stat *sbp, const char *file)
 		maybe_warn("couldn't utimes: %s", file);
 
 	/* finally, only try flags if they exist already */
+#ifndef BELKA_GZIP
         if (sb.st_flags != 0 && fchflags(fd, sb.st_flags) < 0)
 		maybe_warn("couldn't fchflags: %s", file);
+#endif /* Belka has no BSD file flags. */
 }
 #endif
 
@@ -1219,7 +1221,9 @@ static void
 setup_signals(void)
 {
 
+#if SIGINFO > 0
 	signal(SIGINFO, got_siginfo);
+#endif /* Belka has no SIGINFO. */
 }
 
 static	void

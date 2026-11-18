@@ -91,6 +91,12 @@ ln "$src/bin/test" "$src/bin/["
 cp "$sys/ps" "$src/bin/ps"            # dynamic: not stripped
 cp "$sys/hostname" "$src/bin/hostname"
 cp "$sys/stty" "$src/bin/stty"
+cp "$sys/gzip" "$src/bin/gzip"
+for name in gunzip gzcat zcat; do
+        ln "$src/bin/gzip" "$src/bin/$name"
+done
+mkdir -p "$src/usr/share/licenses/gzip"
+cp contrib/netbsd/usr.bin/gzip/NOTICE "$src/usr/share/licenses/gzip/"
 mkdir -p "$src/usr/share/licenses/stty"
 cp contrib/netbsd/bin/stty/NOTICE "$src/usr/share/licenses/stty/"
 # terminfo: the programs, the descriptions' source (/etc/rc compiles
@@ -128,7 +134,11 @@ sed -e 's/@PACKAGE_VERSION@/6.24.16/g' \
     -e 's|@PACKAGE_BUGREPORT@|https://www.tcsh.org/|g' \
     -e 's|@PACKAGE_MAILLIST@|https://www.tcsh.org/|g' contrib/tcsh/tcsh.man.in \
     > "$src/usr/share/man/man1/tcsh.1"
-cp usr/bin/chsh/chsh.1 "$src/usr/share/man/man1/"
+cp usr/bin/chsh/chsh.1 contrib/netbsd/usr.bin/gzip/gzip.1 \
+    "$src/usr/share/man/man1/"
+for name in gunzip gzcat zcat; do
+        ln "$src/usr/share/man/man1/gzip.1" "$src/usr/share/man/man1/$name.1"
+done
 
 for name in less mandoc pax zlib; do
         mkdir -p "$src/usr/share/licenses/$name"

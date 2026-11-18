@@ -521,6 +521,17 @@ $(ZLIB_LIB): $(ZLIB_OBJS)
 	rm -f $@
 	ar rcs $@ $^
 
+# NetBSD gzip, using the existing zlib and legacy Unix decoders.
+GZIP            := $(NB)/usr.bin/gzip
+$(SYS_OBJ)/gzip.o: $(GZIP)/gzip.c $(wildcard $(GZIP)/*.c) \
+                   $(wildcard $(ZLIB)/*.h) $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -I$(ZLIB) -DNO_BZIP2_SUPPORT \
+	    -DNO_XZ_SUPPORT -DNO_LZ_SUPPORT -DNO_COMPRESS_SUPPORT -DBELKA_GZIP -c -o $@ $<
+
+$(SYS_DIR)/gzip: $(SYS_OBJ)/gzip.o $(ZLIB_LIB) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$< $(ZLIB_LIB))
+
 # mandoc's database and formatting commands share one executable.
 MANDOC          := contrib/mandoc
 MANDOC_SRCS     := man man_macro man_validate att lib mdoc mdoc_argv \
@@ -597,7 +608,7 @@ $(SYS_OBJ)/stat/stat.o: TOOL_XFLAGS := -DHAVE_NBTOOL_CONFIG_H=1
 $(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
 
 TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS) \
-                   hostname stty chsh less mandoc pax)
+                   hostname stty chsh less mandoc pax gzip)
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
@@ -679,6 +690,7 @@ ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
                    contrib/netbsd/bin/stty/NOTICE tools/mkroot.sh \
                    $(wildcard contrib/mandoc/*.[1578] contrib/mandoc/NOTICE \
                    contrib/netbsd/bin/pax/*.1 contrib/netbsd/bin/pax/NOTICE \
+                   contrib/netbsd/usr.bin/gzip/gzip.1 contrib/netbsd/usr.bin/gzip/NOTICE \
                    contrib/netbsd/external/bsd/less/dist/LICENSE \
                    contrib/netbsd/external/bsd/less/dist/less.1 \
                    contrib/zlib/README usr/bin/chsh/chsh.1) \

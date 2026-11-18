@@ -1951,6 +1951,20 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
 - Boot tests exercise tar, ustar pax, pax copy mode, cpio, payload
   integrity, hard links, symlinks, FIFOs, and malformed input.
 
+## gzip compression (2026-11-17)
+
+- NetBSD's two-clause BSD gzip supplies gzip, gunzip, gzcat, and zcat
+  over the existing zlib. It uses the same netbsd-10 import revision.
+  The gzip and legacy pack decoders are enabled. The optional bzip2,
+  xz, lzip, and compress decoders are disabled.
+- The port omits BSD file flags and the unavailable SIGINFO hook.
+  mlibc maps its internal empty-path descriptor timestamp operation to
+  Belka's existing null-path form. File modes and times survive gzip
+  and gunzip.
+- Boot tests cover streams, aliases, concatenated members, integrity
+  checking, truncation, refusal to overwrite, metadata preservation,
+  tar -z round trips, and compressed mandoc input.
+
 ## File systems
 
 1. **tmpfs**, for testing.

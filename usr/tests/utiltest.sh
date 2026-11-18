@@ -300,6 +300,39 @@ status "cpio create" 0 sh -c 'printf "archive-src/file\n" | cpio -o > test.cpio'
 status "cpio extract" 0 sh -c 'cd archive-cpio && cpio -i < ../test.cpio'
 status "archive truncated input" 1 sh -c 'printf bad | tar -tf - >/dev/null 2>&1'
 
+# gzip streams, metadata, concatenated members, integrity errors, and tar -z.
+printf 'compressed-data\n' > gzip-original
+status "gzip stream" 0 sh -c 'gzip -n -c gzip-original > stream.gz'
+status "gzip test" 0 gzip -t stream.gz
+check "gunzip stream" compressed-data gunzip -c stream.gz
+check "zcat alias" compressed-data zcat stream.gz
+check "gzcat alias" compressed-data gzcat stream.gz
+cat stream.gz stream.gz > joined.gz
+check "gzip concatenated" "compressed-data
+compressed-data" gunzip -c joined.gz
+cp gzip-original gzip-file
+chmod 640 gzip-file
+touch -t 202001020304 gzip-file
+original_time=$(stat -f %m gzip-file)
+status "gzip file" 0 gzip gzip-file
+status "gzip removes input" 1 test -e gzip-file
+status "gunzip file" 0 gunzip gzip-file.gz
+status "gzip round trip" 0 cmp gzip-original gzip-file
+check "gzip permissions" 640 stat -f %Lp gzip-file
+check "gzip modification time" "$original_time" stat -f %m gzip-file
+printf 'preserved-output\n' > gzip-file.gz
+status "gzip refuses overwrite" 1 gzip gzip-file
+check "gzip overwrite content" preserved-output cat gzip-file.gz
+status "gzip keeps source on failure" 0 cmp gzip-original gzip-file
+printf '\037\213\010\000' > broken.gz
+status "gzip truncated stream" 1 gzip -t broken.gz
+mkdir gzip-tar-out
+status "tar gzip create" 0 tar -czf test.tar.gz archive-src
+status "tar gzip extract" 0 sh -c 'cd gzip-tar-out && tar -xzf ../test.tar.gz'
+status "tar gzip bytes" 0 cmp archive-src/file gzip-tar-out/archive-src/file
+status "mandoc gzip input" 0 sh -c 'gzip -n -c /usr/share/man/man1/stty.1 > stty.1.gz && mandoc -Tascii stty.1.gz > formatted'
+status "mandoc gzip content" 0 grep -q STTY formatted
+
 # Pager output is usable in pipelines, and mandoc indexes installed pages.
 check "less pipe" pager-pipe sh -c 'printf "pager-pipe\n" | less'
 check "more pipe" pager-pipe sh -c 'printf "pager-pipe\n" | more'
