@@ -108,6 +108,32 @@ cp contrib/netbsd/bin/stty/NOTICE "$src/usr/share/licenses/stty/"
 for prog in tic infocmp tput passwd su less mandoc; do
         cp "$sys/$prog" "$src/usr/bin/$prog"    # dynamic: not stripped
 done
+# Development tools remain unstripped: GNU strip damages dynamic illumos ELF.
+for prog in bmake gmake m4 tsort yacc lex ld ar nm; do
+        cp "$sys/$prog" "$src/usr/bin/$prog"
+done
+ln "$src/usr/bin/gmake" "$src/usr/bin/make"
+ln "$src/usr/bin/yacc" "$src/usr/bin/byacc"
+ln "$src/usr/bin/lex" "$src/usr/bin/flex"
+cp contrib/gmake/build-aux/install-sh "$src/usr/bin/install"
+chmod 755 "$src/usr/bin/install"
+cp usr/bin/ranlib/ranlib.sh "$src/usr/bin/ranlib"
+chmod 755 "$src/usr/bin/ranlib"
+cp "$sys/illumos-ld/sgsmsg" "$src/usr/libexec/sgsmsg"
+mkdir -p "$src/usr/share/mk"
+cp usr/share/mk/sys.mk "$src/usr/share/mk/sys.mk"
+for prog in make m4 tsort; do
+        mkdir -p "$src/usr/share/licenses/$prog"
+        cp "contrib/netbsd/usr.bin/$prog/NOTICE" "$src/usr/share/licenses/$prog/"
+done
+mkdir -p "$src/usr/share/licenses/gmake" "$src/usr/share/licenses/byacc" \
+    "$src/usr/share/licenses/flex"
+cp contrib/gmake/COPYING "$src/usr/share/licenses/gmake/"
+cp contrib/netbsd/external/bsd/byacc/dist/LICENSE \
+    contrib/netbsd/external/bsd/byacc/dist/NOTICE "$src/usr/share/licenses/byacc/"
+cp contrib/netbsd/external/bsd/flex/dist/COPYING \
+    contrib/netbsd/external/bsd/flex/dist/COPYING.LIB \
+    contrib/netbsd/external/bsd/flex/dist/NOTICE "$src/usr/share/licenses/flex/"
 ln "$src/usr/bin/less" "$src/usr/bin/more"
 for name in man apropos whatis makewhatis; do
         ln "$src/usr/bin/mandoc" "$src/usr/bin/$name"
@@ -126,6 +152,16 @@ for section in 1 5 7 8; do
                 cp "$page" "$src/usr/share/man/man$section/"
         done
 done
+cp contrib/illumos-ld/usr/src/man/man1/ar.1 \
+    contrib/illumos-ld/usr/src/man/man1/nm.1 \
+    contrib/illumos-ld/usr/src/man/man1/ld.1 "$src/usr/share/man/man1/"
+cp contrib/netbsd/external/bsd/flex/dist/doc/flex.1 "$src/usr/share/man/man1/lex.1"
+ln "$src/usr/share/man/man1/lex.1" "$src/usr/share/man/man1/flex.1"
+cp contrib/netbsd/usr.bin/make/make.1 "$src/usr/share/man/man1/bmake.1"
+cp contrib/gmake/doc/make.1 "$src/usr/share/man/man1/gmake.1"
+ln "$src/usr/share/man/man1/gmake.1" "$src/usr/share/man/man1/make.1"
+cp contrib/netbsd/usr.bin/m4/m4.1 contrib/netbsd/usr.bin/tsort/tsort.1 \
+    contrib/netbsd/external/bsd/byacc/dist/yacc.1 "$src/usr/share/man/man1/"
 cp contrib/netbsd/bin/stty/stty.1 contrib/netbsd/bin/pax/pax.1 \
     contrib/netbsd/bin/pax/tar.1 contrib/netbsd/bin/pax/cpio.1 \
     "$src/usr/share/man/man1/"
@@ -182,6 +218,10 @@ install_prog ed bin/ed
 mkdir -p "$src/usr/share/misc"
 cp contrib/netbsd/share/terminfo/terminfo "$src/usr/share/misc/terminfo"
 cp "$libdir/ld.so.1" "$libdir/libc.so.1" "$src/usr/lib64/"
+cp -R "$sys/sdk/." "$src/"
+mkdir -p "$src/usr/share/licenses/mlibc" "$src/usr/share/licenses/compiler-runtime"
+cp contrib/mlibc/LICENSE "$src/usr/share/licenses/mlibc/"
+cp -R contrib/compiler-runtime-licenses/. "$src/usr/share/licenses/compiler-runtime/"
 
 for f in rc rc.conf ttys passwd shadow group shells profile vfstab \
     defaults/rc.conf; do

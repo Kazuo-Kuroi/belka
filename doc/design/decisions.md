@@ -2066,3 +2066,27 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
 - **NetBSD network drivers under DLPI.** Imported drivers expect `ifnet`.
   A shim from `ifnet` to DLPI is needed whichever socket interface is
   chosen.
+
+## Native development bootstrap (2026-11-18)
+
+- Import NetBSD bmake, m4 and tsort, Berkeley yacc and flex. Install bmake
+  explicitly, and GNU make 4.4.1 as gmake and make for Belka and GCC build
+  compatibility. Preserve each upstream licence; GNU make remains GPL.
+  Use the MIT/X11 install-sh for install. bmake has a small MIT sys.mk.
+- GNU make uses fork and exec; posix_spawn remains disabled and unapproved.
+  NetBSD m4 supplies macro processing for flex and illumos sources. Clear
+  expected pipe-seek errors in flex so its cleanup closes the output pipe.
+  mlibc freopen preserves the stream descriptor when dup2 is available.
+- Cross-build the existing illumos link-editor and its ar, nm and sgsmsg
+  for Belka. Keep the compatibility changes in the MIT port layer, with
+  a separate CDDL ar change to create archive-replacement files atomically
+  using mkstemp. ranlib delegates index rebuilding to ar -s.
+- Install libc headers, start files, static libc, compiler builtins and
+  lex support libraries. Include the linker sources and licence alongside
+  a native relink recipe and its initial target objects and archives.
+  Native relinking is a bootstrap stage, not full source self-hosting.
+- GCC 14 or newer is the initial native compiler direction. A native
+  assembler, GCC target/driver port, compiler dependencies, C++ runtime,
+  muon and samurai remain before a full compiler/libc source bootstrap.
+  PathScale is deferred until that compiler is ready. See
+  [native development](../native-development.md) for the staged workflow.

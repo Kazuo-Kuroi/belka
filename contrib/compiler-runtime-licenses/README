@@ -1,0 +1,7 @@
+Licences for compiler runtime archives copied into the native SDK.
+
+GCC: gcc-mirror/gcc, releases/gcc-14.2.0, COPYING3 and COPYING.RUNTIME.
+LLVM: llvm/llvm-project, llvmorg-19.1.7, compiler-rt/LICENSE.TXT.
+
+The selected toolchain determines which archive is installed. Both sets
+are retained so an image built with GCC or Clang includes its notices.

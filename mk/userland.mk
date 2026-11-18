@@ -491,6 +491,187 @@ $(SYS_DIR)/$(1): $(patsubst %,$(SYS_OBJ)/$(1)/%.o,$(call tool_srcs,$(1))) \
 endef
 $(foreach t,$(FILE_TOOLS),$(eval $(call file_tool,$(t))))
 
+# Hosted cross builds use the same start files and illumos link-editor as userland.
+BELKA_CC_ENV = BELKA_SYSROOT="$(abspath $(SYSROOT))" \
+    BELKA_CC_INCLUDE="$(CC_INCLUDE)" BELKA_LD="$(abspath $(ILLUMOS_LD))" \
+    BELKA_LD_DRIVER="$(abspath tools/ld/illumos-cc)" \
+    BELKA_CRTBEGIN="$(abspath $(PROGRAM_BEGIN))" BELKA_CRTEND="$(abspath $(PROGRAM_END))" \
+    BELKA_RTLIB="$(LIBC_RTLIB)"
+BELKA_CC = $(abspath tools/ld/belka-cc) $(LIBC_CC)
+NATIVE_LD_DIR := $(SYS_DIR)/illumos-ld
+NATIVE_LD := $(NATIVE_LD_DIR)/ld
+NATIVE_LD_STAMP := $(NATIVE_LD_DIR)/built.stamp
+NATIVE_LD_SOURCES := $(shell find contrib/illumos-ld/port contrib/illumos-ld/usr/src -type f)
+
+$(NATIVE_LD_STAMP) $(NATIVE_LD) $(NATIVE_LD_DIR)/ar $(NATIVE_LD_DIR)/nm $(NATIVE_LD_DIR)/sgsmsg &: $(NATIVE_LD_SOURCES) tools/ld/belka-cc tools/ld/illumos-cc $(SYS_DYNDEPS)
+	$(BELKA_CC_ENV) $(MAKE) --no-print-directory -C contrib/illumos-ld/port \
+	    O=$(abspath $(NATIVE_LD_DIR)) HOSTCC="$(BELKA_CC)" \
+	    LDLIBS= \
+	    SGSMSG_FOR_BUILD=$(abspath $(ILLUMOS_LD_DIR)/sgsmsg) \
+	    $(abspath $(NATIVE_LD_DIR)/ld) $(abspath $(NATIVE_LD_DIR)/sgsmsg) \
+	    $(abspath $(NATIVE_LD_DIR)/ar) $(abspath $(NATIVE_LD_DIR)/nm)
+	touch $(NATIVE_LD_STAMP)
+
+$(SYS_DIR)/ld: $(NATIVE_LD_STAMP)
+	cp $(NATIVE_LD) $@
+
+$(SYS_DIR)/ar $(SYS_DIR)/nm: $(NATIVE_LD_STAMP)
+	cp $(NATIVE_LD_DIR)/$(@F) $@
+
+$(SYS_OBJ)/dev%.o: usr/tests/dev%.c $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
+
+$(SYS_DIR)/libl.a: $(SYS_OBJ)/lex/libmain.o $(SYS_OBJ)/lex/libyywrap.o
+	$(AR) rcs $@ $^
+
+$(SYS_DIR)/sdk.stamp: contrib/illumos-ld/README.md $(NATIVE_LD_STAMP) $(SYS_DIR)/libl.a \
+                    $(SYS_OBJ)/devhello.o $(SYS_OBJ)/devvalue.o $(MLIBC) tools/mksdk.sh usr/share/dev/relink.mk
+	sh tools/mksdk.sh $(SYS_DIR)/sdk $(SYSROOT) $(NATIVE_LD_DIR) \
+	    $(PROGRAM_BEGIN) $(PROGRAM_END) $(LIBC_RTLIB)
+	cp $(SYS_DIR)/libl.a $(SYS_DIR)/sdk/usr/lib64/
+	ln -s libl.a $(SYS_DIR)/sdk/usr/lib64/libfl.a
+	mkdir -p $(SYS_DIR)/sdk/usr/tests/dev
+	cp $(SYS_OBJ)/devhello.o $(SYS_OBJ)/devvalue.o $(SYS_DIR)/sdk/usr/tests/dev/
+	cp $(NATIVE_LD_DIR)/libelf/xlate.c $(SYS_DIR)/sdk/usr/tests/dev/xlate.expected
+	touch $@
+
+# GNU make is needed by the existing project and GCC build systems.
+GMAKE_SRC       := contrib/gmake
+GMAKE_OBJ       := $(SYS_DIR)/gmake-build
+GMAKE_SOURCES   := $(shell find $(GMAKE_SRC)/src $(GMAKE_SRC)/lib $(GMAKE_SRC)/build-aux -type f)
+
+$(GMAKE_OBJ)/Makefile: $(GMAKE_SRC)/configure $(GMAKE_SRC)/build-aux/config.sub \
+                      tools/ld/belka-cc $(SYS_DYNDEPS)
+	@mkdir -p $(GMAKE_OBJ)
+	cd $(GMAKE_OBJ) && $(BELKA_CC_ENV) \
+	    ac_cv_func_posix_spawn=no ac_cv_func_posix_spawnattr_setsigmask=no \
+	    CC="$(BELKA_CC)" CFLAGS="-O2 -g" \
+	    $(abspath $(GMAKE_SRC))/configure --build=$$($(HOSTCC) -dumpmachine) \
+	    --host=x86_64-unknown-belka --prefix=/usr --disable-nls --without-guile
+
+$(SYS_DIR)/gmake: $(GMAKE_OBJ)/Makefile $(GMAKE_SOURCES)
+	$(BELKA_CC_ENV) $(MAKE) --no-print-directory -C $(GMAKE_OBJ) all
+	cp $(GMAKE_OBJ)/make $@
+
+# NetBSD make, installed as bmake.
+BMAKE_SRCS      := arch buf compat cond dir for hash job lst main make \
+                   make_malloc metachar parse str suff targ trace var util
+BMAKE_OBJS      := $(addprefix $(SYS_OBJ)/bmake/,$(addsuffix .o,$(BMAKE_SRCS)))
+
+$(SYS_OBJ)/bmake/%.o: $(NB)/usr.bin/make/%.c $(wildcard $(NB)/usr.bin/make/*.h usr/lib/compat/bmake/*.h) \
+                     $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DMAKE_NATIVE -DMAKE_MACHINE='"amd64"' \
+	    -DMAKE_MACHINE_ARCH='"amd64"' -c -o $@ $<
+
+$(SYS_DIR)/bmake: $(BMAKE_OBJS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(BMAKE_OBJS))
+
+$(SYS_OBJ)/tsort.o: $(NB)/usr.bin/tsort/tsort.c $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -c -o $@ $<
+
+$(SYS_DIR)/tsort: $(SYS_OBJ)/tsort.o $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$<)
+
+# Berkeley yacc, with its distributed parser skeleton.
+YACC            := $(NB)/external/bsd/byacc/dist
+YACC_SRCS       := closure error graph lalr lr0 main mkpar mstring output \
+                   reader yaccpar symtab verbose warshall
+YACC_OBJS       := $(addprefix $(SYS_OBJ)/yacc/,$(addsuffix .o,$(YACC_SRCS)))
+
+$(SYS_OBJ)/yacc/%.o: $(YACC)/%.c $(wildcard $(YACC)/*.h usr/lib/compat/yacc/*.h) \
+                    $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DHAVE_CONFIG_H -Iusr/lib/compat/yacc \
+	    -I$(YACC) -c -o $@ $<
+
+$(SYS_DIR)/yacc: $(YACC_OBJS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(YACC_OBJS))
+
+# Bootstrap generators run on the build host. Their outputs are target-neutral C.
+HOST_YACC       := build/tools/yacc/yacc
+$(HOST_YACC): $(addprefix $(YACC)/,$(addsuffix .c,$(YACC_SRCS))) \
+              $(wildcard $(YACC)/*.h usr/lib/compat/yacc/*.h)
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu99 -O2 -D_GNU_SOURCE -DHAVE_CONFIG_H \
+	    -D'__RCSID(x)=' -D'__dead=__attribute__((__noreturn__))' \
+	    -Iusr/lib/compat/yacc -I$(YACC) -o $@ $(filter %.c,$^)
+
+LEX             := $(NB)/external/bsd/flex/dist/src
+LEX_SRCS        := buf ccl dfa ecs filter gen main misc nfa options regex \
+                   scanflags scanopt sym tables tables_shared tblcmp yylex \
+                   initparse initscan
+LEX_OBJS        := $(addprefix $(SYS_OBJ)/lex/,$(addsuffix .o,$(LEX_SRCS))) \
+                   $(SYS_OBJ)/lex/skel.o
+LEX_GEN         := build/tools/lex/skel.c build/tools/lex/parse.h
+LEX_HDRS        := $(wildcard $(LEX)/*.h usr/lib/compat/lex/*.h)
+
+build/tools/lex/parse.h: $(LEX)/initparse.h
+	@mkdir -p $(dir $@)
+	cp $< $@
+
+build/tools/lex/skel.c: $(LEX)/flex.skl $(LEX)/mkskel.sh $(LEX_HDRS)
+	@mkdir -p $(dir $@)
+	sh $(LEX)/mkskel.sh $(LEX) m4 2.6.4 > $@.tmp && mv $@.tmp $@
+
+HOST_LEX        := build/tools/lex/lex
+$(HOST_LEX): $(addprefix $(LEX)/,$(addsuffix .c,$(LEX_SRCS))) $(LEX_GEN) $(LEX_HDRS)
+	$(HOSTCC) -std=gnu99 -O2 -D_GNU_SOURCE -DHAVE_CONFIG_H \
+	    -D'__RCSID(x)=' -Iusr/lib/compat/lex -Ibuild/tools/lex -I$(LEX) \
+	    -o $@ $(filter %.c,$^) -lm
+
+$(SYS_OBJ)/lex/%.o: $(LEX)/%.c $(LEX_GEN) $(LEX_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DHAVE_CONFIG_H -Iusr/lib/compat/lex \
+	    -Ibuild/tools/lex -I$(LEX) -c -o $@ $<
+
+$(SYS_OBJ)/lex/skel.o: build/tools/lex/skel.c $(LEX_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DHAVE_CONFIG_H -Iusr/lib/compat/lex \
+	    -I$(LEX) -c -o $@ $<
+
+$(SYS_DIR)/lex: $(LEX_OBJS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(LEX_OBJS))
+
+# NetBSD m4 uses the same Berkeley yacc and flex generators as its native build.
+M4_SRC          := $(NB)/usr.bin/m4
+M4_SRCS         := eval expr look main misc gnum4 trace
+M4_HASH_SRCS    := ohash_create_entry ohash_delete ohash_do ohash_entries \
+                   ohash_enum ohash_init ohash_interval ohash_lookup_interval \
+                   ohash_lookup_memory ohash_qlookup ohash_qlookupi
+M4_OBJS         := $(addprefix $(SYS_OBJ)/m4/,$(addsuffix .o,$(M4_SRCS) $(M4_HASH_SRCS) parser tokenizer)) \
+                   $(SYS_OBJ)/lex/libyywrap.o
+M4_GEN          := $(SYS_OBJ)/m4/parser.c $(SYS_OBJ)/m4/parser.h $(SYS_OBJ)/m4/tokenizer.c
+M4_HDRS         := $(wildcard $(M4_SRC)/*.h $(M4_SRC)/lib/*.h)
+
+$(SYS_OBJ)/m4/parser.c $(SYS_OBJ)/m4/parser.h &: $(M4_SRC)/parser.y $(HOST_YACC)
+	@mkdir -p $(SYS_OBJ)/m4
+	$(HOST_YACC) -d -b $(SYS_OBJ)/m4/parser $<
+	mv $(SYS_OBJ)/m4/parser.tab.c $(SYS_OBJ)/m4/parser.c
+	mv $(SYS_OBJ)/m4/parser.tab.h $(SYS_OBJ)/m4/parser.h
+
+$(SYS_OBJ)/m4/tokenizer.c: $(M4_SRC)/tokenizer.l $(HOST_LEX)
+	@mkdir -p $(dir $@)
+	M4=/usr/bin/m4 $(HOST_LEX) -o$@ $<
+
+$(SYS_OBJ)/m4/%.o: $(M4_SRC)/%.c $(M4_GEN) $(M4_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DEXTENDED -I$(M4_SRC)/lib -I$(SYS_OBJ)/m4 -I$(M4_SRC) -c -o $@ $<
+
+$(SYS_OBJ)/m4/%.o: $(M4_SRC)/lib/%.c $(M4_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -I$(M4_SRC)/lib -c -o $@ $<
+
+$(SYS_OBJ)/m4/parser.o: $(SYS_OBJ)/m4/parser.c $(M4_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DEXTENDED -I$(M4_SRC)/lib -I$(M4_SRC) -c -o $@ $<
+
+$(SYS_OBJ)/m4/tokenizer.o: $(SYS_OBJ)/m4/tokenizer.c $(SYS_OBJ)/m4/parser.h $(M4_HDRS) $(COMPAT_HDRS) $(MLIBC)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DEXTENDED -I$(M4_SRC)/lib -I$(SYS_OBJ)/m4 -I$(M4_SRC) -c -o $@ $<
+
+$(SYS_DIR)/m4: $(M4_OBJS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(M4_OBJS))
+
 # System V text user/group administration and transaction recovery.
 $(SYS_OBJ)/accounts.o: usr/sbin/accounts/accounts.c \
                        usr/lib/compat/include/accounts.h $(MLIBC)
@@ -637,7 +818,7 @@ $(SYS_OBJ)/stat/stat.o: TOOL_XFLAGS := -DHAVE_NBTOOL_CONFIG_H=1
 $(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
 
 TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS) \
-                   hostname stty chsh less mandoc pax gzip diff patch)
+                   hostname stty chsh less mandoc pax gzip diff patch bmake tsort yacc lex m4 gmake ld ar nm)
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
@@ -713,6 +894,22 @@ $(SYS_DIR)/ps: $(SYS_OBJ)/ps.o $(MLIBC_SHARED) $(PROGRAM_BEGIN) $(PROGRAM_END) \
 ROOT_IMG        := build/root-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_DEPS       := $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
+	           $(SYS_DIR)/sdk.stamp usr/share/mk/sys.mk usr/bin/ranlib/ranlib.sh \
+                   contrib/mlibc/LICENSE \
+                   $(wildcard contrib/compiler-runtime-licenses/*/*) \
+                   $(wildcard contrib/netbsd/usr.bin/make/NOTICE \
+                   contrib/netbsd/usr.bin/make/*.1 contrib/netbsd/usr.bin/m4/NOTICE \
+                   contrib/netbsd/usr.bin/m4/*.1 contrib/netbsd/usr.bin/tsort/NOTICE \
+                   contrib/netbsd/usr.bin/tsort/*.1 contrib/gmake/COPYING \
+                   contrib/gmake/doc/make.1 contrib/gmake/build-aux/install-sh \
+                   contrib/netbsd/external/bsd/byacc/dist/LICENSE \
+                   contrib/netbsd/external/bsd/byacc/dist/NOTICE \
+                   contrib/netbsd/external/bsd/byacc/dist/yacc.1 \
+                   contrib/netbsd/external/bsd/flex/dist/COPYING \
+                   contrib/netbsd/external/bsd/flex/dist/COPYING.LIB \
+                   contrib/netbsd/external/bsd/flex/dist/NOTICE \
+                   contrib/netbsd/external/bsd/flex/dist/doc/flex.1 \
+                   contrib/illumos-ld/usr/src/man/man1/*.1) \
                    $(LIBC_SOS) usr/bin/clear/clear.sh \
                    contrib/netbsd/share/terminfo/terminfo \
                    contrib/tcsh/Copyright contrib/tcsh/NOTICE \

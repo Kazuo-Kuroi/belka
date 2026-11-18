@@ -468,7 +468,73 @@ status "apropos lookup" 0 sh -c 'apropos stty | grep -q stty'
 status "whatis lookup" 0 sh -c 'whatis chsh | grep -q chsh'
 status "man missing" 5 sh -c 'man belka-no-such-manual >/dev/null 2>&1'
 
+# Development tools: dependency scheduling, generators, archives, native ld.
+cat > dev.mk <<'MAKE'
+all: one two
+	@cat one two > combined
+one:
+	@echo one > one
+two:
+	@echo two > two
+MAKE
+status "bmake parallel jobs" 0 bmake -j2 -f dev.mk
+check "bmake dependencies" 'one
+two' cat combined
+rm one two combined
+status "gmake parallel jobs" 0 gmake -j2 -f dev.mk
+check "gmake dependencies" 'one
+two' cat combined
+status "gmake no-op" 0 gmake -q -f dev.mk one
+check "tsort ordering" 'a
+b
+c' sh -c 'printf "a b\nb c\n" | tsort'
+check "m4 expansion" hello sh -c 'printf "define(\140word\047,\140hello\047)word\n" | m4'
+status "install directories" 0 install -d -m 700 dev-install
+status "install file" 0 install -m 640 one dev-install/copy
+status "install contents" 0 cmp one dev-install/copy
+check "install mode" 640 stat -f %Lp dev-install/copy
+cat > grammar.y <<'YACC'
+%token NUMBER
+%%
+input: NUMBER;
+%%
+YACC
+status "yacc generation" 0 yacc -d grammar.y
+status "yacc header" 0 grep -q NUMBER y.tab.h
+cat > scanner.l <<'LEX'
+%option noyywrap
+%%
+[0-9]+ return 1;
+. ;
+%%
+LEX
+status "lex generation" 0 lex scanner.l
+status "lex scanner" 0 grep -q yylex lex.yy.c
+status "ar create" 0 ar rcs libfixture.a one two
+check "ar contents" 'one
+two' ar t libfixture.a
+status "ar extract" 0 sh -c 'mkdir ar-out && cd ar-out && ar x ../libfixture.a'
+status "ar extracted bytes" 0 cmp one ar-out/one
+status "ranlib index" 0 ranlib libfixture.a
+status "native archive" 0 ar rcs libnative.a /usr/tests/dev/devvalue.o
+status "native archive index" 0 ranlib libnative.a
+status "native partial link" 0 ld -64 -r -o hello.o /usr/tests/dev/devhello.o
+status "native executable link" 0 sh -c 'ld -64 -dy -z defs -I /usr/lib64/ld.so.1 -o hello /usr/lib64/crt1.o /usr/lib64/crti.o /usr/lib64/crtbegin.o hello.o libnative.a -L/usr/lib64 -lc /usr/lib64/libcompiler_rt.a /usr/lib64/crtend.o /usr/lib64/crtn.o'
+check "native executable" 'native linker' ./hello
+status "native static link" 0 sh -c 'ld -64 -dn -o hello.static /usr/lib64/crt1.o /usr/lib64/crti.o /usr/lib64/crtbegin.o hello.o libnative.a /usr/lib64/libc.a /usr/lib64/libcompiler_rt.a /usr/lib64/crtend.o /usr/lib64/crtn.o'
+check "native static executable" 'native linker' ./hello.static
+status "libelf m4 generation" 0 sh -c 'm4 < /usr/src/illumos-ld/usr/src/cmd/sgs/libelf/common/xlate.m4 > xlate.c'
+status "libelf m4 compatibility" 0 cmp /usr/tests/dev/xlate.expected xlate.c
+status "native message generator" 0 /usr/libexec/sgsmsg -i /usr/src/illumos-ld/usr/src/cmd/sgs/messages/sgs.ident -h native-msg.h -d native-msg.c /usr/src/illumos-ld/usr/src/cmd/sgs/ar/common/ar.msg
+status "native message header" 0 grep -q MSG_ native-msg.h
+status "nm native ld" 0 sh -c 'nm /usr/bin/ld > native-symbols'
+status "nm symbols" 0 grep -q main native-symbols
+status "native ld relink" 0 gmake -f /usr/src/illumos-ld/relink.mk
+mv ld.stage2 ld.bootstrap
+status "second stage relink" 0 gmake -f /usr/src/illumos-ld/relink.mk LD=./ld.bootstrap
+status "linker reproducibility" 0 cmp ld.bootstrap ld.stage2
+
 cd /
-rm -rf "$work"
+[ "$fail" -ne 0 ] || rm -rf "$work"
 echo "utiltest: $pass passed, $fail failures"
 exit $fail

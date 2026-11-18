@@ -1,0 +1,10 @@
+GNU make 4.4.1, distributed under GPL-3.0-or-later.
+Source: https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz
+SHA-256: dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3
+
+The build-aux/install-sh utility has its own MIT/X11 licence.
+Belka installs it as install.
+
+config.sub recognises Belka as a target OS. The external hosted-C wrapper
+provides the sysroot and illumos link-editor; configure disables
+posix_spawn, NLS, and Guile.

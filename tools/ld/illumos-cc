@@ -139,6 +139,8 @@ while [ "$1" != "--end-of-args--" ]; do
         -o*)            out=${a#-o} ;;
         -shared)        shared=1 ;;
         -L)             add "-L$1"; shift ;;
+        -isystem|-iquote|-idirafter|-isysroot|-include|-imacros)
+                        shift ;;
         -L*|-l*)        add "$a" ;;
         -Wl,*)
                 # Split at commas; an option's argument is the next word.
@@ -152,7 +154,7 @@ while [ "$1" != "--end-of-args--" ]; do
                         fi
                 done
                 shift ;;
-        -nostdlib|-nostartfiles|-nodefaultlibs|-pthread|-static-libgcc|\
+        -nostdlib|-nostartfiles|-nodefaultlibs|-nostdinc|-nostdinc++|-pthread|-static-libgcc|\
         -f*|-m*|-O*|-g*|-W*|-std=*|-D*|-U*|-I*|-pie|-no-pie|-rdynamic|\
         --target=*)
                 ;;
@@ -242,4 +244,4 @@ if [ $shared -eq 1 ]; then
         exec "$LD" -G -dy -o "$out" $ldargs
 fi
 # shellcheck disable=SC2086
-exec "$LD" -dy -z nodefs -o "$out" $ldargs
+exec "$LD" -dy -z "${ILLUMOS_CC_UNDEFINED:-nodefs}" -o "$out" $ldargs

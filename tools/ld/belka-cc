@@ -1,0 +1,99 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-17
+# SPDX-License-Identifier: MIT
+#
+# Cross-build an ordinary hosted C program against Belka's sysroot.
+# The environment supplies the toolchain paths from the parent makefile.
+
+set -eu
+
+compiler=$1
+shift
+link=1
+for argument in "$@"; do
+        case $argument in
+        -c|-S|-E|-M|-MM|--version|-v|-dumpmachine|-dumpversion|-print-*|--help)
+                link=0 ;;
+        esac
+done
+
+if [ "$link" -eq 0 ]; then
+        exec "$compiler" -D__belka__ -nostdinc -isystem "$BELKA_SYSROOT/usr/include" \
+            -isystem "$BELKA_CC_INCLUDE" -fno-stack-protector -fno-pie \
+            -fno-pic "$@"
+fi
+
+# Configure probes commonly compile and link one or more C files at once.
+compile_source()
+{
+        compile_input=$1
+        compile_output=$2
+        shift 2
+        set -- "$@" --end-compile-args--
+        while [ "$1" != --end-compile-args-- ]; do
+                compile_argument=$1
+                shift
+                case $compile_argument in
+                -o|-l|-L) shift ;;
+                -include|-imacros|-isystem|-iquote|-idirafter|-I|-D|-U|-isysroot|-x)
+                        compile_value=$1
+                        shift
+                        set -- "$@" "$compile_argument" "$compile_value" ;;
+                *.c|*.o|*.a|*.so|*.so.[0-9]*|-l*|-L*|-Wl,*|-shared|-static)
+                        ;;
+                *)      set -- "$@" "$compile_argument" ;;
+                esac
+        done
+        shift
+        "$compiler" -D__belka__ -nostdinc \
+            -isystem "$BELKA_SYSROOT/usr/include" -isystem "$BELKA_CC_INCLUDE" \
+            -fno-stack-protector -fno-pie -fno-pic \
+            "$@" -c "$compile_input" -o "$compile_output"
+}
+
+compile_directory=$(mktemp -d)
+trap 'rm -rf "$compile_directory"' 0
+source_index=0
+skip_argument=0
+for argument in "$@"; do
+        if [ "$skip_argument" -eq 1 ]; then
+                skip_argument=0
+                continue
+        fi
+        case $argument in
+        -o|-l|-L|-include|-imacros|-isystem|-iquote|-idirafter|-I|-D|-U|-isysroot|-x)
+                skip_argument=1 ;;
+        -*)     ;;
+        *.c)
+                compile_source "$argument" "$compile_directory/$source_index.o" "$@"
+                source_index=$((source_index + 1)) ;;
+        esac
+done
+source_index=0
+set -- "$@" --end-link-args--
+while [ "$1" != --end-link-args-- ]; do
+        argument=$1
+        shift
+        case $argument in
+        -o|-l|-L|-include|-imacros|-isystem|-iquote|-idirafter|-I|-D|-U|-isysroot|-x)
+                value=$1
+                shift
+                set -- "$@" "$argument" "$value" ;;
+        -*)     set -- "$@" "$argument" ;;
+        *.c)
+                set -- "$@" "$compile_directory/$source_index.o"
+                source_index=$((source_index + 1)) ;;
+        *)      set -- "$@" "$argument" ;;
+        esac
+done
+shift
+
+ILLUMOS_CC_UNDEFINED=defs sh "$BELKA_LD_DRIVER" "$BELKA_LD" "$compiler" \
+    -D__belka__ -nostdinc -isystem "$BELKA_SYSROOT/usr/include" \
+    -isystem "$BELKA_CC_INCLUDE" -fno-stack-protector -fno-pie -fno-pic \
+    "$BELKA_SYSROOT/usr/lib64/crt1.o" "$BELKA_SYSROOT/usr/lib64/crti.o" \
+    "$BELKA_CRTBEGIN" "$@" -Wl,-I,/usr/lib64/ld.so.1 \
+    -L"$BELKA_SYSROOT/usr/lib64" -lc "$BELKA_RTLIB" "$BELKA_CRTEND" \
+    "$BELKA_SYSROOT/usr/lib64/crtn.o"

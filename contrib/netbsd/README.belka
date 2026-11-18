@@ -96,3 +96,13 @@ usr.bin/diff is from a newer pinned NetBSD revision, recorded in its
 README.belka, to use NetBSD's BSD diff implementation. Its notices
 include Caldera's four-clause BSD licence and the University of
 California's licence. They are retained in the sources and NOTICE.
+
+    usr.bin/make/              bmake, with explicit target machine definitions
+    usr.bin/m4/, usr.bin/tsort/ m4 with GNU extensions, tsort
+    external/bsd/byacc/dist/   Berkeley yacc, version 20210109
+    external/bsd/flex/dist/    flex, version 2.6.4, bootstrap scanner/parser
+
+Berkeley yacc is public domain. Flex uses its modified BSD licence.
+Its Belka port clears expected pipe-seek errors before continuing through
+its output filters; macro processing uses NetBSD m4. Individual
+file notices remain authoritative.
