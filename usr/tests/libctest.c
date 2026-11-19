@@ -208,9 +208,22 @@ test_files(void)
         CHECK(f != NULL);
         if (f != NULL) {
                 fd = fileno(f);
+                while (fgetc(f) != EOF)
+                        ;
+                CHECK(feof(f) && !ferror(f));
                 CHECK(freopen(path("/libctest.tmp"), "r", f) == f);
+                CHECK(!feof(f) && !ferror(f));
                 CHECK(fileno(f) == fd);
                 CHECK(read(fd, line, 4) == 4 && memcmp(line, "line", 4) == 0);
+                CHECK(fclose(f) == 0);
+        }
+        f = fopen(path("/libctest.tmp"), "a");
+        CHECK(f != NULL);
+        if (f != NULL) {
+                CHECK(fgetc(f) == EOF && ferror(f));
+                CHECK(freopen(path("/libctest.tmp"), "r", f) == f);
+                CHECK(!feof(f) && !ferror(f));
+                CHECK(fgetc(f) == 'l');
                 CHECK(fclose(f) == 0);
         }
         CHECK(rename(path("/libctest.tmp"), path("/libctest.mv")) == 0);

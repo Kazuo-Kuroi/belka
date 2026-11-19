@@ -2195,3 +2195,15 @@ of the three-stage build and comparison.
 - Use an 8 GB optional source-kit image with 262144 inodes. Recommend
   4 GB guest memory and one build job: the x86 machine-description
   generator alone exceeded a gigabyte in a measured host run.
+
+## Reopened stream indicators (2026-11-19)
+
+- Follow [POSIX.1-2001 freopen](https://pubs.opengroup.org/onlinepubs/009695399/functions/freopen.html):
+  clear the stream's error and EOF indicators on reopening, alongside its
+  existing orientation and conversion-state reset. Retain the descriptor
+  preservation established for native build tools.
+- GCC fixincludes first consumes its filename list to EOF, then reopens
+  stdin before reusing it for a header filter. A stale EOF indicator made
+  that filter stop after one buffer and produce a truncated header. Cover
+  reopening streams after both EOF and read errors in the static/shared
+  libc regression suite.
