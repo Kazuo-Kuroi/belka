@@ -617,6 +617,73 @@ read_full(int fd, void *buf, size_t n)
 }
 
 /* Pipes: data, end of file, EPIPE, non-blocking ends, and atomic writes. */
+static volatile sig_atomic_t pipe_flow_timeout;
+
+static void
+on_pipe_flow_alarm(int signal_number)
+{
+        (void)signal_number;
+        pipe_flow_timeout = 1;
+}
+
+/* Repeated large writes race readers draining a full pipe on another CPU. */
+static void
+test_pipe_flow(void)
+{
+        static unsigned char block[65536];
+        unsigned char buffer[4096];
+        struct sigaction action = { 0 }, previous;
+        int fd[2], status, valid = 1;
+        pid_t child;
+        ssize_t n = -1;
+        size_t total = 0;
+
+        if (pipe(fd) != 0) {
+                CHECK(0);
+                return;
+        }
+        child = fork();
+        if (child == 0) {
+                close(fd[0]);
+                for (size_t i = 0; i < sizeof(block); i++)
+                        block[i] = (unsigned char)(i * 13 + 7);
+                for (int i = 0; i < 64; i++) {
+                        if (write(fd[1], block, sizeof(block)) != (ssize_t)sizeof(block))
+                                _exit(1);
+                }
+                _exit(0);
+        }
+        close(fd[1]);
+        if (child < 0) {
+                CHECK(0);
+                close(fd[0]);
+                return;
+        }
+        action.sa_handler = on_pipe_flow_alarm;
+        sigemptyset(&action.sa_mask);
+        CHECK(sigaction(SIGALRM, &action, &previous) == 0);
+        pipe_flow_timeout = 0;
+        alarm(10);
+        while (!pipe_flow_timeout) {
+                n = read(fd[0], buffer, sizeof(buffer));
+                if (n <= 0)
+                        break;
+                for (ssize_t i = 0; i < n; i++) {
+                        if (buffer[i] != (unsigned char)((total + i) * 13 + 7))
+                                valid = 0;
+                }
+                total += (size_t)n;
+        }
+        alarm(0);
+        CHECK(sigaction(SIGALRM, &previous, NULL) == 0);
+        CHECK(!pipe_flow_timeout && valid && n == 0 && total == 64 * sizeof(block));
+        close(fd[0]);
+        if (pipe_flow_timeout || n != 0)
+                kill(child, SIGKILL);
+        CHECK(waitpid(child, &status, 0) == child &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 static void
 test_pipes(void)
 {
@@ -2190,6 +2257,7 @@ main(int argc, char **argv)
         test_misc();
         test_clocks();
         test_pipes();
+        test_pipe_flow();
         test_pipe_flags();
         test_fifos();
         test_poll();

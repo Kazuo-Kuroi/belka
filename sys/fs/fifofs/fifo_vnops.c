@@ -297,8 +297,14 @@ fifo_write(struct vnode *vp, struct uio *uio, int ioflag,
                         sv_broadcast(&fn->fn_rsv);
                         pollwakeup(&fn->fn_ph);
                         mutex_lock(&fn->fn_lock);
-                        if ((error = fifo_sleep(fn, &fn->fn_wsv)) != 0)
-                                break;
+                        /* A reader may have made room during the callbacks. */
+                        room = PIPE_SIZE - fn->fn_count;
+                        if (fn->fn_readers != 0 &&
+                            (room == 0 || (atomic &&
+                            room < (size_t)uio->uio_resid))) {
+                                if ((error = fifo_sleep(fn, &fn->fn_wsv)) != 0)
+                                        break;
+                        }
                         continue;
                 }
                 tail = (fn->fn_head + fn->fn_count) % PIPE_SIZE;

@@ -2117,3 +2117,15 @@ bootstrap](#native-development-bootstrap-2026-11-18).
   kernel interface exists. Do not invent a memory count for compiler
   heuristics. Full native GCC source bootstrap and native muon/samurai
   remain separate acceptance work; see [native development](../native-development.md).
+
+## Pipe writer notification race (2026-11-19)
+
+- A writer drops fn_lock to notify readers and pollers before waiting for
+  room. Recheck both reader presence and room under fn_lock after those
+  callbacks; a reader can drain the pipe and issue its wakeup during the
+  unlocked interval. Enter the writer wait only while its predicate is
+  still false. This fixes the lost wakeup exposed by extracting the native
+  libc source archive through gzip and tar. The existing lock order and
+  pipe ABI remain unchanged.
+- Exercise sustained writes larger than the pipe capacity with a bounded
+  user-mode regression, checking byte order, completion and child status.
