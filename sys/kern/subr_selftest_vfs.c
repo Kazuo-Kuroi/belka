@@ -140,7 +140,10 @@ test_lookup_rules(void)
         memcpy(longname, "/selftest/", 10);
         longname[sizeof(longname) - 1] = '\0';
         CHECK(lookupname(longname, FOLLOW, &a) == ENAMETOOLONG);
-        CHECK(vn_mkdir("/", 0755) == EINVAL);           /* parent of / */
+        CHECK(vn_mkdir("/", 0755) == EEXIST);
+        CHECK(vn_mkdir("/selftest/.", 0755) == EEXIST);
+        CHECK(vn_mkdir("/selftest/a/..", 0755) == EEXIST);
+        CHECK(vn_mkdir("/selftest/missing/.", 0755) == ENOENT);
         CHECK(vn_rmdir("/selftest/a/.") == EINVAL);
         CHECK(vn_mkdir("/selftest/a", 0755) == EEXIST);
         CHECK(vn_rmdir("/selftest/a") == ENOTEMPTY);

@@ -226,6 +226,8 @@ test_files(void)
                 close(fd);
         CHECK(open(path("/bin/hello"), O_RDONLY | O_DIRECTORY) == -1 &&
             errno == ENOTDIR);
+        CHECK(mkdir("/", 0755) == -1 && errno == EEXIST);
+        CHECK(mkdir(".", 0755) == -1 && errno == EEXIST);
         CHECK(mkdir(path("/libctest.d"), 0755) == 0);
         CHECK(mkdir(path("/libctest.d"), 0755) == -1 && errno == EEXIST);
         CHECK(rmdir(path("/libctest.d")) == 0);

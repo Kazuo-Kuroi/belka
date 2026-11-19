@@ -419,8 +419,17 @@ vn_mkdirat(struct vnode *sdir, const char *path, mode_t mode)
         int error;
 
         if ((error = vn_parent(sdir, path, &dvp, name, &vp,
-            NO_FOLLOW)) != 0)
+            NO_FOLLOW)) != 0) {
+                /* Root and a final dot have no creatable parent/name pair. */
+                if (error == EINVAL) {
+                        error = lookuppn(path, NO_FOLLOW, sdir, NULL, NULL, &vp);
+                        if (error == 0) {
+                                VN_RELE(vp);
+                                error = EEXIST;
+                        }
+                }
                 return error;
+        }
         if (vp != NULL) {
                 VN_RELE(vp);
                 VN_RELE(dvp);

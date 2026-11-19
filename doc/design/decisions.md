@@ -2150,3 +2150,13 @@ assembler](#native-gcc-target-and-assembler-2026-11-18).
 - Increase optional compiler images to 32768 inodes to accommodate source
   extraction and object files; retain the normal image's inode count.
   See [native development](../native-development.md) for commands.
+
+## Existing mkdir targets (2026-11-19)
+
+- Follow [POSIX.1-2001 mkdir](https://pubs.opengroup.org/onlinepubs/009695399/functions/mkdir.html)
+  for existing directories, including root and a final dot: return EEXIST.
+  When parent lookup rejects a non-creatable parent/name pair with EINVAL,
+  mkdir resolves the whole target and reports existence or the lookup error.
+  This replaces mkdir's earlier EINVAL result for root; parent lookup itself
+  and the rename/removal rules are unchanged. GCC's libcody build exposed
+  the discrepancy through mkdir -p ./.
