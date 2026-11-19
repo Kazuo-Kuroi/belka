@@ -1,0 +1,15 @@
+--- a/libgcc/crtstuff.c
++++ b/libgcc/crtstuff.c
+@@ -384,7 +384,11 @@
+     return;
+ 
+ #if DEFAULT_USE_CXA_ATEXIT
+-#ifdef CRTSTUFFS_O
++#if defined (__belka__) && !defined (CRTSTUFFS_O)
++  /* Belka's libc finalizes each DSO separately, including the executable.  */
++  if (__cxa_finalize)
++    __cxa_finalize (&__dso_handle);
++#elif defined (CRTSTUFFS_O)
+   if (__cxa_finalize)
+     __cxa_finalize (__dso_handle);
+ #endif

@@ -360,13 +360,21 @@ $(TESTLIB): usr/tests/libdt.c $(LIBC_PROG_DEPS)
 	$(call LINK_SHARED,libdt.so.1) $(LIBC_DBGDIR)/libdt.o \
 	    $(SYSLIB)/libc.so
 
+TEXTREL_OBJ := $(LIBC_DBGDIR)/textrel_amd64.o
+$(TEXTREL_OBJ): usr/tests/textrel_amd64.S
+	@mkdir -p $(LIBC_DBGDIR)
+	$(LIBC_CC) -c -o $@ $<
+
+$(LIBC_DBGDIR)/dyntest: usr/tests/dyntest.c $(TEXTREL_OBJ)
+
 $(LIBC_DBGBINS): $(LIBC_DBGDIR)/%: usr/tests/%.c $(LIBC_PROG_DEPS) \
                 $(TESTLIB)
 	@mkdir -p $(LIBC_DBGDIR)
-	$(LIBC_CC) $(LIBC_CFLAGS) -fno-pic -fno-pie -c -o $@.o $<
+	$(LIBC_CC) $(LIBC_CFLAGS) -fno-pic -fno-pie \
+	    $(if $(filter dyntest,$*),-DBELKA_TEXTREL_TEST) -c -o $@.o $<
 	$(call LINK_DYNAMIC,$(DYN_INTERP),$(if $(filter dyntest,$*),\
 	    '$$ORIGIN/../lib')) $(LIBC_CRT0) $(PROGRAM_BEGIN) $@.o \
-	    $(if $(filter dyntest,$*),$(TESTLIB)) $(SYSLIB)/libc.so \
+	    $(if $(filter dyntest,$*),$(TEXTREL_OBJ) $(TESTLIB)) $(SYSLIB)/libc.so \
 	    $(LIBC_RTLIB) $(PROGRAM_END) $(LIBC_CRTN)
 
 $(LIBC_DBGDIR)/%-pie: usr/tests/%.c $(LIBC_PROG_DEPS) $(TESTLIB) $(PIE_BEGIN) \
@@ -399,6 +407,7 @@ $(LIBC_SODIR)/%.so.1: $(MLIBC_SO_BUILD)/%.so.1
 user-progs: $(LIBC_BINS)
 
 include mk/userland.mk
+include mk/native-compiler.mk
 
 EXT2_DIRS       = $(LIBC_DIR) usr/lib64=$(LIBC_SODIR) \
                   lib=$(TESTLIB_DIR)
@@ -479,10 +488,11 @@ test-reboot: $(REBOOT_ISO) $(LIBC_BINS)
 # usr/tests/boottest run from /etc/rc.local on the test root image. It
 # halts through uadmin, which must leave the image clean; the console
 # must have shown init's getty.
-test-boot: $(BOOT_ISO) $(ROOT_DEPS) $(SYS_DIR)/boottest usr/tests/utiltest.sh \
+test-boot: $(BOOT_ISO) $(ROOT_DEPS) $(SYS_DIR)/boottest usr/tests/utiltest.sh usr/tests/compiler.sh \
                 contrib/ksenon-utils/tests/run.sh
 	$(MKROOT_TEST)
 	$(MKDATA_TEST)
+	QEMU_TIMEOUT="$(if $(QEMU_TIMEOUT),$(QEMU_TIMEOUT),$(if $(wildcard build/native-compiler-sdk/compiler.stamp),600,60))" \
 	QEMU_EXPECT="boottest: 0 failures$$(printf '\nlogin: ')" \
 	    sh tools/qemu-test.sh pass $(BUILD)/test-boot-serial.log \
 	    $(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_TEST_IMG)) -cdrom $(BOOT_ISO) \

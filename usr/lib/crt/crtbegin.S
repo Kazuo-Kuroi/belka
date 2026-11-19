@@ -31,11 +31,13 @@ __init_array_start:
         .hidden __fini_array_start
 __fini_array_start:
 
+#ifndef BELKA_CRT_ARRAYS_ONLY
         .section .data
         .p2align 3
         .globl  __dso_handle
         .hidden __dso_handle
 __dso_handle:
         .quad   0
+#endif
 
         .section .note.GNU-stack, "", @progbits

@@ -2090,3 +2090,30 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
   muon and samurai remain before a full compiler/libc source bootstrap.
   PathScale is deferred until that compiler is ready. See
   [native development](../native-development.md) for the staged workflow.
+
+## Native GCC target and assembler (2026-11-18)
+
+This replaces the compiler/assembler status in [Native development
+bootstrap](#native-development-bootstrap-2026-11-18).
+
+- GCC 14.2.0 and GNU as 2.43 are optional bootstrap tools. Preserve their
+  upstream licences and ship small target patches with pinned, verified
+  release archives rather than importing complete generated source trees.
+  Keep illumos ld as the linker, with driver specifications for its
+  interpreter, shared-object, static and PIE options.
+- Build separate host cross and native compilers for amd64 LP64. Supply
+  static libgcc/libstdc++ and GMP/MPFR/MPC libraries and headers. Disable
+  multilib, LTO, plugins and optional runtimes in the initial port.
+  posix_spawn remains disabled; tools avoid sbrk-based heap-size probes.
+- Combine GCC's exception-registration CRT with Belka's libc array
+  boundaries without defining __dso_handle twice. Finalize the executable
+  handle before unregistering its unwind information, and omit executable
+  array markers from shared libraries. Keep unwind tables read-only to match mlibc and illumos link semantics.
+- Support amd64 ELF 32-bit signed and unsigned dynamic relocations with
+  width-correct writes and overflow checks. For text relocations,
+  temporarily permit writes to non-writable load segments and restore
+  their original permissions before initializers run.
+- Physical-memory sysconf queries report an indeterminate value until a
+  kernel interface exists. Do not invent a memory count for compiler
+  heuristics. Full native GCC source bootstrap and native muon/samurai
+  remain separate acceptance work; see [native development](../native-development.md).

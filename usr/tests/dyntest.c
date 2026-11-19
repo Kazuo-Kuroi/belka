@@ -24,6 +24,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +44,13 @@ void dt_set_tls(int);
 int dt_format(char *, size_t, int);
 
 static int failures;
+
+#ifdef BELKA_TEXTREL_TEST
+long dt_textrel_signed(void);
+uint32_t dt_textrel_unsigned(void);
+void dt_textrel_write(const char *);
+static const char textrel_readonly[] = "read-only";
+#endif
 
 #define CHECK(expr)                                                     \
         do {                                                            \
@@ -196,6 +204,33 @@ at_exit(void)
         printf("dyntest: exit handler\n");
 }
 
+#ifdef BELKA_TEXTREL_TEST
+/* Both narrow relocation widths and the restoration of read-only mappings. */
+static void
+test_text_relocations(void)
+{
+        pid_t child, waited;
+        int status;
+
+        CHECK(dt_textrel_signed() == -1);
+        CHECK(dt_textrel_unsigned() == UINT32_MAX);
+        child = fork();
+        CHECK(child >= 0);
+        if (child == 0) {
+                dt_textrel_write(textrel_readonly);
+                _exit(99);
+        }
+        if (child > 0) {
+                do {
+                        waited = waitpid(child, &status, 0);
+                } while (waited == -1 && errno == EINTR);
+                CHECK(waited == child);
+                if (waited == child)
+                        CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
+        }
+}
+#endif
+
 int
 main(int argc, char **argv)
 {
@@ -205,6 +240,9 @@ main(int argc, char **argv)
         test_tls();
         test_libdt();
         test_dl();
+#ifdef BELKA_TEXTREL_TEST
+        test_text_relocations();
+#endif
         test_fork();
         CHECK(atexit(at_exit) == 0);
         printf("dyntest: %d failures\n", failures);

@@ -518,6 +518,20 @@ status "ar extracted bytes" 0 cmp one ar-out/one
 status "ranlib index" 0 ranlib libfixture.a
 status "native archive" 0 ar rcs libnative.a /usr/tests/dev/devvalue.o
 status "native archive index" 0 ranlib libnative.a
+if command -v as >/dev/null 2>&1; then
+        cat > native-main.s <<'ASM'
+.text
+.globl main
+.type main,@function
+main:
+        xorl %eax, %eax
+        ret
+.section .note.GNU-stack,"",@progbits
+ASM
+        status "native assembly" 0 as --64 -o native-main.o native-main.s
+        status "assembled program link" 0 sh -c 'ld -64 -dy -z defs -I /usr/lib64/ld.so.1 -o assembled /usr/lib64/crt1.o /usr/lib64/crti.o /usr/lib64/crtbegin.o native-main.o -L/usr/lib64 -lc /usr/lib64/libcompiler_rt.a /usr/lib64/crtend.o /usr/lib64/crtn.o'
+        status "assembled program" 0 ./assembled
+fi
 status "native partial link" 0 ld -64 -r -o hello.o /usr/tests/dev/devhello.o
 status "native executable link" 0 sh -c 'ld -64 -dy -z defs -I /usr/lib64/ld.so.1 -o hello /usr/lib64/crt1.o /usr/lib64/crti.o /usr/lib64/crtbegin.o hello.o libnative.a -L/usr/lib64 -lc /usr/lib64/libcompiler_rt.a /usr/lib64/crtend.o /usr/lib64/crtn.o'
 check "native executable" 'native linker' ./hello
@@ -533,6 +547,10 @@ status "native ld relink" 0 gmake -f /usr/src/illumos-ld/relink.mk
 mv ld.stage2 ld.bootstrap
 status "second stage relink" 0 gmake -f /usr/src/illumos-ld/relink.mk LD=./ld.bootstrap
 status "linker reproducibility" 0 cmp ld.bootstrap ld.stage2
+
+if command -v gcc >/dev/null 2>&1; then
+        . /usr/tests/compiler.sh
+fi
 
 cd /
 [ "$fail" -ne 0 ] || rm -rf "$work"

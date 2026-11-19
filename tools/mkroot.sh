@@ -237,7 +237,7 @@ cp contrib/netbsd/etc/rc.d/* etc/rc.d/* "$src/etc/rc.d/"
 
 if [ $test -eq 1 ]; then
         install_prog boottest usr/tests/boottest
-        cp usr/tests/utiltest.sh "$src/usr/tests/utiltest.sh"
+        cp usr/tests/utiltest.sh usr/tests/compiler.sh "$src/usr/tests/"
         # ksenon-utils' own suite, over a directory of just its 45
         # utilities and their links, as its tests/run.sh expects (../cmd).
         mkdir -p "$src/usr/tests/xn/cmd" "$src/usr/tests/xn/tests"
@@ -273,6 +273,13 @@ if [ $test -eq 1 ]; then
 EOF
 fi
 
+image_size=128M
+if [ -f build/native-compiler-sdk/assembler.stamp ]; then
+        cp -R build/native-compiler-sdk/usr/. "$src/usr/"
+fi
+if [ -f build/native-compiler-sdk/compiler.stamp ]; then
+        image_size=512M
+fi
 rm -f "$img"
 $FAKEROOT sh -c '
         set -e
@@ -288,5 +295,5 @@ $FAKEROOT sh -c '
         if [ -d "$src/home/test" ]; then
                 chown 100:100 "$src/home/test"
         fi
-        "$2" -q -F -t ext2 -b 4096 -N 4096 -L belkaroot -d "$src" "$3" 128M
-' sh "$src" "$MKE2FS" "$img"
+        "$2" -q -F -t ext2 -b 4096 -N 4096 -L belkaroot -d "$src" "$3" "$4"
+' sh "$src" "$MKE2FS" "$img" "$image_size"

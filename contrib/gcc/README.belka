@@ -1,0 +1,15 @@
+GCC 14.2.0 for Belka
+====================
+
+The release archive and GCC's matching GMP 6.2.1, MPFR 4.1.0 and MPC 1.2.1
+prerequisites are pinned by SHA-256 in tools/toolchain/sources. Archives
+are cached under build/distfiles; sources are unpacked under
+build/toolchain-src. tools/toolchain/prepare.sh verifies the archives and
+applies the patches here. It does not execute download_prerequisites.
+
+Upstream sources keep their GPL and LGPL notices and runtime exceptions.
+The Belka target header is MIT-licensed. Patches to upstream files retain
+those files' licences. The host cross compiler and native compiler are
+built separately; both target x86_64-unknown-belka and use illumos ld.
+Only the amd64 LP64 ABI is enabled. Multilib, LTO, NLS and optional target
+runtimes are disabled for the initial bootstrap.

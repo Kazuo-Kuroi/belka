@@ -1,0 +1,48 @@
+--- a/gcc/cp/module.cc
++++ b/gcc/cp/module.cc
+@@ -256,6 +256,27 @@
+ #define MAPPED_READING 0
+ #define MAPPED_WRITING 0
+ #endif
++#endif
++
++#if MAPPED_READING
++/* Use the POSIX advisory interface when madvise is unavailable.  */
++static int
++module_advise_random (void *mapping, size_t length)
++{
++#if defined (MADV_RANDOM)
++  return madvise (static_cast<char *> (mapping), length, MADV_RANDOM);
++#elif defined (POSIX_MADV_RANDOM)
++  int error = posix_madvise (mapping, length, POSIX_MADV_RANDOM);
++  if (error)
++    {
++      errno = error;
++      return -1;
++    }
++  return 0;
++#else
++  return 0;
++#endif
++}
+ #endif
+ 
+ /* Some open(2) flag differences, what a colourful world it is!  */
+@@ -1675,7 +1696,7 @@
+ 	      set_error (errno);
+ 	  else
+ 	    {
+-	      if (madvise (mapping, hdr.pos, MADV_RANDOM))
++	      if (module_advise_random (mapping, hdr.pos))
+ 		goto fail;
+ 
+ 	      /* These buffers are never NULL in this case.  */
+@@ -1786,7 +1807,7 @@
+     }
+   /* We'll be hopping over this randomly.  Some systems declare the
+      first parm as char *, and other declare it as void *.  */
+-  if (madvise (reinterpret_cast <char *> (mapping), size, MADV_RANDOM))
++  if (module_advise_random (mapping, size))
+     goto fail;
+ 
+   hdr.buffer = (char *)mapping;

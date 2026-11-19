@@ -1,0 +1,95 @@
+--- a/config.sub
++++ b/config.sub
+@@ -1749,7 +1749,7 @@
+ 	     | onefs* | tirtos* | phoenix* | fuchsia* | redox* | bme* \
+ 	     | midnightbsd* | amdhsa* | unleashed* | emscripten* | wasi* \
+ 	     | nsk* | powerunix* | genode* | zvmoe* | qnx* | emx* | zephyr* \
+-	     | fiwix* )
++	     | fiwix* | belka* )
+ 		;;
+ 	# This one is extra strict with allowed versions
+ 	sco3.2v2 | sco3.2v[4-9]* | sco5v6*)
+--- a/config.guess
++++ b/config.guess
+@@ -177,6 +177,9 @@
+ # Note: order is significant - the case branches are not exclusive.
+ 
+ case "$UNAME_MACHINE:$UNAME_SYSTEM:$UNAME_RELEASE:$UNAME_VERSION" in
++    amd64:Belka:*:* | x86_64:Belka:*:*)
++	echo x86_64-unknown-belka
++	exit ;;
+     *:NetBSD:*:*)
+ 	# NetBSD (nbsd) targets should (where applicable) match one or
+ 	# more of the tuples: *-*-netbsdelf*, *-*-netbsdaout*,
+--- a/gcc/config.gcc
++++ b/gcc/config.gcc
+@@ -722,6 +722,16 @@
+ 
+ # Common parts for widely ported systems.
+ case ${target} in
++*-*-belka*)
++  extra_options="${extra_options} gnu-user.opt"
++  gas=yes
++  gnu_ld=no
++  default_use_cxa_atexit=yes
++  use_gcc_stdint=provide
++  case ${enable_threads} in
++    "" | yes | posix) thread_file='posix' ;;
++  esac
++  ;;
+ *-*-darwin*)
+   tmake_file="t-darwin "
+   tm_file="${tm_file} darwin.h"
+@@ -1932,6 +1942,9 @@
+ i[34567]86-*-elf*)
+ 	tm_file="${tm_file} i386/unix.h i386/att.h elfos.h newlib-stdint.h i386/i386elf.h"
+ 	;;
++x86_64-*-belka*)
++	tm_file="${tm_file} i386/unix.h i386/att.h elfos.h glibc-stdint.h i386/i386elf.h i386/x86-64.h belka.h"
++	;;
+ x86_64-*-elf*)
+ 	tm_file="${tm_file} i386/unix.h i386/att.h elfos.h newlib-stdint.h i386/i386elf.h i386/x86-64.h"
+ 	;;
+--- a/libgcc/config.host
++++ b/libgcc/config.host
+@@ -380,6 +380,9 @@
+ *-*-vxworks*)
+   tmake_file=t-vxworks
+   ;;
++*-*-belka*)
++  extra_parts="crtbegin.o crtbeginS.o crtend.o crtendS.o"
++  ;;
+ *-*-elf)
+   extra_parts="crtbegin.o crtend.o"
+   ;;
+@@ -741,7 +744,7 @@
+ i[34567]86-*-elf*)
+ 	tmake_file="$tmake_file i386/t-crtstuff t-crtstuff-pic t-libgcc-pic"
+ 	;;
+-x86_64-*-elf* | x86_64-*-rtems*)
++x86_64-*-belka* | x86_64-*-elf* | x86_64-*-rtems*)
+ 	tmake_file="$tmake_file i386/t-crtstuff t-crtstuff-pic t-libgcc-pic"
+ 	case ${host} in
+ 	  x86_64-*-rtems*)
+--- a/libstdc++-v3/crossconfig.m4
++++ b/libstdc++-v3/crossconfig.m4
+@@ -174,7 +174,7 @@
+ 
+     GCC_CHECK_TLS
+     ;;
+-  *-linux* | *-uclinux* | *-gnu* | *-kfreebsd*-gnu | *-cygwin* | *-solaris*)
++  *-belka* | *-linux* | *-uclinux* | *-gnu* | *-kfreebsd*-gnu | *-cygwin* | *-solaris*)
+     GLIBCXX_CHECK_COMPILER_FEATURES
+     GLIBCXX_CHECK_LINKER_FEATURES
+     GLIBCXX_CHECK_MATH_SUPPORT
+--- a/libstdc++-v3/configure
++++ b/libstdc++-v3/configure
+@@ -38822,7 +38822,7 @@
+ 
+   fi
+     ;;
+-  *-linux* | *-uclinux* | *-gnu* | *-kfreebsd*-gnu | *-cygwin* | *-solaris*)
++  *-belka* | *-linux* | *-uclinux* | *-gnu* | *-kfreebsd*-gnu | *-cygwin* | *-solaris*)
+ 
+   # All these tests are for C++; save the language and the compiler flags.
+   # The CXXFLAGS thing is suspicious, but based on similar bits previously

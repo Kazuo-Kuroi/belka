@@ -1,0 +1,8 @@
+GNU assembler 2.43 for Belka
+============================
+
+The upstream release and SHA-256 are pinned in tools/toolchain/sources.
+The source remains in the build cache, with its original GPL notices.
+The patch here recognises Belka in config.sub/config.guess and selects
+the existing amd64 ELF BFD and GNU assembler backends. GNU ld is disabled;
+Belka continues to use its illumos link-editor and archive tools.
