@@ -13,3 +13,9 @@ those files' licences. The host cross compiler and native compiler are
 built separately; both target x86_64-unknown-belka and use illumos ld.
 Only the amd64 LP64 ABI is enabled. Multilib, LTO, NLS and optional target
 runtimes are disabled for the initial bootstrap.
+
+The native source kit is prepared in build/gcc-bootstrap-src, independently
+of the host cross-build sources. libgcc builds Belka's MIT-licensed array
+boundary objects from copies of usr/lib/crt, using t-belka. The assembler
+probe uses POSIX tail syntax. See doc/native-development.md for the offline
+source kit and staged native bootstrap procedure.

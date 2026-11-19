@@ -6,3 +6,9 @@ The source remains in the build cache, with its original GPL notices.
 The patch here recognises Belka in config.sub/config.guess and selects
 the existing amd64 ELF BFD and GNU assembler backends. GNU ld is disabled;
 Belka continues to use its illumos link-editor and archive tools.
+
+The optional native-object-tools target also builds objcopy, objdump,
+readelf, size, strings and strip for compiler bootstrap and object
+inspection. It retains illumos ld, ar, nm and the ranlib adapter. GNU strip
+is used on relocatable bootstrap objects; the image builder leaves dynamic
+illumos executables unstripped.

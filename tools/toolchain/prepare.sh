@@ -31,6 +31,10 @@ for port_patch in "$repo/contrib/gcc/patches/"*.patch; do
         patch -d "$sources/gcc-14.2.0" -p1 < "$port_patch"
 done
 cp "$repo/contrib/gcc/belka.h" "$sources/gcc-14.2.0/gcc/config/belka.h"
+mkdir -p "$sources/gcc-14.2.0/libgcc/config/belka"
+cp "$repo/contrib/gcc/t-belka" "$sources/gcc-14.2.0/libgcc/config/"
+cp "$repo/usr/lib/crt/crtbegin.S" "$repo/usr/lib/crt/crtend.S" \
+    "$sources/gcc-14.2.0/libgcc/config/belka/"
 patch -d "$sources/binutils-2.43" -p1 < "$repo/contrib/binutils/patches/0001-belka-target.patch"
 for dep in gmp-6.2.1 mpfr-4.1.0 mpc-1.2.1; do
         ln -s "../$dep" "$sources/gcc-14.2.0/${dep%%-*}"

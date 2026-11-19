@@ -1,0 +1,22 @@
+--- a/gcc/configure.ac
++++ b/gcc/configure.ac
+@@ -3500,7 +3500,7 @@
+   # Therefore, use diff -b for the comparisons.
+   if test x$gcc_cv_objdump != x \
+   && $gcc_cv_objdump -s -j .eh_frame conftest.o 2>/dev/null \
+-     | tail -3 > conftest.got \
++     | tail -n 3 > conftest.got \
+   && { diff -b conftest.lit conftest.got > /dev/null 2>&1 \
+     || diff -b conftest.big conftest.got > /dev/null 2>&1; }
+   then
+--- a/gcc/configure
++++ b/gcc/configure
+@@ -26836,7 +26836,7 @@
+   # Therefore, use diff -b for the comparisons.
+   if test x$gcc_cv_objdump != x \
+   && $gcc_cv_objdump -s -j .eh_frame conftest.o 2>/dev/null \
+-     | tail -3 > conftest.got \
++     | tail -n 3 > conftest.got \
+   && { diff -b conftest.lit conftest.got > /dev/null 2>&1 \
+     || diff -b conftest.big conftest.got > /dev/null 2>&1; }
+   then

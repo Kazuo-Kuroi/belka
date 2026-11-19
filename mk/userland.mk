@@ -895,7 +895,8 @@ $(SYS_DIR)/ps: $(SYS_OBJ)/ps.o $(MLIBC_SHARED) $(PROGRAM_BEGIN) $(PROGRAM_END) \
 ROOT_IMG        := build/root-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
-                   build/native-libc-sdk/*.stamp) $(SYS_PROGS) $(SYS_DIR)/ps \
+                   build/native-libc-sdk/*.stamp build/native-object-sdk/*.stamp \
+                   build/native-gcc-source-sdk/*.stamp) $(SYS_PROGS) $(SYS_DIR)/ps \
                    $(TERM_PROGS) $(XN_BINS) \
 	           $(SYS_DIR)/sdk.stamp usr/share/mk/sys.mk usr/bin/ranlib/ranlib.sh \
                    contrib/mlibc/LICENSE \

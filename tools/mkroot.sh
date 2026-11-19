@@ -293,6 +293,14 @@ fi
 if [ -f build/native-libc-sdk/libc.stamp ]; then
         cp -R build/native-libc-sdk/usr/. "$src/usr/"
 fi
+if [ -f build/native-object-sdk/objects.stamp ]; then
+        cp -R build/native-object-sdk/usr/. "$src/usr/"
+fi
+if [ -f build/native-gcc-source-sdk/gcc-source.stamp ]; then
+        cp -R build/native-gcc-source-sdk/usr/. "$src/usr/"
+        image_size=8G
+        image_inodes=262144
+fi
 rm -f "$img"
 $FAKEROOT sh -c '
         set -e

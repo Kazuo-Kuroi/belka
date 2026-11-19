@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-19
+# SPDX-License-Identifier: MIT
+# Array boundaries used alongside GCC's exception registration CRT objects.
+belka-crtbegin.o: $(srcdir)/config/belka/crtbegin.S
+	$(crt_compile) -DBELKA_CRT_ARRAYS_ONLY -c $<
+belka-crtend.o: $(srcdir)/config/belka/crtend.S
+	$(crt_compile) -c $<

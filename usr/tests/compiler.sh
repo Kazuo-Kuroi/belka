@@ -5,7 +5,8 @@
 # Sourced by utiltest.sh with its check/status helpers and temporary directory.
 
 echo "compilertest: C driver, linking, and TLS"
-status "static exec regression compile" 0 gcc -static /usr/tests/exectest.c -o exec-static
+status "static exec regression compile" 0 gcc -static \
+    "${COMPILER_EXEC_SOURCE:-/usr/tests/exectest.c}" -o exec-static
 status "static exec regression" 0 ./exec-static "$PWD"
 check "GCC target" x86_64-unknown-belka gcc -dumpmachine
 check "GCC version" 14.2.0 gcc -dumpfullversion
@@ -102,6 +103,17 @@ C
 status "native shared object" 0 gcc -fPIC -shared compiler-dso.c -o libcompiler-test.so
 status "native DSO client" 0 gcc compiler-dso-main.c -L. -lcompiler-test -Wl,-R,"$PWD" -o compiler-dso
 check "native DSO TLS" 'TLS 41 42' ./compiler-dso
+if command -v objcopy >/dev/null 2>&1; then
+        status "native object compile" 0 gcc -g -c compiler-c.c -o compiler-object.o
+        status "native object inspection" 0 readelf -h compiler-object.o
+        status "native object disassembly" 0 objdump -d compiler-object.o
+        status "native object copy" 0 objcopy --strip-debug compiler-object.o compiler-copy.o
+        status "native stripped object link" 0 gcc compiler-copy.o -o compiler-object
+        check "native copied object executable" 'C target 42' ./compiler-object
+        status "native strip object" 0 strip --strip-debug compiler-object.o
+        status "native stripped object relink" 0 gcc compiler-object.o -o compiler-stripped
+        check "native stripped object executable" 'C target 42' ./compiler-stripped
+fi
 echo "compilertest: C++ exceptions and threads"
 cat > compiler-cpp.cc <<'CPP'
 #include <cstdio>

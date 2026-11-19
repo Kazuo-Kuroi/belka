@@ -11,6 +11,7 @@ NATIVE_GCC_STAMP := build/toolchain-native-gcc/built.stamp
 
 $(COMPILER_SRC_STAMP): tools/toolchain/prepare.sh tools/toolchain/sources \
         $(wildcard contrib/gcc/patches/*.patch) contrib/gcc/belka.h \
+        contrib/gcc/t-belka usr/lib/crt/crtbegin.S usr/lib/crt/crtend.S \
         contrib/binutils/patches/0001-belka-target.patch
 	sh tools/toolchain/prepare.sh
 
@@ -47,3 +48,22 @@ test-native-compiler: native-compiler
 	+$(MAKE) QEMU_TIMEOUT=600 test-boot
 
 .PHONY: test-native-compiler cross-compiler native-assembler native-compiler
+
+NATIVE_OBJECT_STAMP := build/toolchain-native-binutils/objects.stamp
+$(NATIVE_OBJECT_STAMP): $(NATIVE_AS_STAMP) tools/toolchain/build-native-objects.sh
+	+$(BELKA_CC_ENV) JOBS=$(NATIVE_JOBS) sh tools/toolchain/build-native-objects.sh
+	touch $@
+
+native-object-tools: $(NATIVE_OBJECT_STAMP)
+	sh tools/toolchain/package-objects.sh
+
+.PHONY: native-object-tools
+
+# Prepare an isolated source tree: do not replace sources used by host builds.
+native-gcc-kit:
+	@test -f build/native-compiler-sdk/compiler.stamp || \
+	    { echo 'build the native compiler package first' >&2; exit 1; }
+	TOOLCHAIN_SOURCE_DIR=$(abspath build/gcc-bootstrap-src) sh tools/toolchain/prepare.sh
+	sh tools/toolchain/package-gcc-source.sh
+
+.PHONY: native-gcc-kit

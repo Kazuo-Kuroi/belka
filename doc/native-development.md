@@ -153,6 +153,59 @@ signal delivery. The check also rebuilds and runs Belka's libc regression
 program against both libraries, supplying its directory and separate-mount
 fixtures under /tmp. The installed system libc is left in place.
 
+## GCC source bootstrap
+
+Prepare the additional object tools and offline compiler sources:
+
+```
+make native-object-tools
+make native-gcc-kit
+make root-image
+make MEM=4G run
+```
+
+The object-tool package supplies GNU objcopy, objdump, readelf, size,
+strings and strip from the pinned binutils 2.43 release. It keeps illumos
+ld, ar and nm in place. Use GNU strip on the bootstrap's relocatable
+objects and archives; the image builder continues to leave illumos-linked
+dynamic executables intact.
+
+The source kit contains the patched GCC 14.2.0 tree and its pinned GMP,
+MPFR and MPC sources. It is prepared separately from the host cross-build
+source tree. Staging it selects an 8 GB root image with 262144 inodes.
+Remove `build/native-gcc-source-sdk` to omit that optional source kit from
+subsequent images.
+
+Inside Belka, configure or run the source bootstrap:
+
+```
+MODE=configure sh /usr/src/gcc-bootstrap/native-gcc-build.sh
+JOBS=1 sh /usr/src/gcc-bootstrap/native-gcc-build.sh
+sh /usr/src/gcc-bootstrap/native-gcc-check.sh
+```
+
+The machine-description generator alone needs more than a gigabyte of
+memory. Use 4 GB of guest RAM and start with one build job.
+
+The default work directory is `/var/tmp/gcc-bootstrap`; an optional first
+argument selects another directory. The default target is bootstrap-lean,
+which builds three stages and compares the later compiler objects. The
+script supports all-stage1, all-stage2 and all-stage3 through MODE for
+inspection or resuming individual stages. Installation goes under
+`/var/tmp/gcc-bootstrap/install`, preserving the installed bootstrap
+compiler. Use a fresh directory after changing the source kit or configure
+options. Existing build trees retain their configuration and objects.
+
+The check verifies that the staged installation supplies the compiler's
+private programs, libraries and Belka CRT objects. It then runs the native
+compiler regression suite with that installation first in PATH, including
+static and dynamic C/C++, PIE, TLS, exceptions and shared libraries.
+
+Belka's CRT array-boundary objects are now built and installed by libgcc
+alongside GCC's exception-registration CRT. The port also uses POSIX tail
+syntax in GCC's assembler probe. Compiler work remains on fork/exec with
+posix_spawn and sbrk probes disabled.
+
 ## Remaining compiler bootstrap
 
 Full GCC source self-bootstrap is a later acceptance stage.

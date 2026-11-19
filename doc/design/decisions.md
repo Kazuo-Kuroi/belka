@@ -2174,3 +2174,24 @@ assembler](#native-gcc-target-and-assembler-2026-11-18).
   both static and shared libc, including arguments containing spaces and
   empty arguments. No kernel executable-format or syscall ABI change is
   involved.
+
+## Native GCC source bootstrap kit (2026-11-19)
+
+This extends [Native GCC target and assembler](#native-gcc-target-and-assembler-2026-11-18)
+with an offline source bootstrap workflow; acceptance requires completion
+of the three-stage build and comparison.
+
+- Package the patched GCC 14.2.0 tree and pinned GMP, MPFR and MPC sources
+  separately from sources used by host cross-builds. Keep installation
+  under a staging directory until its compiler has been validated. Do not
+  replace the installed compiler during the bootstrap.
+- Supply optional GNU binutils object utilities from the existing pinned
+  release. Keep illumos ld, ar and nm as the defaults. Restrict GNU strip
+  use to bootstrap objects and archives; preserve illumos-linked dynamic
+  executables when building images.
+- Have libgcc build and install Belka's CRT array-boundary objects in
+  addition to GCC's exception-registration CRT. Use POSIX tail syntax in
+  the assembler probe. Continue to disable posix_spawn and sbrk probes.
+- Use an 8 GB optional source-kit image with 262144 inodes. Recommend
+  4 GB guest memory and one build job: the x86 machine-description
+  generator alone exceeded a gigabyte in a measured host run.
