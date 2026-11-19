@@ -11,6 +11,10 @@ set -eu
 
 compiler=$1
 shift
+case "$*" in
+-Wl,-v|-Wl,--version|-Wl,-V)
+        exec sh "$BELKA_LD_DRIVER" "$BELKA_LD" "$compiler" "$@" ;;
+esac
 link=1
 for argument in "$@"; do
         case $argument in

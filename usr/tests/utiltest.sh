@@ -548,6 +548,8 @@ mv ld.stage2 ld.bootstrap
 status "second stage relink" 0 gmake -f /usr/src/illumos-ld/relink.mk LD=./ld.bootstrap
 status "linker reproducibility" 0 cmp ld.bootstrap ld.stage2
 
+. /usr/tests/buildtools.sh
+
 if command -v gcc >/dev/null 2>&1; then
         . /usr/tests/compiler.sh
 fi

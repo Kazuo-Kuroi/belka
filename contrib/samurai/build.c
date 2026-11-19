@@ -4,7 +4,9 @@
 #include <inttypes.h>
 #include <poll.h>
 #include <signal.h>
+#ifndef __belka__
 #include <spawn.h>
+#endif
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -289,7 +291,9 @@ jobstart(struct job *j, struct edge *e)
 	struct node *n;
 	struct string *rspfile, *content;
 	int fd[2];
+#ifndef __belka__
 	posix_spawn_file_actions_t actions;
+#endif
 	char *argv[] = {"/bin/sh", "-c", NULL, NULL};
 
 	++nstarted;
@@ -319,6 +323,43 @@ jobstart(struct job *j, struct edge *e)
 	if (!consoleused)
 		printstatus(e, j->cmd);
 
+#ifdef __belka__
+	/* Keep pipe descriptors out of stdio and out of subsequent execs. */
+	for (i = 0; i < 2; ++i) {
+		if (fd[i] < 3) {
+			int replacement = fcntl(fd[i], F_DUPFD, 3);
+			if (replacement < 0)
+				goto err2;
+			close(fd[i]);
+			fd[i] = replacement;
+		}
+		if (fcntl(fd[i], F_SETFD, FD_CLOEXEC) < 0)
+			goto err2;
+	}
+	j->fd = fd[0];
+	j->pid = fork();
+	if (j->pid == -1) {
+		warn("fork:");
+		goto err2;
+	}
+	if (j->pid == 0) {
+		int input;
+
+		close(fd[0]);
+		if (e->pool != &consolepool) {
+			input = open("/dev/null", O_RDONLY);
+			if (input < 0 || dup2(input, 0) < 0)
+				_exit(126);
+			if (input != 0)
+				close(input);
+			if (dup2(fd[1], 1) < 0 || dup2(fd[1], 2) < 0)
+				_exit(126);
+		}
+		close(fd[1]);
+		execve(argv[0], argv, environ);
+		_exit(127);
+	}
+#else
 	if ((errno = posix_spawn_file_actions_init(&actions))) {
 		warn("posix_spawn_file_actions_init:");
 		goto err2;
@@ -350,6 +391,7 @@ jobstart(struct job *j, struct edge *e)
 		goto err3;
 	}
 	posix_spawn_file_actions_destroy(&actions);
+#endif
 	close(fd[1]);
 	j->failed = false;
 	if (e->pool == &consolepool)
@@ -357,8 +399,10 @@ jobstart(struct job *j, struct edge *e)
 
 	return j->fd;
 
+#ifndef __belka__
 err3:
 	posix_spawn_file_actions_destroy(&actions);
+#endif
 err2:
 	close(fd[0]);
 	close(fd[1]);

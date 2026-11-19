@@ -101,6 +101,7 @@ const char *
 machine_system_to_kernel_name(enum machine_system sys)
 {
 	switch (sys) {
+	case machine_system_belka: return "belka";
 	case machine_system_freebsd: return "freebsd";
 	case machine_system_openbsd: return "openbsd";
 	case machine_system_netbsd: return "netbsd";
@@ -137,6 +138,7 @@ machine_system(const struct str *sysname)
 		const char *name;
 		enum machine_system sys;
 	} map[] = {
+		{ "belka", machine_system_belka },
 		{ "darwin", machine_system_darwin }, // Either OSX or iOS
 		{ "dragonfly", machine_system_dragonfly }, // DragonFly BSD
 		{ "freebsd", machine_system_freebsd }, // FreeBSD and its derivatives

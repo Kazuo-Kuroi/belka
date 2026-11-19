@@ -7,3 +7,8 @@ SHA-256: 956b5a74f7852ec4c57a11825dac79052da878da78f507bee1a0ef955053fbbb
 
 Muon is GPL-3.0-only; individual bundled files retain their own notices.
 The complete upstream LICENSES directory accompanies this import.
+
+Belka adds machine recognition and an illumos linker backend. The build
+uses external samurai and disables optional fetching, native backtraces
+and documentation generation. The small portability changes expose the
+existing BSD utimes interface and include termios.h for struct winsize.

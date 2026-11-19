@@ -818,7 +818,8 @@ $(SYS_OBJ)/stat/stat.o: TOOL_XFLAGS := -DHAVE_NBTOOL_CONFIG_H=1
 $(SYS_OBJ)/find/function.o: TOOL_XFLAGS := -DBELKA_ALL_LOCAL
 
 TEXT_PROGS      := $(addprefix $(SYS_DIR)/,sed grep awk vi $(FILE_TOOLS) \
-                   hostname stty chsh less mandoc pax gzip diff patch bmake tsort yacc lex m4 gmake ld ar nm)
+                   hostname stty chsh less mandoc pax gzip diff patch \
+                   bmake tsort yacc lex m4 gmake ld ar nm samu muon)
 
 TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
@@ -893,7 +894,9 @@ $(SYS_DIR)/ps: $(SYS_OBJ)/ps.o $(MLIBC_SHARED) $(PROGRAM_BEGIN) $(PROGRAM_END) \
 # for each boot.
 ROOT_IMG        := build/root-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
-ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp) $(SYS_PROGS) $(SYS_DIR)/ps $(TERM_PROGS) $(XN_BINS) \
+ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
+                   build/native-libc-sdk/*.stamp) $(SYS_PROGS) $(SYS_DIR)/ps \
+                   $(TERM_PROGS) $(XN_BINS) \
 	           $(SYS_DIR)/sdk.stamp usr/share/mk/sys.mk usr/bin/ranlib/ranlib.sh \
                    contrib/mlibc/LICENSE \
                    $(wildcard contrib/compiler-runtime-licenses/*/*) \

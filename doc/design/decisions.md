@@ -2129,3 +2129,24 @@ bootstrap](#native-development-bootstrap-2026-11-18).
   pipe ABI remain unchanged.
 - Exercise sustained writes larger than the pipe capacity with a bounded
   user-mode regression, checking byte order, completion and child status.
+
+## Native build tools and libc source kit (2026-11-19)
+
+This replaces the muon/samurai status in [Native GCC target and
+assembler](#native-gcc-target-and-assembler-2026-11-18).
+
+- Import samurai 1.3 and muon 0.7.1 with upstream licences and source
+  hashes. Use external samurai, also installed as ninja, rather than
+  embedding another job runner in muon. Keep job launch on fork/exec;
+  posix_spawn remains unapproved.
+- Recognise Belka in muon's machine and GCC toolchain selection. Use
+  illumos link-editor options for shared libraries, SONAMEs, search paths
+  and archive groups. Do not add a GNU linker or network dependency.
+- Provide an explicit offline mlibc source kit with its pinned subprojects
+  and overlays. Record revisions and omit Git metadata. Build static and
+  shared libraries into a separate sysroot and test with that sysroot
+  before replacing installed libraries. Preserve the illumos option
+  adapter for mlibc's explicit GNU version scripts, using POSIX nm output.
+- Increase optional compiler images to 32768 inodes to accommodate source
+  extraction and object files; retain the normal image's inode count.
+  See [native development](../native-development.md) for commands.

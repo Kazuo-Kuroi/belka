@@ -78,8 +78,11 @@ if platform == 'posix'
         deps += cc.find_library('network')
     endif
 
-    librt = cc.find_library('rt', required: false)
-    if librt.found()
-        deps += librt
+    # Belka provides the realtime interfaces in libc.
+    if not cc.has_define('__belka__')
+        librt = cc.find_library('rt', required: false)
+        if librt.found()
+            deps += librt
+        endif
     endif
 endif

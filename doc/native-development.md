@@ -104,8 +104,56 @@ library and its client, and relinking the linker itself. The earlier bootstrap
 relink recipe remains useful for comparing successive links of the same
 object set.
 
+## Native muon, samurai and libc
+
+Normal images include muon 0.7.1 and samurai 1.3. `samu` is also installed
+as `ninja`, reporting its Ninja compatibility version. Samurai retains
+its ISC licence and Apache reference-code attribution; muon is GPLv3.
+Muon uses external samurai and its Belka linker backend selects illumos
+options. Optional download libraries, native backtraces and documentation
+generation are disabled. Samurai uses fork/exec on Belka; posix_spawn is
+not introduced.
+
+Prepare the offline libc source kit on the host after building the native
+compiler package:
+
+```
+make native-libc-kit
+make root-image
+```
+
+The kit contains the current mlibc sources and its four existing pinned
+subprojects, with their licences and Meson overlays. Packaging verifies
+the subproject revisions against the wrap files and records them in
+`/usr/src/mlibc-build/REVISIONS`. It omits Git metadata. Image builds consume
+an already staged kit without launching a compiler bootstrap. Compiler
+images provide 32768 inodes for extracting and building these sources.
+
+Inside Belka:
+
+```
+sh /usr/src/mlibc-build/native-build.sh
+sh /usr/src/mlibc-build/native-check.sh
+```
+
+The build runs native muon, samurai, GCC and illumos ld, with two jobs by
+default (`JOBS` overrides this). Static and shared builds install into
+`/var/tmp/mlibc-native/sysroot`. The source tree and build directories also
+stay under `/var/tmp/mlibc-native`; pass a different absolute directory to
+both scripts if desired. Use a fresh work directory after updating the
+source kit or build profiles; existing directories retain their sources
+and configuration. Wrap downloads are disabled. The shared build
+uses the existing GNU-option adapter for mlibc's explicit version scripts;
+the adapter obtains symbols through POSIX `nm -P`, supported by native nm.
+
+The check compiles and runs static and dynamic programs using the staged
+headers and libraries. The dynamic executable names the staged interpreter
+and library path explicitly. Both exercise allocation, pthreads, TLS and
+signal delivery. The check also rebuilds and runs Belka's libc regression
+program against both libraries, supplying its directory and separate-mount
+fixtures under /tmp. The installed system libc is left in place.
+
 ## Remaining compiler bootstrap
 
-Full GCC source self-bootstrap is a later acceptance stage. Native muon
-and samurai are also needed to build mlibc with its current build system.
+Full GCC source self-bootstrap is a later acceptance stage.
 PathScale is not a bootstrap dependency. Networking is outside these stages.

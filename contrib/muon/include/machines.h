@@ -31,6 +31,7 @@
 
 #define FOREACH_MACHINE_SYSTEM(_) \
 	_(unknown) \
+	_(belka) \
 	_(dragonfly) \
 	_(freebsd) \
 	_(gnu) \

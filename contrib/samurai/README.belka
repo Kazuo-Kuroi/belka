@@ -5,4 +5,7 @@ Imported from the official release archive:
 https://github.com/michaelforney/samurai/releases/download/1.3/samurai-1.3.tar.gz
 SHA-256: 1bc020a9e133432df51911ac71cc34322f828934d9a2282ba2916d88c15976af
 
-Retain the upstream Apache-2.0 licence and individual source notices.
+Retain the upstream ISC licence, Apache-2.0 reference-code attribution,
+and individual source notices. Belka uses fork/exec instead of posix_spawn,
+with close-on-exec capture pipes and inherited stdio for console jobs.
+Install samu and the Ninja-compatible ninja alias.

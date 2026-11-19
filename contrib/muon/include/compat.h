@@ -3,6 +3,10 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
+#if defined(__belka__) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE 1
+#endif
+
 #if !defined(_WIN32)
 #if !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L

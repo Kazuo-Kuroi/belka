@@ -408,6 +408,7 @@ user-progs: $(LIBC_BINS)
 
 include mk/userland.mk
 include mk/native-compiler.mk
+include mk/native-build.mk
 
 EXT2_DIRS       = $(LIBC_DIR) usr/lib64=$(LIBC_SODIR) \
                   lib=$(TESTLIB_DIR)
@@ -488,7 +489,8 @@ test-reboot: $(REBOOT_ISO) $(LIBC_BINS)
 # usr/tests/boottest run from /etc/rc.local on the test root image. It
 # halts through uadmin, which must leave the image clean; the console
 # must have shown init's getty.
-test-boot: $(BOOT_ISO) $(ROOT_DEPS) $(SYS_DIR)/boottest usr/tests/utiltest.sh usr/tests/compiler.sh \
+test-boot: $(BOOT_ISO) $(ROOT_DEPS) $(SYS_DIR)/boottest usr/tests/utiltest.sh \
+                usr/tests/compiler.sh usr/tests/buildtools.sh \
                 contrib/ksenon-utils/tests/run.sh
 	$(MKROOT_TEST)
 	$(MKDATA_TEST)

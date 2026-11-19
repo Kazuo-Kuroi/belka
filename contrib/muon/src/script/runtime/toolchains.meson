@@ -79,6 +79,14 @@ toolchain.register_archiver(
 )
 
 toolchain.register_archiver(
+    'ar-belka',
+    inherit: 'ar-posix',
+    handlers: {
+        'version': ['-V'],
+    },
+)
+
+toolchain.register_archiver(
     'llvm-lib',
     exe: 'llvm-lib',
     inherit: 'lib',
@@ -510,6 +518,35 @@ toolchain.register_linker(
     },
 )
 
+# Belka's GCC driver uses the illumos link-editor.
+toolchain.register_linker(
+    'ld-belka',
+    inherit: 'ld-solaris',
+    detect: func(out str) -> int
+        return 'Solaris Link Editors' in out ? 100 : 0
+    endfunc,
+    handlers: {
+        'allow_shlib_undefined': ['-z', 'nodefs'],
+        'as_needed': ['-z', 'ignore'],
+        'no_undefined': ['-z', 'defs'],
+        'export_dynamic': [],
+        'shared_module': ['-shared'],
+        'process_rpath': toolchain.handler('linker', 'ld', 'process_rpath'),
+        'rpath': func(_c compiler, paths list[str]) -> list[str]
+            joined = ':'.join(paths)
+            return joined.length() == 0 ? [] : ['-R', joined]
+        endfunc,
+        'soname': func(_c compiler, name str) -> list[str]
+            return ['-h', name]
+        endfunc,
+        'start_group': ['-z', 'rescan-start'],
+        'end_group': ['-z', 'rescan-end'],
+        'whole_archive': func(_c compiler, input str) -> list[str]
+            return ['-zallextract', input, '-zdefaultextract']
+        endfunc,
+    },
+)
+
 ################################################################################
 # compilers
 ################################################################################
@@ -586,7 +623,9 @@ toolchain.register_compiler(
     exe: {'c': 'gcc', 'objc': 'gcc', 'cpp': 'g++', 'objcpp': 'g++'},
     linker: func(c compiler) -> str
         m = c.machine()
-        if m.system() == 'sunos'
+        if m.system() == 'belka'
+            return 'ld-belka'
+        elif m.system() == 'sunos'
             return 'ld-solaris'
         else
             return 'ld'
@@ -594,7 +633,9 @@ toolchain.register_compiler(
     endfunc,
     archiver: func(c compiler) -> str
         m = c.machine()
-        if m.system() == 'sunos'
+        if m.system() == 'belka'
+            return 'ar-belka'
+        elif m.system() == 'sunos'
             return 'ar-solaris'
         else
             return 'ar-gnu'

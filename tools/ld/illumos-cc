@@ -119,7 +119,8 @@ gnu_option() {
         -e|--entry)             add -e "$2"; used=2 ;;
         -z)
                 case $2 in
-                defs|now|text|nodefs)   add -z "$2" ;;
+                defs|now|text|nodefs|ignore|record|allextract|defaultextract|\
+                rescan-start|rescan-end) add -z "$2" ;;
                 *)                      ;;      # relro, noexecstack, ...
                 esac
                 used=2 ;;
@@ -178,7 +179,8 @@ fi
 # _start (not those of shared objects linked against).
 defined="$tmp/defined"
 # shellcheck disable=SC2086
-nm -g --defined-only $inputs 2>/dev/null | awk 'NF == 3 { print $3 }' |
+nm -P -g $inputs 2>/dev/null |
+    awk 'NF >= 3 && $2 !~ /^[Uu]$/ { print $1 }' |
     sort -u > "$defined"
 
 if [ -n "$vscript" ]; then

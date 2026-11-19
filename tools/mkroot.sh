@@ -109,10 +109,14 @@ for prog in tic infocmp tput passwd su less mandoc; do
         cp "$sys/$prog" "$src/usr/bin/$prog"    # dynamic: not stripped
 done
 # Development tools remain unstripped: GNU strip damages dynamic illumos ELF.
-for prog in bmake gmake m4 tsort yacc lex ld ar nm; do
+for prog in bmake gmake m4 tsort yacc lex ld ar nm samu muon; do
         cp "$sys/$prog" "$src/usr/bin/$prog"
 done
+mkdir -p "$src/usr/share/licenses/samurai" "$src/usr/share/licenses/muon"
+cp contrib/samurai/LICENSE "$src/usr/share/licenses/samurai/"
+cp -R contrib/muon/LICENSES/. "$src/usr/share/licenses/muon/"
 ln "$src/usr/bin/gmake" "$src/usr/bin/make"
+ln "$src/usr/bin/samu" "$src/usr/bin/ninja"
 ln "$src/usr/bin/yacc" "$src/usr/bin/byacc"
 ln "$src/usr/bin/lex" "$src/usr/bin/flex"
 cp contrib/gmake/build-aux/install-sh "$src/usr/bin/install"
@@ -158,6 +162,8 @@ cp contrib/illumos-ld/usr/src/man/man1/ar.1 \
 cp contrib/netbsd/external/bsd/flex/dist/doc/flex.1 "$src/usr/share/man/man1/lex.1"
 ln "$src/usr/share/man/man1/lex.1" "$src/usr/share/man/man1/flex.1"
 cp contrib/netbsd/usr.bin/make/make.1 "$src/usr/share/man/man1/bmake.1"
+cp contrib/samurai/samu.1 "$src/usr/share/man/man1/samu.1"
+ln "$src/usr/share/man/man1/samu.1" "$src/usr/share/man/man1/ninja.1"
 cp contrib/gmake/doc/make.1 "$src/usr/share/man/man1/gmake.1"
 ln "$src/usr/share/man/man1/gmake.1" "$src/usr/share/man/man1/make.1"
 cp contrib/netbsd/usr.bin/m4/m4.1 contrib/netbsd/usr.bin/tsort/tsort.1 \
@@ -237,7 +243,7 @@ cp contrib/netbsd/etc/rc.d/* etc/rc.d/* "$src/etc/rc.d/"
 
 if [ $test -eq 1 ]; then
         install_prog boottest usr/tests/boottest
-        cp usr/tests/utiltest.sh usr/tests/compiler.sh "$src/usr/tests/"
+        cp usr/tests/utiltest.sh usr/tests/compiler.sh usr/tests/buildtools.sh "$src/usr/tests/"
         # ksenon-utils' own suite, over a directory of just its 45
         # utilities and their links, as its tests/run.sh expects (../cmd).
         mkdir -p "$src/usr/tests/xn/cmd" "$src/usr/tests/xn/tests"
@@ -274,11 +280,16 @@ EOF
 fi
 
 image_size=128M
+image_inodes=4096
 if [ -f build/native-compiler-sdk/assembler.stamp ]; then
         cp -R build/native-compiler-sdk/usr/. "$src/usr/"
 fi
 if [ -f build/native-compiler-sdk/compiler.stamp ]; then
         image_size=512M
+        image_inodes=32768
+fi
+if [ -f build/native-libc-sdk/libc.stamp ]; then
+        cp -R build/native-libc-sdk/usr/. "$src/usr/"
 fi
 rm -f "$img"
 $FAKEROOT sh -c '
@@ -295,5 +306,5 @@ $FAKEROOT sh -c '
         if [ -d "$src/home/test" ]; then
                 chown 100:100 "$src/home/test"
         fi
-        "$2" -q -F -t ext2 -b 4096 -N 4096 -L belkaroot -d "$src" "$3" "$4"
-' sh "$src" "$MKE2FS" "$img" "$image_size"
+        "$2" -q -F -t ext2 -b 4096 -N "$5" -L belkaroot -d "$src" "$3" "$4"
+' sh "$src" "$MKE2FS" "$img" "$image_size" "$image_inodes"
