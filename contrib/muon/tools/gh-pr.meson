@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+# SPDX-License-Identifier: GPL-3.0-only
+
+curl = import('curl')
+fs = import('fs')
+
+func parse_opts() -> dict[any]
+    opts = {}
+    opts.repo = 'https://github.com/muon-build/muon'
+
+    handlers = {}
+    handlers.p = {
+        'required': true,
+        'desc': 'Specify the github PR #',
+        'action': func(arg str)
+            opts.pr = arg
+        endfunc,
+    }
+    handlers.r = {
+        'desc': f'Specify the github repository (default: @0@)'.format(opts.repo),
+        'action': func(arg str)
+            opts.repo = arg
+        endfunc,
+    }
+
+    rest = import('getopt').getopt(argv, handlers)
+    assert(rest.length() == 0, 'No trailing arguments permitted')
+    return opts
+endfunc
+
+func main()
+    opts = parse_opts()
+    pr = opts.pr
+    url = opts.repo / f'pull/@pr@.patch'
+    patch = curl.fetch(url)
+
+    if patch == 'Not Found'
+        error(f'patch @url@ not found')
+    endif
+
+    sep = '---\n'
+    parts = patch.split(sep)
+    assert(parts.length() >= 2, 'result does not contain separator')
+
+    parts[0] += f'closes #@pr@\n'
+
+    patch = sep.join(parts)
+
+    file = f'gh-@pr@.patch'
+    fs.write(file, patch)
+
+    run_command(
+        ['git', 'am', '-3', file],
+        check: true,
+    )
+endfunc
+
+main()

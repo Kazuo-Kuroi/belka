@@ -1,0 +1,267 @@
+# SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+# SPDX-License-Identifier: GPL-3.0-only
+
+time = import('time')
+timer = time.timer_start()
+fs = import('fs')
+util = import('util')
+
+muon_private = '.muon'
+muon = argv[1]
+ninja = argv[2]
+source = argv[3]
+build = argv[4]
+skip_exit_code = argv[5]
+skip_analyze = argv[6] == '1'
+git_clean = argv[7] == '1'
+failing = argv[8] == '1'
+skip_uninstall = argv[9] == '1'
+extra_setup_opts = argv.slice(10)
+destdir = 'destdir'
+if ninja == 'USE_MUON'
+    ninja = [fs.make_absolute(muon), 'samu']
+else
+    ninja = [ninja]
+endif
+test_json = source / 'test.json'
+if fs.is_file(test_json)
+    json = import('json')
+    test_json = json.parse(fs.read(test_json))
+else
+    test_json = {}
+endif
+test_report = build / 'test_report.dat'
+
+steps = {}
+
+steps.prerun = func()
+    if fs.is_dir(build)
+        fs.rmdir(build, recursive: true, force: true)
+    endif
+
+    if git_clean
+        warning('running git clean on @0@'.format(source))
+        run_command('git', '-C', source, 'clean', '-xdf', check: true)
+    endif
+
+    fs.mkdir(build / muon_private, make_parents: true)
+endfunc
+
+steps.analyze = func()
+    if skip_analyze
+        return
+    endif
+
+    analyze_result = run_command(muon, '-vC', source, 'analyze')
+
+    if analyze_result.returncode() != 0
+        print(analyze_result.stdout())
+        print(analyze_result.stderr())
+        util.exit(analyze_result.returncode())
+    endif
+endfunc
+
+steps.setup = func()
+    preload_opts = []
+    foreach type : ['cross', 'native']
+        path = source / f'@type@file.ini'
+        if fs.exists(path)
+            preload_opts += f'-p@type@:@path@'
+        endif
+    endforeach
+
+    setup_result = run_command(
+        muon,
+        '-vC', source,
+        'setup',
+        '-Dprefix=/usr',
+        '-Denv.NINJA=' + util.repr(ninja),
+        extra_setup_opts,
+        preload_opts,
+        build,
+    )
+
+    if setup_result.returncode() != 0
+        print(setup_result.stdout())
+        print(setup_result.stderr())
+
+        if 'MESON_SKIP_TEST' in setup_result.stdout() or failing
+            util.exit(skip_exit_code.to_int())
+        else
+            util.exit(setup_result.returncode())
+        endif
+    endif
+
+    if failing
+        print('test was marked failing but did not fail')
+        util.exit(99)
+    endif
+endfunc
+
+steps.build = func()
+    run_command(ninja, '-C', build, check: true)
+endfunc
+
+steps.test = func()
+    run_command(muon, '-C', build, 'test', '-a', check: true)
+endfunc
+
+steps.install = func()
+    assert(not fs.exists(build / destdir), 'destdir must not exist')
+    run_command(
+        muon,
+        '-C', build,
+        'install',
+        env: {'DESTDIR': destdir},
+        check: true,
+    )
+endfunc
+
+steps.check_install = func()
+    is_windows = host_machine.system() == 'windows'
+    implib_paths = {}
+
+    destdir_contents = {}
+    if fs.exists(build / destdir)
+        foreach path : fs.glob(build / destdir / '**')
+            if fs.is_file(path)
+                destdir_contents[path] = false
+            endif
+        endforeach
+    endif
+
+    ok = true
+
+    foreach f : test_json.get('installed', [])
+        path = build / destdir / f.file
+        check = fs.is_file
+
+        if host_machine.system() == 'haiku'
+            # On Haiku, pkgconfig.generate() installs non-dataonly .pc files
+            # under $prefix/develop/lib/pkgconfig instead of $libdir/pkgconfig
+            # to match Haiku's pkg-config search path convention, see
+            # module_pkgconfig_generate() in src/functions/modules/pkgconfig.c
+            path = path.replace('/lib/pkgconfig/', '/develop/lib/pkgconfig/')
+        endif
+
+        if 'platform' in f
+            if f.platform.startswith('!')
+                if host_machine.system() == p(f.platform.substring(1))
+                    continue
+                endif
+            else
+                if host_machine.system() != f.platform
+                    continue
+                endif
+            endif
+        endif
+
+        if f.type == 'file'
+            # nothing
+        elif f.type == 'dir'
+            check = fs.is_dir
+        elif f.type == 'exe'
+            if is_windows
+                path += '.exe'
+            endif
+        elif f.type == 'python_file'
+            path = path.replace('@PYTHON_PURELIB@', 'python_purelib')
+        elif f.type in 'expr'
+            if '?lib' in path
+                path = path.replace('?lib', 'lib')
+                if is_windows
+                    path = path.replace('usr/lib', 'usr/bin')
+                endif
+            endif
+
+            if path.endswith('?so')
+                path = path.substring(0, -3)
+
+                if host_machine.system() == 'darwin'
+                    path += '.dylib'
+                elif is_windows
+                    path += '.dll'
+                else
+                    path += '.so'
+                endif
+            endif
+
+            if is_windows
+                name = fs.name(path)
+                if name.startswith('lib')
+                    path = fs.parent(path) / name.substring(3)
+                endif
+            endif
+        elif f.type == 'pdb'
+            # unsupported
+            continue
+        elif f.type in ['implib', 'implibempty']
+            if is_windows
+                name = fs.name(path)
+                if name.startswith('lib')
+                    path = fs.parent(path) / name.substring(3)
+                endif
+
+                # enumerate all supported compiler implib suffixes
+                implib_paths[path + '-implib.lib'] = true
+                implib_paths[path + '.dll.a'] = true
+                implib_paths[path + '.def'] = true
+            endif
+            continue
+        else
+            error('unhandled installed type @0@'.format(f.type))
+        endif
+
+        if check(path)
+            if f.type != 'dir'
+                destdir_contents[path] = true
+            endif
+        else
+            warning('path @0@ of type @1@ was not installed'.format(path, f.type))
+            ok = false
+        endif
+    endforeach
+
+    foreach path, accounted_for : destdir_contents
+        if not accounted_for
+            if is_windows and path in implib_paths
+                continue
+            endif
+            warning(
+                'path @0@ exists in destdir but was not mentioned in test.json'.format(path),
+            )
+            ok = false
+        endif
+    endforeach
+
+    assert(ok)
+endfunc
+
+steps.uninstall = func()
+    if skip_uninstall
+        return
+    endif
+
+    run_command(
+        muon,
+        '-C', build,
+        'install',
+        '-Ud', destdir,
+        check: true,
+    )
+
+    assert(
+        not fs.exists(build / destdir),
+        'destdir should have been fully uninstalled',
+    )
+endfunc
+
+times = [['eval', time.timer_read(timer)]]
+
+foreach name, fn : steps
+    print(f'@name@\n--------------------------------\n')
+    fn()
+    times += [[name, time.timer_read(timer)]]
+endforeach
+
+util.serial_dump(test_report, times)

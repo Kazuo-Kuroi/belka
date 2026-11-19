@@ -1,0 +1,12 @@
+; SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+; SPDX-License-Identifier: GPL-3.0-only
+
+[wrap-git]
+url = https://github.com/pkgconf/pkgconf
+; 3.0.4
+revision = 3f138a4e366eb0a917c228970aa151e92c57fa8e
+patch_directory = pkgconf
+depth = 1
+
+[provide]
+libpkgconf = dep_libpkgconf

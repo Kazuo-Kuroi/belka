@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<!--
+SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+SPDX-License-Identifier: GPL-3.0-only
+-->
+
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>muon ci</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="muon_logo.svg" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="wrapper">
+      <h1>muon ci</h1>
+      <table>
+        <thead>
+          <tr>
+            <td>os</td>
+            <td>arch</td>
+            <td>compilers</td>
+            <td>status</td>
+            <td>flags</td>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Alpine</td>
+            <td>x86_64</td>
+            <td>gcc, clang</td>
+            <td>
+              <a href="https://builds.sr.ht/~lattis/muon/commits/master/alpine.yml">
+                <img src="https://builds.sr.ht/~lattis/muon/commits/master/alpine.yml.svg"></img>
+              </a>
+            </td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>Alpine</td>
+            <td>aarch64</td>
+            <td>gcc</td>
+            <td>
+              <a href="https://github.com/muon-build/muon/actions/workflows/alpine-arm.yml">
+                <img src="https://github.com/muon-build/muon/actions/workflows/alpine-arm.yml/badge.svg"></img>
+              </a>
+            </td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>NetBSD</td>
+            <td>x86_64</td>
+            <td>gcc</td>
+            <td>
+              <a href="https://builds.sr.ht/~lattis/muon/commits/master/netbsd.yml">
+                <img src="https://builds.sr.ht/~lattis/muon/commits/master/netbsd.yml.svg"></img>
+              </a>
+            </td>
+            <td>🧪</td>
+          </tr>
+          <tr>
+            <td>Debian Stable</td>
+            <td>x86_64</td>
+            <td>gcc, clang</td>
+            <td>
+              <a href="https://builds.sr.ht/~lattis/muon/commits/master/debian.yml">
+                <img src="https://builds.sr.ht/~lattis/muon/commits/master/debian.yml.svg"></img>
+              </a>
+            </td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>Fedora</td>
+            <td>x86_64</td>
+            <td>gcc</td>
+            <td>
+              <a href="https://builds.sr.ht/~lattis/muon/commits/master/fedora.yml">
+                <img src="https://builds.sr.ht/~lattis/muon/commits/master/fedora.yml.svg"></img>
+              </a>
+            </td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>Ubuntu</td>
+            <td>x86_64</td>
+            <td>gcc</td>
+            <td>
+              <a href="https://github.com/muon-build/muon/actions/workflows/ubuntu.yml">
+                <img src="https://github.com/muon-build/muon/actions/workflows/ubuntu.yml/badge.svg"></img>
+              </a>
+            </td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>OmniOS</td>
+            <td>x86_64</td>
+            <td>gcc</td>
+            <td>
+              <a href="https://github.com/muon-build/muon/actions/workflows/illumos.yml">
+                <img src="https://github.com/muon-build/muon/actions/workflows/illumos.yml/badge.svg"></img>
+              </a>
+            </td>
+            <td>🧪 </td>
+          </tr>
+          <!-- <tr> -->
+          <!--   <td>Solaris 11</td> -->
+          <!--   <td>sun4u</td> -->
+          <!--   <td>gcc</td> -->
+          <!--   <td> -->
+          <!--     <a href="https://muon.build/ci-results/solaris11/build_log.txt"> -->
+          <!--       <span id="solaris11Status">...</span> -->
+          <!--     </a> -->
+          <!--   </td> -->
+          <!--   <td>🧪</td> -->
+          <!-- </tr> -->
+          <tr>
+            <td>Windows - msys2</td>
+            <td>x86_64</td>
+            <td>gcc, clang, tcc</td>
+            <td>
+              <a href="https://github.com/muon-build/muon/actions/workflows/msys2.yml">
+                <img src="https://github.com/muon-build/muon/actions/workflows/msys2.yml/badge.svg"></img>
+              </a>
+            </td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>Windows - vs</td>
+            <td>x86_64</td>
+            <td>gcc, clang</td>
+            <td>
+              <a href="https://github.com/muon-build/muon/actions/workflows/vs.yml">
+                <img src="https://github.com/muon-build/muon/actions/workflows/vs.yml/badge.svg"></img>
+              </a>
+            </td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>macOS</td>
+            <td>arm64</td>
+            <td>clang</td>
+            <td>
+              <a href="https://github.com/muon-build/muon/actions/workflows/macos.yml">
+                <img src="https://github.com/muon-build/muon/actions/workflows/macos.yml/badge.svg"></img>
+              </a>
+            </td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>flags</h3>
+      <ul>
+        <li>🧪 - at least some tests failing.</li>
+      </ul>
+    </div>
+
+    <script>
+      async function getStuff() {
+        response = await fetch('https://muon.build/ci-results/solaris11/status');
+        text = await response.text(); // read response body as text
+        document.getElementById("solaris11Status").innerHTML = text;
+      }
+
+      getStuff();
+    </script>
+  </body>
+</html>

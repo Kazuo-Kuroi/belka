@@ -1,0 +1,1011 @@
+/*
+ * SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+ * SPDX-FileCopyrightText: Owen Rafferty <owen@owenrafferty.com>
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+#include "compat.h"
+
+#include <string.h>
+
+#include "args.h"
+#include "backend/common_args.h"
+#include "error.h"
+#include "functions/both_libs.h"
+#include "functions/build_target.h"
+#include "lang/object.h"
+#include "lang/object_iterators.h"
+#include "log.h"
+#include "machines.h"
+#include "options.h"
+#include "platform/assert.h"
+#include "platform/filesystem.h"
+#include "platform/path.h"
+#include "toolchains.h"
+
+static void
+ca_get_option_value_for_tgt(struct workspace *wk,
+	const struct project *proj,
+	const struct obj_build_target *tgt,
+	const char *name,
+	obj *res)
+{
+	get_option_value_for_machine_overridable(
+		wk, proj, tgt ? tgt->override_options : 0, name, tgt ? tgt->machine : machine_kind_host, res);
+}
+
+struct ca_buildtype {
+	enum compiler_optimization_lvl opt;
+	bool debug;
+};
+
+static void
+ca_get_buildtype(struct workspace *wk,
+	const struct project *proj,
+	const struct obj_build_target *tgt,
+	struct ca_buildtype *buildtype)
+{
+	uint32_t i;
+	buildtype->opt = 0;
+	buildtype->debug = false;
+
+	static struct {
+		const char *name;
+		enum compiler_optimization_lvl opt;
+		bool debug;
+	} tbl[] = { { "plain", compiler_optimization_lvl_none, false },
+		{ "debug", compiler_optimization_lvl_0, true },
+		{ "debugoptimized", compiler_optimization_lvl_g, true },
+		{ "release", compiler_optimization_lvl_3, false },
+		{ "minsize", compiler_optimization_lvl_s, false },
+		{ NULL } };
+
+	obj buildtype_opt_id, buildtype_val;
+	if (!get_option_overridable(wk, proj, tgt ? tgt->override_options : 0, &STR("buildtype"), &buildtype_opt_id)) {
+		UNREACHABLE;
+	}
+	struct obj_option *buildtype_opt = get_obj_option(wk, buildtype_opt_id);
+	buildtype_val = buildtype_opt->val;
+
+	const char *str = get_cstr(wk, buildtype_val);
+
+	bool use_custom = (strcmp(str, "custom") == 0) || (buildtype_opt->source <= option_value_source_default);
+
+	if (use_custom) {
+		obj optimization_id, debug_id;
+
+		ca_get_option_value_for_tgt(wk, proj, tgt, "optimization", &optimization_id);
+		ca_get_option_value_for_tgt(wk, proj, tgt, "debug", &debug_id);
+
+		const struct str *str = get_str(wk, optimization_id);
+		if (str_eql(str, &STR("plain"))) {
+			buildtype->opt = compiler_optimization_lvl_none;
+		} else if (str->len != 1) {
+			UNREACHABLE;
+		}
+
+		switch (*str->s) {
+		case '0':
+		case '1':
+		case '2':
+		case '3': buildtype->opt = compiler_optimization_lvl_0 + (*str->s - '0'); break;
+		case 'g': buildtype->opt = compiler_optimization_lvl_g; break;
+		case 's': buildtype->opt = compiler_optimization_lvl_s; break;
+		default: UNREACHABLE;
+		}
+
+		buildtype->debug = get_obj_bool(wk, debug_id);
+	} else {
+		for (i = 0; tbl[i].name; ++i) {
+			if (strcmp(str, tbl[i].name) == 0) {
+				buildtype->opt = tbl[i].opt;
+				buildtype->debug = tbl[i].debug;
+				break;
+			}
+		}
+
+		if (!tbl[i].name) {
+			LOG_E("invalid build type %s", str);
+			UNREACHABLE;
+		}
+	}
+}
+
+static void
+ca_get_buildtype_args(struct workspace *wk, obj comp, const struct ca_buildtype *buildtype, obj args_id)
+{
+	if (buildtype->debug) {
+		obj_array_extend(wk, args_id, toolchain_compiler_debug(wk, comp));
+	}
+
+	obj_array_extend(wk, args_id, toolchain_compiler_optimization(wk, comp, vm_enum_to_obj(wk, enum compiler_optimization_lvl, buildtype->opt)));
+}
+
+static void
+ca_get_warning_args(struct workspace *wk,
+	obj comp,
+	const struct project *proj,
+	const struct obj_build_target *tgt,
+	obj args_id)
+{
+	obj lvl_id;
+	ca_get_option_value_for_tgt(wk, proj, tgt, "warning_level", &lvl_id);
+	const struct str *sl = get_str(wk, lvl_id);
+
+	if (str_eql(sl, &STR("everything"))) {
+		obj_array_extend(wk, args_id, toolchain_compiler_warn_everything(wk, comp));
+		return;
+	}
+
+	uint32_t lvl;
+	assert(sl->len == 1 && "invalid warning_level");
+	switch (sl->s[0]) {
+	case '0': lvl = 0; break;
+	case '1': lvl = 1; break;
+	case '2': lvl = 2; break;
+	case '3': lvl = 3; break;
+	default: UNREACHABLE; return;
+	}
+
+	obj_array_extend(wk, args_id, toolchain_compiler_warning_lvl(wk, comp, vm_enum_to_obj(wk, enum compiler_warning_lvl, lvl)));
+
+	if (tgt->pch && lvl >= 1) {
+		obj_array_extend(wk, args_id, toolchain_compiler_winvalid_pch(wk, comp));
+	}
+}
+
+static void
+ca_get_werror_args(struct workspace *wk,
+	obj comp,
+	const struct project *proj,
+	const struct obj_build_target *tgt,
+	obj args_id)
+{
+	obj active;
+	ca_get_option_value_for_tgt(wk, proj, tgt, "werror", &active);
+
+	if (get_obj_bool(wk, active)) {
+		obj_array_extend(wk, args_id, toolchain_compiler_werror(wk, comp));
+	}
+}
+
+void
+ca_get_std_args(struct workspace *wk,
+	obj comp,
+	const struct project *proj,
+	const struct obj_build_target *tgt,
+	obj args_id)
+{
+	obj std;
+
+	switch (get_obj_compiler(wk, comp)->lang) {
+	case compiler_language_objc:
+	case compiler_language_c: ca_get_option_value_for_tgt(wk, proj, tgt, "c_std", &std); break;
+	case compiler_language_objcpp:
+	case compiler_language_cpp: ca_get_option_value_for_tgt(wk, proj, tgt, "cpp_std", &std); break;
+	default: return;
+	}
+
+	const char *s, *next = get_cstr(wk, std);
+	char buf[256];
+	uint32_t len;
+
+	do {
+		s = next;
+		if ((next = strchr(s, ','))) {
+			len = next - s;
+			++next;
+		} else {
+			len = strlen(s);
+			next = s + len;
+		}
+
+		if (!len) {
+			continue;
+		} else if (len >= sizeof(buf)) {
+			LOG_W("skipping invalid std '%.*s'", len, s);
+		} else if (strncmp(s, "none", len) == 0) {
+			return;
+		} else {
+			memcpy(buf, s, len);
+			buf[len] = 0;
+
+			if (!toolchain_compiler_std_unsupported(wk, comp, buf)) {
+				obj_array_extend(wk, args_id, toolchain_compiler_set_std(wk, comp, buf));
+				return;
+			}
+		}
+	} while (*next);
+
+	LOG_W("none of the requested stds are supported: '%s'", get_cstr(wk, std));
+}
+
+void
+ca_get_option_compile_args(struct workspace *wk,
+	obj comp,
+	const struct project *proj,
+	const struct obj_build_target *tgt,
+	obj args_id)
+{
+	obj args;
+	switch (get_obj_compiler(wk, comp)->lang) {
+#define TOOLCHAIN_ENUM(lang) \
+	case compiler_language_##lang: ca_get_option_value_for_tgt(wk, proj, tgt, #lang "_args", &args); break;
+		FOREACH_COMPILER_EXPOSED_LANGUAGE(TOOLCHAIN_ENUM)
+#undef TOOLCHAIN_ENUM
+	default: return;
+	}
+
+	obj_array_extend(wk, args_id, args);
+}
+
+static void
+ca_setup_optional_b_args_compiler(struct workspace *wk,
+	obj comp,
+	const struct project *proj,
+	const struct obj_build_target *tgt,
+	const struct ca_buildtype *buildtype,
+	obj args)
+{
+	obj opt;
+
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_vscrt", &opt);
+	obj_array_extend(wk, args, toolchain_compiler_crt(wk, comp, get_cstr(wk, opt), buildtype->debug));
+
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_pgo", &opt);
+	if (!str_eql(get_str(wk, opt), &STR("off"))) {
+		uint32_t stage;
+		const struct str *sl = get_str(wk, opt);
+		if (str_eql(sl, &STR("generate"))) {
+			stage = 0;
+		} else if (str_eql(sl, &STR("use"))) {
+			stage = 1;
+		} else {
+			UNREACHABLE;
+			return;
+		}
+		obj_array_extend(wk, args, toolchain_compiler_pgo(wk, comp, vm_enum_to_obj(wk, enum compiler_pgo_stage, stage)));
+	}
+
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_sanitize", &opt);
+	obj_array_extend(wk, args, toolchain_compiler_sanitize(wk, comp, opt));
+
+	obj buildtype_val;
+	ca_get_option_value_for_tgt(wk, proj, tgt, "buildtype", &buildtype_val);
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_ndebug", &opt);
+	if (str_eql(get_str(wk, opt), &STR("true"))
+		|| (str_eql(get_str(wk, opt), &STR("if-release"))
+			&& str_eql(get_str(wk, buildtype_val), &STR("release")))) {
+		obj_array_extend(wk, args, toolchain_compiler_define(wk, comp, "NDEBUG"));
+	}
+
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_colorout", &opt);
+	if (!str_eql(get_str(wk, opt), &STR("never"))) {
+		obj_array_extend(wk, args, toolchain_compiler_color_output(wk, comp, get_cstr(wk, opt)));
+	}
+
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_lto", &opt);
+	if (get_obj_bool(wk, opt)) {
+		obj_array_extend(wk, args, toolchain_compiler_enable_lto(wk, comp));
+	}
+
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_coverage", &opt);
+	if (get_obj_bool(wk, opt)) {
+		obj_array_extend(wk, args, toolchain_compiler_coverage(wk, comp));
+	}
+
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_largefile", &opt);
+	enum feature_opt_state b_largefile = get_obj_feature_opt(wk, opt);
+	if (b_largefile != feature_opt_disabled) {
+		bool enable = true;
+		if (b_largefile == feature_opt_auto) {
+			const struct machine_definition *machine = machine_definitions[tgt->machine];
+
+			// Enable transparent large-file-support for 32-bit UNIX systems.
+			// This matches Meson's behavior for compatibility.
+			// Reference: https://github.com/mesonbuild/meson/blob/4bbd1ef923e995cd88c255cef65649ab8b07cfc6/mesonbuild/compilers/compilers.py#L1169
+			//
+			// Skip for MSVC (uses explicit 64-bit APIs) and macOS (64-bit only).
+			// glibc, musl, uclibc, and all BSD libcs support this.
+			// On Android, support for transparent LFS is available depending on Bionic version.
+			bool is_msvc = false;
+			{
+				obj arg_syntax, arg_syntax_args = toolchain_compiler_argument_syntax(wk, comp);
+				if (obj_array_flatten_one(wk, arg_syntax_args, &arg_syntax)) {
+					is_msvc = str_eql(get_str(wk, arg_syntax), &STR("msvc"));
+				}
+			}
+			bool is_darwin = machine->sys == machine_system_darwin;
+			enable = !is_msvc && !is_darwin;
+		}
+
+		if (enable) {
+			obj_array_extend(wk, args, toolchain_compiler_define(wk, comp, "_FILE_OFFSET_BITS=64"));
+		}
+	}
+}
+
+static obj
+ca_get_base_compiler_args(struct workspace *wk,
+	const struct project *proj,
+	const struct obj_build_target *tgt,
+	enum compiler_language lang,
+	obj comp)
+{
+	// struct obj_compiler *comp = get_obj_compiler(wk, comp_id);
+	struct ca_buildtype buildtype;
+
+	ca_get_buildtype(wk, proj, tgt, &buildtype);
+
+	obj args;
+	args = make_obj(wk, obj_array);
+
+	obj_array_extend(wk, args, toolchain_compiler_always(wk, comp));
+
+	ca_get_std_args(wk, comp, proj, tgt, args);
+	ca_get_buildtype_args(wk, comp, &buildtype, args);
+	ca_get_warning_args(wk, comp, proj, tgt, args);
+	ca_get_werror_args(wk, comp, proj, tgt, args);
+
+	ca_setup_optional_b_args_compiler(wk, comp, proj, tgt, &buildtype, args);
+
+	{ /* option args (from option('x_args')) */
+		ca_get_option_compile_args(wk, comp, proj, tgt, args);
+	}
+
+	{ /* global args */
+		obj global_args;
+		if (obj_dict_geti(wk, wk->global_args[tgt->machine], lang, &global_args)) {
+			obj_array_extend(wk, args, global_args);
+		}
+	}
+
+	{ /* project args */
+		obj proj_args;
+		if (obj_dict_geti(wk, proj->args[tgt->machine], lang, &proj_args)) {
+			obj_array_extend(wk, args, proj_args);
+		}
+	}
+
+	return args;
+}
+
+void
+ca_setup_compiler_args_includes(struct workspace *wk, obj comp, obj include_dirs, obj args, bool relativize)
+{
+	obj v;
+	obj_array_for(wk, include_dirs, v) {
+		const char *dir;
+		enum {
+			inc_type_normal,
+			inc_type_system,
+			inc_type_dirafter,
+		} inc_type = inc_type_normal;
+		{
+			enum obj_type t = get_obj_type(wk, v);
+			switch (t) {
+			case obj_include_directory: {
+				struct obj_include_directory *inc = get_obj_include_directory(wk, v);
+				dir = get_cstr(wk, inc->path);
+				if (inc->is_system) {
+					inc_type = inc_type_system;
+				} else if (inc->is_idirafter) {
+					inc_type = inc_type_dirafter;
+				}
+				break;
+			}
+			case obj_string:
+				dir = get_cstr(wk, v);
+				break;
+			default: LOG_E("invalid type for include directory '%s'", obj_type_to_s(t)); UNREACHABLE;
+			}
+		}
+
+		TSTR(rel);
+		if (relativize) {
+			if (!fs_dir_exists(dir)) {
+				continue;
+			}
+
+			if (path_is_absolute(dir)) {
+				relativize_build_file_path(wk, &rel, dir);
+				dir = rel.buf;
+			}
+		}
+
+		switch (inc_type) {
+		case inc_type_normal:
+			obj_array_extend(wk, args, toolchain_compiler_include(wk, comp, dir));
+			break;
+		case inc_type_system:
+			obj_array_extend(wk, args, toolchain_compiler_include_system(wk, comp, dir));
+			break;
+		case inc_type_dirafter:
+			obj_array_extend(wk, args, toolchain_compiler_include_dirafter(wk, comp, dir));
+			break;
+		}
+	};
+}
+
+static bool
+ca_prepare_target_args(struct workspace *wk, const struct project *proj, struct obj_build_target *tgt)
+{
+	assert(!tgt->processed_args);
+
+	tgt->processed_args = make_obj(wk, obj_dict);
+
+	if (tgt->flags & build_tgt_generated_include) {
+		obj inc;
+		inc = make_obj(wk, obj_array);
+		obj_array_push(wk, inc, tgt->private_path);
+		obj_array_extend_nodup(wk, inc, tgt->dep_internal.include_directories);
+		tgt->dep_internal.include_directories = inc;
+	}
+
+	obj _lang, _n;
+	obj_dict_for(wk, tgt->required_compilers, _lang, _n) {
+		(void)_n;
+		enum compiler_language lang = _lang;
+		obj comp;
+		if (!obj_dict_geti(wk, proj->toolchains[tgt->machine], lang, &comp)) {
+			LOG_E("No %s compiler defined for language %s",
+				machine_kind_to_s(tgt->machine),
+				compiler_language_to_s(lang));
+			return false;
+		}
+
+		obj args = ca_get_base_compiler_args(wk, proj, tgt, lang, comp);
+
+		if (tgt->flags & build_tgt_flag_pic) {
+			obj_array_extend(wk, args, toolchain_compiler_pic(wk, comp));
+		}
+
+		if (tgt->flags & build_tgt_flag_pie) {
+			obj_array_extend(wk, args, toolchain_compiler_pie(wk, comp));
+		}
+
+		if (tgt->flags & build_tgt_flag_visibility) {
+			obj_array_extend(wk, args, toolchain_compiler_visibility(wk, comp, vm_enum_to_obj(wk, enum compiler_visibility_type, tgt->visibility)));
+		}
+
+		obj dedupd;
+		obj_array_dedup(wk, tgt->dep_internal.include_directories, &dedupd);
+		tgt->dep_internal.include_directories = dedupd;
+
+		{ /* project includes */
+			obj proj_incs;
+			if (obj_dict_geti(wk, proj->include_dirs[tgt->machine], lang, &proj_incs)) {
+				obj_array_extend(wk, tgt->dep_internal.include_directories, proj_incs);
+				obj_array_dedup(wk, tgt->dep_internal.include_directories, &dedupd);
+				tgt->dep_internal.include_directories = dedupd;
+			}
+		}
+
+		ca_setup_compiler_args_includes(wk, comp, tgt->dep_internal.include_directories, args, true);
+
+		obj args_post;
+		args_post = make_obj(wk, obj_array);
+
+		{ /* compile args */
+			if (tgt->dep_internal.compile_args) {
+				obj tgt_args;
+				if (obj_dict_geti(wk, tgt->args, lang, &tgt_args)) {
+					obj_array_extend(wk, tgt_args, tgt->dep_internal.compile_args);
+				} else {
+					obj_dict_seti(wk, tgt->args, lang, tgt->dep_internal.compile_args);
+				}
+			}
+		}
+
+		{ /* target args */
+			obj tgt_args;
+			if (obj_dict_geti(wk, tgt->args, lang, &tgt_args) && get_obj_array(wk, tgt_args)->len) {
+				obj_array_extend(wk, args_post, tgt_args);
+			}
+		}
+
+		if (tgt->pch) {
+			obj pch;
+			if (obj_dict_geti(wk, tgt->pch, lang, &pch)) {
+				if (get_obj_type(wk, pch) != obj_build_target) {
+					if (!tgt->processed_args_pch) {
+						tgt->processed_args_pch = make_obj(wk, obj_dict);
+					}
+
+					obj args_dup;
+					obj_array_dup(wk, args, &args_dup);
+					obj_array_extend(wk, args_dup, args_post);
+					obj_array_extend(wk, args_dup, toolchain_compiler_emit_pch(wk, comp));
+					obj_array_extend(wk,
+						args_dup,
+						toolchain_compiler_force_language(
+							wk, comp, compiler_language_to_gcc_name(compiler_language_to_hdr(lang))));
+					obj_dict_seti(wk, tgt->processed_args_pch, lang, args_dup);
+				}
+
+				TSTR(dest_path);
+				if (!tgt_src_to_pch_path(wk, tgt, lang, pch, &dest_path)) {
+					LLOG_E("%s", "");
+					obj_lprintf(wk, log_error, "unable to determine pch path for %o\n", pch);
+					LOG_N("muon likely does not have support for pch using the current compiler");
+					return false;
+				}
+
+				obj_array_extend(wk, args, toolchain_compiler_include_pch(wk, comp, dest_path.buf));
+			}
+		}
+		obj_array_extend(wk, args, args_post);
+
+		obj_dict_seti(wk, tgt->processed_args, lang, args);
+	}
+
+	return true;
+}
+
+obj
+ca_build_target_joined_args(struct workspace *wk, obj processed_args)
+{
+	obj joined;
+	joined = make_obj(wk, obj_dict);
+
+	obj lang, v;
+	obj_dict_for(wk, processed_args, lang, v) {
+		obj_dict_seti(wk, joined, lang, join_args_shell_ninja(wk, v));
+	}
+
+	return joined;
+}
+
+/*
+ * linker args
+ */
+
+void
+ca_get_option_link_args(struct workspace *wk,
+	obj comp,
+	const struct project *proj,
+	const struct obj_build_target *tgt,
+	obj args_id)
+{
+	obj args;
+	switch (get_obj_compiler(wk, comp)->lang) {
+#define TOOLCHAIN_ENUM(lang) \
+	case compiler_language_##lang: ca_get_option_value_for_tgt(wk, proj, tgt, #lang "_link_args", &args); break;
+		FOREACH_COMPILER_EXPOSED_LANGUAGE(TOOLCHAIN_ENUM)
+#undef TOOLCHAIN_ENUM
+	default: return;
+	}
+
+	obj_array_extend(wk, args_id, args);
+}
+
+static void
+ca_push_linker_args(struct workspace *wk,
+	obj comp,
+	const struct obj_build_target *tgt,
+	obj args)
+{
+	if (!get_obj_array(wk, args)->len) {
+		return;
+	}
+
+	if (toolchain_compiler_do_linker_passthrough(wk, comp)) {
+		args = toolchain_compiler_linker_passthrough(wk, comp, args);
+	}
+
+	obj_array_extend(wk, tgt->dep_internal.link_args, args);
+}
+
+static bool
+ca_setup_optional_b_args_linker(struct workspace *wk,
+	obj comp,
+	const struct project *proj,
+	const struct obj_build_target *tgt,
+	obj args)
+{
+	obj opt;
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_pgo", &opt);
+	if (!str_eql(get_str(wk, opt), &STR("off"))) {
+		uint32_t stage;
+		const struct str *sl = get_str(wk, opt);
+		if (str_eql(sl, &STR("generate"))) {
+			stage = 0;
+		} else if (str_eql(sl, &STR("use"))) {
+			stage = 1;
+		} else {
+			UNREACHABLE;
+			return false;
+		}
+		obj_array_extend(wk, args, toolchain_linker_pgo(wk, comp, stage));
+	}
+
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_sanitize", &opt);
+	obj_array_extend(wk, args, toolchain_linker_sanitize(wk, comp, opt));
+
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_lto", &opt);
+	if (get_obj_bool(wk, opt)) {
+		obj_array_extend(wk, args, toolchain_linker_enable_lto(wk, comp));
+	}
+
+	ca_get_option_value_for_tgt(wk, proj, tgt, "b_coverage", &opt);
+	if (get_obj_bool(wk, opt)) {
+		obj_array_extend(wk, args, toolchain_linker_coverage(wk, comp));
+	}
+
+	return true;
+}
+
+void
+ca_link_args_to_native(struct workspace *wk, obj comp, obj *args)
+{
+	*args = toolchain_linker_to_native(wk, comp, *args);
+}
+
+bool
+ca_prepare_target_linker_args(struct workspace *wk,
+	obj comp,
+	const struct project *proj,
+	struct obj_build_target *tgt,
+	bool relativize)
+{
+	if (!comp) {
+		if (!obj_dict_geti(wk, proj->toolchains[tgt->machine], tgt->dep_internal.link_language, &comp)) {
+			LOG_E("no compiler defined for link language %s",
+				compiler_language_to_s(tgt->dep_internal.link_language));
+			return false;
+		}
+	}
+
+	const enum compiler_language lang = get_obj_compiler(wk, comp)->lang;
+
+	if (relativize) {
+		ca_relativize_paths(wk, tgt->dep_internal.link_with, true, &tgt->dep_internal.link_with);
+		ca_relativize_paths(wk, tgt->dep_internal.link_whole, true, &tgt->dep_internal.link_whole);
+	}
+
+	obj_array_dedup_in_place(wk, &tgt->dep_internal.link_with);
+	obj_array_dedup_in_place(wk, &tgt->dep_internal.link_whole);
+	obj_array_dedup_in_place(wk, &tgt->dep_internal.link_with_not_found);
+
+	if (tgt->type & tgt_static_library) {
+		// static libs don't need these args
+		return true;
+	}
+
+	{
+		struct ca_buildtype buildtype;
+		ca_get_buildtype(wk, proj, tgt, &buildtype);
+
+		if (buildtype.debug) {
+			ca_push_linker_args(wk, comp, tgt, toolchain_linker_debug(wk, comp));
+		}
+	}
+
+	ca_push_linker_args(wk, comp, tgt, toolchain_linker_always(wk, comp));
+	ca_push_linker_args(wk, comp, tgt, toolchain_linker_fuse_ld(wk, comp));
+	ca_push_linker_args(wk, comp, tgt, toolchain_linker_as_needed(wk, comp));
+
+	if (proj) {
+		obj lundef_opt;
+		ca_get_option_value_for_tgt(wk, proj, tgt, "b_lundef", &lundef_opt);
+		bool lundef = get_obj_bool_with_default(wk, lundef_opt, true);
+
+		// On OpenBSD, shared libraries are not linked against libc, so
+		// references to libc symbols are left undefined.  This matches
+		// Meson's behavior for compatibility.
+		// Reference: https://github.com/mesonbuild/meson/pull/5041
+		if (machine_definitions[tgt->machine]->sys == machine_system_openbsd) {
+			lundef = false;
+		}
+
+		if (!(tgt->type & tgt_shared_module) && lundef) {
+			ca_push_linker_args(wk, comp, tgt, toolchain_linker_no_undefined(wk, comp));
+
+			{
+				obj sanitize_opt;
+				ca_get_option_value_for_tgt(wk, proj, tgt, "b_sanitize", &sanitize_opt);
+				if (!get_obj_array(wk, sanitize_opt)->len && (tgt->type & tgt_dynamic_library)
+					&& toolchain_compiler_asan_lundef_warning(wk, comp)) {
+					LOG_W("target '%s': the current compiler does not support using b_sanitize and b_lundef together",
+						get_str(wk, tgt->name)->s);
+				}
+			}
+		} else {
+			ca_push_linker_args(wk, comp, tgt, toolchain_linker_allow_shlib_undefined(wk, comp));
+		}
+
+		if (tgt->flags & build_tgt_flag_export_dynamic) {
+			ca_push_linker_args(wk, comp, tgt, toolchain_linker_export_dynamic(wk, comp));
+		}
+
+		ca_setup_optional_b_args_linker(wk, comp, proj, tgt, tgt->dep_internal.link_args);
+
+		{ /* option args (from option('x_link_args')) */
+			ca_get_option_link_args(wk, comp, proj, tgt, tgt->dep_internal.link_args);
+		}
+
+		/* global args */
+		obj global_args;
+		if (obj_dict_geti(wk, wk->global_link_args[tgt->machine], lang, &global_args)) {
+			obj_array_extend(wk, tgt->dep_internal.link_args, global_args);
+		}
+
+		/* project args */
+		obj proj_args;
+		if (obj_dict_geti(wk, proj->link_args[tgt->machine], lang, &proj_args)) {
+			obj_array_extend(wk, tgt->dep_internal.link_args, proj_args);
+		}
+
+		if (tgt && tgt->flags & build_tgt_flag_pic) {
+			obj_array_extend(wk, tgt->dep_internal.link_args, toolchain_compiler_pic(wk, comp));
+		}
+	}
+
+	{
+		struct args_kw akw[] = {
+			{ "build_rpath", .val = tgt->dep_internal.build_rpath },
+			{ "install_rpath", .val = tgt->dep_internal.install_rpath },
+			{ "build_dir", .val = tgt->build_dir },
+			0,
+		};
+		tgt->dep_internal.build_rpath = toolchain_linker_process_rpath(wk, comp, akw);
+		ca_push_linker_args(wk, comp, tgt, toolchain_linker_rpath(wk, comp, tgt->dep_internal.build_rpath));
+	}
+
+	if (tgt->dep_internal.frameworks) {
+		obj v;
+		obj_array_for(wk, tgt->dep_internal.frameworks, v) {
+			obj_array_push(wk, tgt->dep_internal.link_args, make_str(wk, "-framework"));
+			obj_array_push(wk, tgt->dep_internal.link_args, v);
+		}
+	}
+
+	bool have_link_whole = get_obj_array(wk, tgt->dep_internal.link_whole)->len,
+	     have_link_with = have_link_whole || get_obj_array(wk, tgt->dep_internal.link_with)->len
+			      || get_obj_array(wk, tgt->dep_internal.link_with_not_found)->len;
+
+	if (have_link_with) {
+		ca_push_linker_args(wk, comp, tgt, toolchain_linker_start_group(wk, comp));
+
+		if (have_link_whole) {
+			obj v;
+			obj_array_for(wk, tgt->dep_internal.link_whole, v) {
+				ca_push_linker_args(
+					wk, comp, tgt, toolchain_linker_whole_archive(wk, comp, get_cstr(wk, v)));
+			}
+		}
+
+		if (proj) {
+			/* project link_with */
+			obj proj_link_with;
+			if (obj_dict_geti(wk, proj->link_with[tgt->machine], lang, &proj_link_with)) {
+				obj_array_extend(wk, tgt->dep_internal.link_args, proj_link_with);
+			}
+		}
+
+		obj_array_extend(wk, tgt->dep_internal.link_args, tgt->dep_internal.link_with);
+
+		obj v;
+		obj_array_for(wk, tgt->dep_internal.link_with_not_found, v) {
+			ca_push_linker_args(wk, comp, tgt, toolchain_linker_lib(wk, comp, get_cstr(wk, v)));
+		};
+
+		ca_push_linker_args(wk, comp, tgt, toolchain_linker_end_group(wk, comp));
+	}
+
+	if (tgt && (tgt->type & (tgt_dynamic_library | tgt_shared_module))) {
+		ca_push_linker_args(wk, comp, tgt, toolchain_linker_soname(wk, comp, get_cstr(wk, tgt->soname)));
+		if (tgt->type == tgt_shared_module) {
+			ca_push_linker_args(wk, comp, tgt, toolchain_linker_allow_shlib_undefined(wk, comp));
+			ca_push_linker_args(wk, comp, tgt, toolchain_linker_shared_module(wk, comp));
+		} else {
+			ca_push_linker_args(wk, comp, tgt, toolchain_linker_shared(wk, comp));
+
+		}
+	}
+
+	if (tgt) {
+		if (tgt->implib) {
+			obj rel;
+			ca_relativize_path(wk, tgt->implib, true, &rel);
+			ca_push_linker_args(
+				wk, comp, tgt, toolchain_linker_implib(wk, comp, get_cstr(wk, rel)));
+		}
+
+		if (tgt->vs_module_defs) {
+			obj rel;
+			ca_relativize_path(wk, tgt->vs_module_defs, true, &rel);
+			ca_push_linker_args(
+				wk, comp, tgt, toolchain_linker_def(wk, comp, get_cstr(wk, rel)));
+		}
+	}
+
+	switch (tgt->type) {
+	case tgt_shared_module:
+	case tgt_dynamic_library:
+	case tgt_executable:
+		ca_link_args_to_native(wk, comp, &tgt->dep_internal.link_args);
+		break;
+	default: break;
+	}
+
+	return true;
+}
+
+bool
+ca_prepare_all_targets(struct workspace *wk)
+{
+	obj_array_push(wk, wk->backend_output_stack, make_str(wk, "preparing targets"));
+
+	obj t;
+	uint32_t proj_i;
+	const struct project *proj;
+	struct obj_build_target *tgt;
+
+	for (proj_i = 0; proj_i < wk->projects.len; ++proj_i) {
+		proj = arr_get(&wk->projects, proj_i);
+		obj_array_push(wk, wk->backend_output_stack, proj->cfg.name);
+		obj_array_for(wk, proj->targets, t) {
+			switch (get_obj_type(wk, t)) {
+			case obj_both_libs:
+				t = decay_both_libs(wk, t);
+				// fallthrough
+			case obj_build_target: tgt = get_obj_build_target(wk, t); break;
+			default: continue;
+			}
+
+			obj_array_push(wk, wk->backend_output_stack, tgt->name);
+			workspace_scratch_begin(wk);
+			if (!ca_prepare_target_args(wk, proj, tgt)) {
+				return false;
+			}
+			if (!ca_prepare_target_linker_args(wk, 0, proj, tgt, true)) {
+				return false;
+			}
+			workspace_scratch_end(wk);
+			obj_array_pop(wk, wk->backend_output_stack);
+		}
+
+		obj_array_pop(wk, wk->backend_output_stack);
+	}
+
+	obj_array_pop(wk, wk->backend_output_stack);
+	return true;
+}
+
+/* */
+
+struct ca_relativize_paths_ctx {
+	bool relativize_strings;
+	obj *oneshot;
+	obj dest;
+};
+
+static enum iteration_result
+ca_relativize_paths_iter(struct workspace *wk, void *_ctx, obj val)
+{
+	struct ca_relativize_paths_ctx *ctx = _ctx;
+
+	const char *str;
+
+	if (get_obj_type(wk, val) == obj_string) {
+		if (ctx->relativize_strings) {
+			str = get_cstr(wk, val);
+		} else {
+			if (ctx->oneshot) {
+				*ctx->oneshot = val;
+			} else {
+				obj_array_push(wk, ctx->dest, val);
+			}
+			return ir_cont;
+		}
+	} else {
+		str = get_file_path(wk, val);
+	}
+
+	TSTR(buf);
+	relativize_build_file_path(wk, &buf, str);
+	obj s = tstr_into_str(wk, &buf);
+
+	if (ctx->oneshot) {
+		*ctx->oneshot = s;
+	} else {
+		obj_array_push(wk, ctx->dest, s);
+	}
+	return ir_cont;
+}
+
+void
+ca_relativize_paths(struct workspace *wk, obj arr, bool relativize_strings, obj *res)
+{
+	*res = make_obj(wk, obj_array);
+	struct ca_relativize_paths_ctx ctx = {
+		.relativize_strings = relativize_strings,
+		.dest = *res,
+	};
+
+	obj_array_foreach(wk, arr, &ctx, ca_relativize_paths_iter);
+}
+
+void
+ca_relativize_path(struct workspace *wk, obj path, bool relativize_strings, obj *res)
+{
+	*res = make_obj(wk, obj_array);
+	struct ca_relativize_paths_ctx ctx = {
+		.relativize_strings = relativize_strings,
+		.oneshot = res,
+	};
+
+	ca_relativize_paths_iter(wk, &ctx, path);
+}
+
+void
+ca_relativize_path_push(struct workspace *wk, obj path, obj arr)
+{
+	struct ca_relativize_paths_ctx ctx = {
+		.dest = arr,
+	};
+
+	ca_relativize_paths_iter(wk, &ctx, path);
+}
+
+obj
+ca_regenerate_build_command(struct workspace *wk, bool opts_only)
+{
+	obj regen_args;
+	regen_args = make_obj(wk, obj_array);
+
+	if (!opts_only) {
+		obj_array_push(wk, regen_args, make_str(wk, wk->argv0));
+		switch (log_get_lvl()) {
+		case log_debug: obj_array_push(wk, regen_args, make_str(wk, "-v")); break;
+		case log_error: obj_array_push(wk, regen_args, make_str(wk, "-q")); break;
+		default: break;
+		}
+		obj_array_push(wk, regen_args, make_str(wk, "-C"));
+		obj_array_push(wk, regen_args, make_str(wk, wk->source_root));
+		obj_array_push(wk, regen_args, make_str(wk, "setup"));
+	}
+
+	obj key, val;
+	obj_dict_for(wk, wk->global_opts, key, val) {
+		(void)key;
+		struct obj_option *o = get_obj_option(wk, val);
+		if (o->source != option_value_source_environment) {
+			continue;
+		}
+
+		// NOTE: This only handles options of type str or [str], which is okay since
+		// the only options that can be set from the environment are of this
+		// type.
+
+		TSTR(buf);
+
+		switch (get_obj_type(wk, o->val)) {
+		case obj_string:
+		case obj_array:
+			obj_to_s(wk, o->val, &buf);
+			break;
+		default: UNREACHABLE;
+		}
+
+		obj_array_push(wk, regen_args, make_strf(wk, "-D%s=%s", get_cstr(wk, o->name), buf.buf));
+	}
+
+	obj_array_extend(wk, regen_args, wk->regen_args);
+
+	return regen_args;
+}
+
+obj
+ca_backend_tgt_name(struct workspace *wk, obj tgt_id)
+{
+	switch (get_obj_type(wk, tgt_id)) {
+	case obj_alias_target: return get_obj_alias_target(wk, tgt_id)->name; break;
+	case obj_both_libs: tgt_id = decay_both_libs(wk, tgt_id);
+	/* fallthrough */
+	case obj_build_target: return get_obj_build_target(wk, tgt_id)->build_name; break;
+	case obj_custom_target: return get_obj_custom_target(wk, tgt_id)->name; break;
+	default: UNREACHABLE_RETURN;
+	}
+}

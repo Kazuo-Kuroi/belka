@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+
+# Mimic a binary that generates an object file (e.g. windres).
+
+import sys, subprocess
+
+if __name__ == '__main__':
+    if len(sys.argv) != 5:
+        print(sys.argv[0], 'compiler compiler_id input_file output_file')
+        sys.exit(1)
+    compiler = sys.argv[1]
+    compiler_id = sys.argv[2]
+    ifile = sys.argv[3]
+    ofile = sys.argv[4]
+    if compiler_id == 'msvc':
+        cmd = [compiler, '/nologo', '/MDd', '/Fo' + ofile, '/c', ifile]
+    else:
+        cmd = [compiler, '-c', ifile, '-o', ofile]
+    sys.exit(subprocess.call(cmd))

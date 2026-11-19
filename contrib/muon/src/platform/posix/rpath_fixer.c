@@ -1,0 +1,406 @@
+/*
+ * SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+#include "compat.h"
+
+#ifdef __sun
+#include <gelf.h> /* Elf32_Dyn and similar on Solaris */
+#endif
+
+#include <elf.h>
+#include <errno.h>
+#include <string.h>
+
+#include "buf_size.h"
+#include "lang/object_iterators.h"
+#include "lang/string.h"
+#include "lang/workspace.h"
+#include "log.h"
+#include "platform/assert.h"
+#include "platform/filesystem.h"
+#include "platform/path.h"
+#include "platform/rpath_fixer.h"
+#include "platform/uname.h"
+
+#ifndef DT_MIPS_RLD_MAP_REL
+#define DT_MIPS_RLD_MAP_REL 1879048245
+#endif
+
+enum elf_class { elf_class_32, elf_class_64 };
+
+struct elf {
+	enum elf_class class;
+	enum endianness endian;
+	uint64_t shoff;
+	uint16_t shentsize, shnum;
+};
+
+struct elf_section {
+	uint64_t off, size;
+	uint32_t type;
+	uint32_t entsize;
+	uint32_t len;
+	bool found;
+};
+
+struct elf_dynstr {
+	uint64_t off;
+	uint64_t tag;
+	uint32_t index;
+	bool found;
+};
+
+union elf_hdrbuf {
+	Elf64_Ehdr e64;
+	Elf32_Ehdr e32;
+	Elf64_Shdr s64;
+	Elf32_Shdr s32;
+	Elf64_Dyn d64;
+	Elf32_Dyn d32;
+	char bytes[BUF_SIZE_2k];
+};
+
+#define EHDR(BUF, CL, FLD) CL == elf_class_32 ? BUF.e32.FLD : BUF.e64.FLD
+#define SHDR(BUF, CL, FLD) CL == elf_class_32 ? BUF.s32.FLD : BUF.s64.FLD
+#define DHDR(BUF, CL, FLD) CL == elf_class_32 ? (uint64_t)BUF.d32.FLD : (uint64_t)BUF.d64.FLD
+
+static bool
+parse_elf(FILE *f, struct elf *elf)
+{
+	uint8_t ident[EI_NIDENT];
+	size_t r = fread(ident, 1, EI_NIDENT, f);
+	if (r != EI_NIDENT) {
+		return false;
+	}
+
+	const uint8_t magic[4] = { ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3 };
+
+	if (memcmp(ident, magic, 4) != 0) {
+		return false;
+	}
+
+	uint32_t hdr_size;
+	switch (ident[EI_CLASS]) {
+	case ELFCLASS32:
+		hdr_size = sizeof(Elf32_Ehdr);
+		elf->class = elf_class_32;
+		break;
+	case ELFCLASS64:
+		hdr_size = sizeof(Elf64_Ehdr);
+		elf->class = elf_class_64;
+		break;
+	case ELFCLASSNONE:
+	default: return false;
+	}
+
+	switch (ident[EI_DATA]) {
+	case ELFDATA2LSB: elf->endian = little_endian; break;
+	case ELFDATA2MSB: elf->endian = big_endian; break;
+	case ELFDATANONE:
+	default: return false;
+	}
+
+	union elf_hdrbuf buf = { 0 };
+	assert(hdr_size <= sizeof(buf));
+	r = fread(&buf.bytes[EI_NIDENT], 1, hdr_size - EI_NIDENT, f);
+	if (r != hdr_size - EI_NIDENT) {
+		return false;
+	}
+
+	elf->shoff = EHDR(buf, elf->class, e_shoff);
+	elf->shentsize = EHDR(buf, elf->class, e_shentsize);
+	elf->shnum = EHDR(buf, elf->class, e_shnum);
+
+	return true;
+}
+
+bool
+parse_elf_sections(FILE *f, struct elf *elf, struct elf_section *sections[])
+{
+	uint32_t i, j;
+	union elf_hdrbuf buf;
+
+	assert(elf->shentsize <= sizeof(buf));
+	struct elf_section tmp;
+
+	if (!fs_fseek(f, elf->shoff)) {
+		return false;
+	}
+
+	for (i = 0; i < elf->shnum; ++i) {
+		if (!fs_fread(buf.bytes, elf->shentsize, f)) {
+			return false;
+		}
+
+		tmp.type = SHDR(buf, elf->class, sh_type);
+		tmp.off = SHDR(buf, elf->class, sh_offset);
+		tmp.entsize = SHDR(buf, elf->class, sh_entsize);
+		tmp.size = SHDR(buf, elf->class, sh_size);
+
+		tmp.len = tmp.entsize ? tmp.size / tmp.entsize : 0;
+
+		for (j = 0; sections[j]; ++j) {
+			if (tmp.type != sections[j]->type) {
+				continue;
+			}
+
+			*sections[j] = tmp;
+			sections[j]->found = true;
+			break;
+		}
+
+		bool all_found = true;
+		for (j = 0; sections[j]; ++j) {
+			all_found &= sections[j]->found;
+		}
+
+		if (all_found) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static bool
+parse_elf_dynamic(FILE *f, struct elf *elf, struct elf_section *s_dynamic, struct elf_dynstr *strs[])
+{
+	uint32_t i, j;
+	union elf_hdrbuf buf;
+	assert(s_dynamic->entsize <= sizeof(buf));
+	struct elf_dynstr tmp;
+
+	if (!fs_fseek(f, s_dynamic->off)) {
+		return false;
+	}
+
+	for (i = 0; i < s_dynamic->len; ++i) {
+		if (!fs_fread(buf.bytes, s_dynamic->entsize, f)) {
+			return false;
+		}
+
+		tmp.tag = DHDR(buf, elf->class, d_tag);
+		tmp.off = DHDR(buf, elf->class, d_un.d_val);
+
+		for (j = 0; strs[j]; ++j) {
+			if (tmp.tag != strs[j]->tag) {
+				continue;
+			}
+
+			*strs[j] = tmp;
+			strs[j]->found = true;
+			strs[j]->index = i;
+			break;
+		}
+	}
+
+	return true;
+}
+
+static void
+push_rpath(struct workspace *wk, struct tstr *filtered, uint32_t *n, const struct str *path)
+{
+	if (*n) {
+		tstr_push(wk, filtered, ':');
+	}
+	tstr_pushn(wk, filtered, path->s, path->len);
+	++(*n);
+}
+
+static bool
+update_paths(struct workspace *wk,
+	obj add_rpaths,
+	obj strip_rpaths,
+	FILE *f,
+	struct elf_section *s_dynstr,
+	struct elf_dynstr *str,
+	bool *cleared)
+{
+	const uint32_t rpath_src_off = s_dynstr->off + str->off;
+	if (!fs_fseek(f, rpath_src_off)) {
+		return false;
+	}
+
+	TSTR(src);
+	tstr_grow(wk, &src, BUF_SIZE_4k);
+	while (true) {
+		size_t b = fread(src.buf + src.len, 1, src.cap - src.len, f);
+		if (!b) {
+			LOG_E("fread failed: %s", strerror(errno));
+			return false;
+		}
+		const char *end = memchr(src.buf + src.len, 0, b);
+		if (end) {
+			src.len = end - src.buf;
+			break;
+		} else {
+			src.len += b;
+			if (src.cap - src.len < 1024) {
+				tstr_grow(wk, &src, src.cap);
+			}
+		}
+	}
+
+	L("> original: '%.*s'", src.len, src.buf);
+
+	TSTR(path);
+	TSTR(filtered);
+	uint32_t n = 0;
+
+	struct str s = TSTR_STR(&src);
+	while (true) {
+		struct str_cut cut;
+		bool have_after = str_cut(&s, &STR(":"), &cut);
+		if (cut.before.len) {
+			tstr_clear(&path);
+			tstr_pushn(wk, &path, cut.before.s, cut.before.len);
+
+			bool should_strip = false;
+			obj rpath;
+			obj_array_for(wk, strip_rpaths, rpath) {
+				const struct str *to_strip = get_str(wk, rpath);
+				if (str_eql(to_strip, &TSTR_STR(&path))) {
+					should_strip = true;
+					break;
+				}
+			}
+
+			if (!should_strip) {
+				push_rpath(wk, &filtered, &n, &cut.before);
+			}
+		}
+
+		if (!have_after) {
+			break;
+		}
+
+		s = cut.after;
+	}
+
+	if (add_rpaths) {
+		obj rpath;
+		obj_array_for(wk, add_rpaths, rpath) {
+			push_rpath(wk, &filtered, &n, get_str(wk, rpath));
+		}
+	}
+
+	if (!n) {
+		*cleared = true;
+	}
+
+	if (filtered.len > src.len) {
+		LOG_E("final rpath '%.*s' too long", filtered.len, filtered.buf);
+		return false;
+	}
+
+	L("> final: '%.*s'", filtered.len, filtered.buf);
+
+	if (!fs_fseek(f, rpath_src_off)) {
+		return false;
+	} else if (!fs_fwrite(filtered.buf, filtered.len, f)) {
+		return false;
+	}
+
+	uint32_t memset_len = src.len - filtered.len;
+	memset(src.buf, 0, memset_len);
+	if (!fs_fwrite(src.buf, memset_len, f)) {
+		return false;
+	}
+
+	return true;
+}
+
+static bool
+remove_path_entry(FILE *f, struct elf *elf, struct elf_section *s_dynamic, struct elf_dynstr *entry)
+{
+	char buf[BUF_SIZE_2k];
+	assert(s_dynamic->entsize <= ARRAY_LEN(buf));
+
+	uint32_t i;
+	for (i = entry->index + 1; i < s_dynamic->len; ++i) {
+		if (!fs_fseek(f, s_dynamic->off + (s_dynamic->entsize * i))) {
+			return false;
+		}
+
+		if (!fs_fread(buf, s_dynamic->entsize, f)) {
+			return false;
+		}
+
+		if (!fs_fseek(f, s_dynamic->off + (s_dynamic->entsize * (i - 1)))) {
+			return false;
+		}
+
+		if (!fs_fwrite(buf, s_dynamic->entsize, f)) {
+			return false;
+		}
+	}
+
+	struct elf_dynstr mips_rld_map_rel = { .tag = DT_MIPS_RLD_MAP_REL };
+	if (!parse_elf_dynamic(f, elf, s_dynamic, (struct elf_dynstr *[]){ &mips_rld_map_rel, NULL })) {
+		return false;
+	}
+
+	if (mips_rld_map_rel.found) {
+		LOG_W("TODO: fix mips_rld_map_rel");
+	}
+
+	return true;
+}
+
+bool
+fix_rpaths(struct workspace *wk, const char *elf_path, obj add_rpaths, obj strip_rpaths)
+{
+	LO("fixing rpaths +%o, -%o\n", add_rpaths, strip_rpaths);
+
+	bool ret = false;
+	FILE *f = NULL;
+	if (!(f = fs_fopen(elf_path, "r+"))) {
+		return false;
+	}
+
+	struct elf elf;
+	if (!parse_elf(f, &elf)) {
+		// the file is not an elf file
+		ret = true;
+		goto ret;
+	}
+
+	struct elf_section s_dynamic = { .type = SHT_DYNAMIC }, s_dynstr = { .type = SHT_STRTAB };
+	if (!parse_elf_sections(f, &elf, (struct elf_section *[]){ &s_dynamic, &s_dynstr, NULL })) {
+		goto ret;
+	}
+
+	struct elf_dynstr rpaths[] = { { .tag = DT_RPATH }, { .tag = DT_RUNPATH } };
+	if (!parse_elf_dynamic(f, &elf, &s_dynamic, (struct elf_dynstr *[]){ &rpaths[0], &rpaths[1], NULL })) {
+		goto ret;
+	}
+
+	uint32_t i;
+	for (i = 0; i < ARRAY_LEN(rpaths); ++i) {
+		if (!rpaths[i].found) {
+			continue;
+		}
+
+		bool cleared;
+		if (!update_paths(wk, add_rpaths, strip_rpaths, f, &s_dynstr, &rpaths[i], &cleared)) {
+			goto ret;
+		}
+
+		if (cleared) {
+			if (!remove_path_entry(f, &elf, &s_dynamic, &rpaths[i])) {
+				goto ret;
+			}
+		}
+	}
+
+	ret = true;
+ret:
+	if (f) {
+		if (!fs_fclose(f)) {
+			return false;
+		}
+	}
+	return ret;
+}

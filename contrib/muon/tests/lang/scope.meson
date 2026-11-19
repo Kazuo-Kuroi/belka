@@ -1,0 +1,231 @@
+# SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+# SPDX-License-Identifier: GPL-3.0-only
+
+tests = []
+
+func add_test(desc str, fn function)
+    tests += {'desc': desc, 'fn': fn}
+endfunc
+
+add_test(
+    'Test that flags declared before function is used as an upvalue',
+    func()
+        flags = []
+
+        func bar() -> list[str]
+            flags = ['a']
+
+            flags += ['b']
+
+            return flags
+        endfunc
+
+        flags = ['c']
+        assert(bar() == ['a', 'b'])
+        assert(flags == ['a', 'b'])
+    endfunc,
+)
+
+add_test(
+    'Test that flags declared after function is not used as an upvalue',
+    func()
+        func bar() -> list[str]
+            flags = ['a']
+
+            flags += ['b']
+
+            return flags
+        endfunc
+
+        flags = ['c']
+        assert(bar() == ['a', 'b'])
+        assert(flags == ['c'])
+    endfunc,
+)
+
+add_test(
+    'Test flags declared before function, but assignment forced',
+    func()
+        flags = []
+
+        func bar() -> list[str]
+            flags := ['a']
+
+            flags += ['b']
+
+            return flags
+        endfunc
+
+        flags = ['c']
+        assert(bar() == ['a', 'b'])
+        assert(flags == ['c'])
+    endfunc,
+)
+
+add_test(
+    'Test recursive calls and equivalence of = and +=',
+    func()
+        i = 0
+        j = 0
+        n = 0
+        s = ''
+        t = ''
+
+        func fib(n int) -> int
+            i = i + 1
+            j += 1
+
+            s = s + '_' + n.to_string()
+            t += '_' + n.to_string()
+
+            return n <= 1 ? n : fib(n - 1) + fib(n - 2)
+        endfunc
+
+        assert(fib(5) == 5)
+        assert(i == j and i == 15)
+        assert(s == t and s == '_5_4_3_2_1_0_1_2_1_0_3_2_1_0_1')
+        assert(n == 0)
+    endfunc,
+)
+
+add_test(
+    '`func foo` does not force a local declaration, so it may bind with an upvalue',
+    func()
+        foo = 'a string'
+
+        func bar()
+            func foo() -> str
+                return 'hello from foo'
+            endfunc
+        endfunc
+
+        assert(typeof(foo) == 'str')
+        bar()
+        assert(typeof(foo) == 'function')
+        assert(foo() == 'hello from foo')
+    endfunc,
+)
+
+add_test(
+    'force-declaration in the middle of a function body only affects later code',
+    func()
+        foo = 'set at outer scope'
+
+        func bar()
+            assert(foo == 'set at outer scope')
+
+            foo = 'set at inner scope' # This mutates the foo upvalue declared above
+            assert(foo == 'set at inner scope')
+
+            foo := 'local to bar' # This declares a new local variable that shadows foo
+
+            foo = 'still local to bar' # This mutates the foo local
+            assert(foo == 'still local to bar')
+        endfunc
+
+        bar()
+        assert(foo == 'set at inner scope')
+    endfunc,
+)
+
+add_test(
+    'a += b and a = a + b are mutations for container types',
+    func()
+        a = [1]
+        b = [2]
+
+        func foo(a list[int], b list[int])
+            a = a + a
+            b += b
+        endfunc
+
+        foo(a, b)
+
+        assert(a == [1], '`a` should not be mutated, = was used')
+        assert(b == [2, 2], '`b` should be mutated, += was used')
+    endfunc,
+)
+
+add_test(
+    'foreach does not create scopes, but iterator variables do not bind to upvalues',
+    func()
+        foo = 'set at outer scope'
+
+        func a()
+            assert(foo == 'set at outer scope')
+
+            foo = 'set inside a()' # This mutates the foo upvalue declared above
+            assert(foo == 'set inside a()')
+
+            # Iterator variables are like :=, they force declare new block
+            # locals. They are special in that they reuse existing locals
+            # instead of throwing a duplicate error.
+            foreach foo : ['set in iterator']
+            endforeach
+            assert(foo == 'set in iterator')
+        endfunc
+
+        a()
+        assert(foo == 'set inside a()')
+
+        func b()
+            assert(foo == 'set inside a()')
+
+            foo = 'set inside b()' # This mutates the foo upvalue declared above
+            assert(foo == 'set inside b()')
+
+            foo := 'local to b'
+            assert(foo == 'local to b')
+
+            # Iterator variables are like :=, they force declare new block
+            # locals. They are special in that they reuse existing locals
+            # instead of throwing a duplicate error.
+            foreach foo : ['set in iterator']
+            endforeach
+            assert(foo == 'set in iterator')
+
+            foreach foo : ['reset in iterator']
+            endforeach
+            assert(foo == 'reset in iterator')
+        endfunc
+
+        b()
+        assert(foo == 'set inside b()')
+    endfunc,
+)
+
+add_test(
+    'simulated object with private member',
+    func()
+        counter = (
+            func() -> dict[function]
+                i = 0
+
+                return {
+                    'is': func(val int) -> bool
+                        return i == val
+                    endfunc,
+                    'reset': func(val int: 0)
+                        i = val
+                    endfunc,
+                    'inc': func()
+                        i += 1
+                    endfunc,
+                }
+            endfunc
+        )()
+        assert(counter.is(0))
+        counter.inc()
+        counter.inc()
+        assert(counter.is(2))
+        counter.reset()
+        assert(counter.is(0))
+        counter.reset(val: 3)
+        assert(counter.is(3))
+    endfunc,
+)
+
+foreach t : tests
+    print(f'---- @0@ ----\n'.format(t.desc))
+    t.fn()
+endforeach

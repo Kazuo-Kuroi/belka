@@ -1,0 +1,9 @@
+[book]
+authors = ["Stone Tickle"]
+language = "en"
+src = "src"
+title = "Muon Docs"
+
+[output.html]
+default-theme = "muon"
+preferred-dark-theme = "muon"

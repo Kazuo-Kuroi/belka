@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+# SPDX-License-Identifier: GPL-3.0-only
+
+fs = import('fs')
+
+M = {}
+
+comp_types = {
+    'rc': {
+        'suffix': 'res',
+        'args': ['/nologo', '/fo@OUTPUT@', '@INPUT@'],
+        'inc': func(path str) -> str
+            return f'/i@path@'
+        endfunc,
+    },
+    'windres': {
+        'suffix': 'o',
+        'args': [
+            '@INPUT@',
+            '@OUTPUT@',
+            '--preprocessor-arg=-MD',
+            '--preprocessor-arg=-MQ@OUTPUT@',
+            '--preprocessor-arg=-MF@DEPFILE@',
+        ],
+        'depfile': '@OUTPUT@.d',
+        'inc': func(path str) -> str
+            return f'-I@path@'
+        endfunc,
+    },
+}
+
+func find_compiler() -> dict[any]
+    foreach name : ['rc', 'windres']
+        prog = find_program(name, required: false)
+        if prog.found()
+            return {'prog': prog} + comp_types[name]
+        endif
+    endforeach
+
+    error('unable to find a resource compiler')
+endfunc
+
+## Compiles Windows `rc` files specified in the positional arguments. Returns a
+## list of `custom_tgt` objects that you put in the list of sources for the
+## target you want to have the resources in.
+M.compile_resources = func(
+    ## windows resource files
+    rcs glob[custom_tgt|file|str],
+    ## extra arguments to pass to the resource compiler
+    args listify[str]: [],
+    ## files that the resource files depend on
+    depend_files listify[file|str]: [],
+    ## targets that the resource files depend on
+    depends listify[build_tgt|custom_tgt|file]: [],
+    ## lists directories to be both searched by the resource compiler for
+    ## referenced resource files, and added to the preprocessor include search
+    ## path
+    include_directories list[inc|str]: [],
+    ## automatically add current build and source directories to
+    ## include_directories
+    implicit_include_directories bool: false,
+) -> list[custom_tgt]
+    comp = find_compiler()
+
+    foreach d : depends
+        include_directories += '@BUILD_ROOT@' / fs.parent(d.full_path())
+    endforeach
+
+    includes = include_directories
+    if implicit_include_directories
+        includes += [meson.current_source_dir(), meson.current_build_dir()]
+    endif
+
+    foreach inc : includes
+        args += comp.inc(inc.full_path())
+    endforeach
+
+    args += comp.args
+
+    rcs_flat = []
+    foreach rc : rcs
+        if typeof(rc) == 'custom_tgt'
+            rcs_flat += rc.to_list()
+        else
+            rcs_flat += rc
+        endif
+    endforeach
+
+    kwargs = {}
+
+    if 'depfile' in comp
+        kwargs.depfile = comp.depfile
+    endif
+
+    res = []
+    foreach rc : rcs_flat.flatten()
+        name = rc.full_path().underscorify()
+        res += custom_target(
+            input: rc,
+            output: '@0@_@BASENAME@.@1@'.format(name, comp.suffix),
+            command: [comp.prog, args],
+            depend_files: depend_files,
+            depends: depends,
+            kwargs: kwargs,
+        )
+    endforeach
+
+    return res
+endfunc
+
+return M

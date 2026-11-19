@@ -1,0 +1,7 @@
+; SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+; SPDX-License-Identifier: GPL-3.0-only
+
+[wrap-git]
+url = https://github.com/muon-build/meson-tests
+revision = fc9f5953819851cbd63d25c9ed9d521a90473fd2
+depth = 1

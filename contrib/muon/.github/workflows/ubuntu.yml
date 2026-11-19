@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+# SPDX-License-Identifier: GPL-3.0-only
+
+name: ubuntu
+
+on:
+  push:
+    branches:
+      - master
+      - "[0-9]+.[0-9]+"
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  with-sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout muon source and install dependencies.
+      - uses: actions/checkout@master
+        with:
+          fetch-depth: 0
+
+      # Bootstrap basic build.
+      - name: Bootstrap
+        run: |
+          ./bootstrap.sh build
+          build/muon-bootstrap -v build build
+
+      # Build muon with ASan and UBSan and run the testsuite.
+      - name: build_asan_ubsan
+        run: |
+          build/muon build -Db_sanitize=address,undefined build_asan_ubsan
+      - name: test_asan_ubsan
+        run: |
+          cd build_asan_ubsan
+          ./muon test -d dots
+      # test again with clang
+      - name: test_asan_ubsan_clang
+        run: |
+          cd build_asan_ubsan
+          CC=clang CXX=clang++ ./muon test -d dots
+
+      # Build muon FORTIFY_SOURCE=3 and run the testsuite.
+      - name: build_fortify_source
+        run: |
+          CFLAGS="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3" build/muon build build_fortify_source
+      - name: test_fortify_source
+        run: |
+          cd build_fortify_source
+          ./muon test -d dots
+
+  # Build muon with libpkgconf and run the testsuite.
+  #
+  # Muon with libpkgconf requires version >= 1.9.0 which is newer than what is
+  # packaged by Debian so it will be fetched via a wrap.
+  with-libpkgconf:
+    runs-on: ubuntu-latest
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      # Checkout muon source and install dependencies.
+      - uses: actions/checkout@master
+        with:
+          fetch-depth: 0
+      # Required for gnome module tests.
+      # vala tests
+      # wayland tests
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev libgirepository1.0-dev valac \
+            libwayland-bin libwayland-dev wayland-protocols libxkbcommon-dev
+
+      - name: Set PKG_CONFIG_PATH
+        run: |
+          MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+          echo "PKG_CONFIG_PATH=/usr/lib/$MULTIARCH/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
+
+      # Bootstrap basic build.
+      - name: Bootstrap
+        run: |
+          ./bootstrap.sh build
+          build/muon-bootstrap -v build -Dlibpkgconf=enabled -Dsamurai=disabled build
+
+      - name: test_with_libpkgconf
+        run: |
+          build/muon -C build test -d dots

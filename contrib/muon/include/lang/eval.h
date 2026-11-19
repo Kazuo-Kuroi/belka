@@ -1,0 +1,56 @@
+/*
+ * SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+#ifndef MUON_LANG_EVAL_H
+#define MUON_LANG_EVAL_H
+
+#include <stdbool.h>
+
+#include "lang/types.h"
+#include "lang/compiler.h"
+
+struct workspace;
+struct source;
+
+enum eval_mode {
+	eval_mode_repl = 1 << 0,
+	eval_mode_first = 1 << 1,
+	eval_mode_return_after_project = 1 << 2,
+	eval_mode_relaxed_parse = 1 << 3,
+};
+
+enum eval_project_file_flags {
+	eval_project_file_flag_first = 1 << 0,
+	eval_project_file_flag_return_after_project = 1 << 1,
+	eval_project_file_flag_relaxed_parse = 1 << 2,
+};
+
+struct eval_opts {
+	enum build_language lang;
+	enum language_mode lang_mode;
+	enum eval_mode mode;
+	enum vm_compile_mode compile_flags;
+	const struct args_norm *an;
+};
+
+bool eval_project(struct workspace *wk,
+	const char *subproject_name,
+	const char *cwd,
+	const char *build_dir,
+	uint32_t *proj_id);
+bool eval_project_file(struct workspace *wk,
+	const char *path,
+	enum build_language lang,
+	enum language_mode mode,
+	enum eval_project_file_flags flags,
+	obj *res);
+bool eval(struct workspace *wk, const struct source *src, const struct eval_opts *opts, obj *res);
+bool eval_str(struct workspace *wk, const char *str, enum language_mode lang_mode, enum eval_mode eval_mode, obj *res);
+bool eval_str_label(struct workspace *wk, const char *label, const char *str, enum language_mode lang_mode, enum eval_mode eval_mode, obj *res);
+void repl(struct workspace *wk, bool dbg);
+
+const char *determine_project_root(struct workspace *wk, const char *path);
+const char *determine_build_file(struct workspace *wk, const char *cwd, enum build_language *out_lang, bool quiet);
+#endif

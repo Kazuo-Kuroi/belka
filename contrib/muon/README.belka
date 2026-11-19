@@ -1,0 +1,9 @@
+Muon 0.7.1
+==========
+
+Imported from the source archive linked by https://muon.build/:
+https://dl.muon.build/v0.7.1/muon-v0.7.1.tar.gz
+SHA-256: 956b5a74f7852ec4c57a11825dac79052da878da78f507bee1a0ef955053fbbb
+
+Muon is GPL-3.0-only; individual bundled files retain their own notices.
+The complete upstream LICENSES directory accompanies this import.

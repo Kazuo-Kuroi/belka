@@ -1,0 +1,13 @@
+{
+  "installed": [
+    {"type": "exe", "file": "usr/bin/user"},
+    {"type": "pdb", "file": "usr/bin/user"}
+  ],
+  "matrix": {
+    "options": {
+      "subunused:opt1": [
+	{ "val": "42" }
+      ]
+    }
+  }
+}

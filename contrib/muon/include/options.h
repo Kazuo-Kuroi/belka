@@ -1,0 +1,106 @@
+/*
+ * SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+#ifndef MUON_OPTIONS_H
+#define MUON_OPTIONS_H
+#include "lang/workspace.h"
+
+enum initializing_builtin_options_state {
+	initializing_builtin_options_state_none,
+	initializing_builtin_options_state_global,
+	initializing_builtin_options_state_project,
+};
+extern enum initializing_builtin_options_state initializing_builtin_options_state;
+extern const char *build_option_type_to_s[build_option_type_count];
+bool toolchain_component_option_name(struct workspace *wk, enum compiler_language l, enum toolchain_component c, enum machine_kind machine, struct tstr *dest);
+
+struct option_override {
+	// strings
+	obj proj, name, val;
+	enum option_value_source source;
+	bool obj_value, master_project_only;
+};
+
+enum create_option_flag {
+	create_option_flag_per_machine = 1 << 0,
+};
+
+bool create_option(struct workspace *wk, obj opts, obj opt, obj val, enum create_option_flag flags);
+bool set_option(struct workspace *wk, obj opt, obj new_val, enum option_value_source source, bool coerce);
+bool get_option(struct workspace *wk, const struct project *proj, const struct str *name, obj *res);
+bool get_option_overridable(struct workspace *wk,
+	const struct project *proj,
+	obj overrides,
+	const struct str *name,
+	obj *res);
+void get_option_value(struct workspace *wk, const struct project *proj, const char *name, obj *res);
+void get_option_value_overridable(struct workspace *wk,
+	const struct project *proj,
+	obj overrides,
+	const char *name,
+	obj *res);
+void
+get_option_value_for_machine_overridable(struct workspace *wk, const struct project *proj, obj overrides, const char *name, enum machine_kind m, obj *res);
+
+enum parse_and_set_option_flag {
+	parse_and_set_option_flag_override = 1 << 0,
+	parse_and_set_option_flag_for_subproject = 1 << 1,
+	parse_and_set_option_flag_have_value = 1 << 2,
+	parse_and_set_option_flag_push_option_override_if_not_found = 1 << 3,
+};
+struct parse_and_set_option_params {
+	uint32_t node;
+	obj project_name;
+	obj opt;
+	obj value;
+	obj opts;
+	enum parse_and_set_option_flag flags;
+	enum option_value_source source;
+	enum machine_kind machine;
+	bool have_machine;
+};
+bool parse_and_set_option(struct workspace *wk, const struct parse_and_set_option_params *params);
+
+bool check_invalid_option_overrides(struct workspace *wk);
+bool check_invalid_subproject_option(struct workspace *wk);
+bool prefix_dir_opts(struct workspace *wk);
+
+bool setup_project_options(struct workspace *wk, const char *cwd);
+bool init_global_options(struct workspace *wk);
+
+bool parse_and_set_cmdline_option(struct workspace *wk, char *lhs);
+bool
+parse_and_set_default_options(struct workspace *wk, uint32_t err_node, obj arr, obj project_name, bool for_subproject);
+bool parse_and_set_override_options(struct workspace *wk, uint32_t err_node, obj arr, obj *res);
+
+enum wrap_mode {
+	wrap_mode_nopromote,
+	wrap_mode_nodownload,
+	wrap_mode_nofallback,
+	wrap_mode_forcefallback,
+};
+enum wrap_mode get_option_wrap_mode(struct workspace *wk);
+enum tgt_type get_option_default_library(struct workspace *wk);
+enum default_both_libraries get_option_default_both_libraries(struct workspace *wk, const struct project *proj, obj overrides);
+bool get_option_bool(struct workspace *wk, obj overrides, const char *name, bool fallback);
+enum backend {
+	backend_ninja,
+	backend_xcode,
+};
+enum backend get_option_backend(struct workspace *wk);
+
+enum opt_namingscheme {
+	opt_namingscheme_classic,
+	opt_namingscheme_platform,
+};
+enum opt_namingscheme get_option_namingscheme(struct workspace *wk, const struct project *proj, obj overrides);
+
+bool options_load_from_option_info(struct workspace *wk);
+
+struct list_options_opts {
+	bool list_all, only_modified;
+};
+bool list_options(struct workspace *wk, const struct list_options_opts *list_opts);
+#endif

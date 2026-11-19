@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+# SPDX-License-Identifier: GPL-3.0-only
+
+# common platform sources
+platform_sources = files(
+    'assert.c',
+    'filesystem.c',
+    'mem.c',
+    'os.c',
+    'path.c',
+    'run_cmd.c',
+    'uname.c',
+)
+
+foreach f : [
+    'filesystem.c',
+    'init.c',
+    'log.c',
+    'os.c',
+    'path.c',
+    'run_cmd.c',
+    'socket.c',
+    'term.c',
+    'timer.c',
+    'uname.c',
+]
+    platform_sources += files(platform / f)
+endforeach
+
+if host_machine.system() == 'windows'
+    include_dir += include_directories('../../include/platform/windows')
+    platform_sources += files(
+        'null/backtrace.c',
+        'windows/rpath_fixer.c',
+        'windows/win32_error.c',
+    )
+endif
+
+if platform == 'posix'
+    if host_machine.system() == 'darwin'
+        platform_sources += files('null/rpath_fixer.c')
+    else
+        platform_sources += files('posix/rpath_fixer.c')
+    endif
+
+    native_backtrace = get_option('native_backtrace').enabled()
+    if get_option('native_backtrace').auto()
+        libdl = cc.find_library('dl', required: false)
+
+        native_backtrace = (
+            cc.has_function(
+                'dladdr',
+                prefix: '#include <dlfcn.h>',
+                args: ['-D_BSD_SOURCE'],
+                dependencies: libdl,
+            )
+            and cc.has_function('backtrace', prefix: '#include <execinfo.h>')
+        )
+
+        if native_backtrace and libdl.found()
+            deps += libdl
+        endif
+    endif
+
+    if native_backtrace
+        muon_export_dynamic = true
+        platform_sources += files('posix/backtrace.c')
+    else
+        platform_sources += files('null/backtrace.c')
+    endif
+
+    if host_machine.system() == 'sunos'
+        deps += cc.find_library('socket')
+        deps += cc.find_library('nsl')
+    endif
+
+    if host_machine.system() == 'haiku'
+        deps += cc.find_library('network')
+    endif
+
+    librt = cc.find_library('rt', required: false)
+    if librt.found()
+        deps += librt
+    endif
+endif

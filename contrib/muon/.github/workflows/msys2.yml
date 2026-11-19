@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Stone Tickle <lattis@mochiro.moe>
+# SPDX-FileCopyrightText: Vincent Torri <vtorri@outlook.fr>
+# SPDX-License-Identifier: GPL-3.0-only
+
+name: msys2
+
+on:
+  push:
+    branches:
+      - master
+      - '[0-9]+.[0-9]+'
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      matrix:
+        include:
+          - { sys: mingw32, cc: gcc, cxx: 'g++', args: '', runs-on: 'windows-latest' }
+          - { sys: mingw64, cc: gcc, cxx: 'g++', args: '', runs-on: 'windows-latest' }
+          - { sys: ucrt64, cc: gcc, cxx: 'g++', args: '', runs-on: 'windows-latest' }
+          - { sys: clang64, cc: clang, cxx: 'clang++', args: '-Db_sanitize=address,undefined', runs-on: 'windows-latest' }
+          - { sys: clangarm64, cc: clang, cxx: 'clang++', args: '', runs-on: 'windows-11-arm' }
+      fail-fast: false
+    name: ${{ matrix.sys }}
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+    - name: 'Checkout'
+      uses: actions/checkout@master
+    - name: 'Setup msys2'
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: ${{ matrix.sys }}
+        update: true
+        install: >-
+          git
+        pacboy: >-
+          toolchain:p
+          pkgconf:p
+          curl:p
+          libarchive:p
+    - name: 'Build'
+      run: |
+        CC="${{ matrix.cc }} -std=c99"  ./bootstrap.sh build
+        CC="${{ matrix.cc }}" ./build/muon-bootstrap.exe setup ${{ matrix.args }} build
+        build/muon-bootstrap.exe -C build samu
+        build/muon.exe version
+    - name: 'Tests'
+      run: |
+        CC="${{ matrix.cc }}" CXX="${{ matrix.cxx }}" ./build/muon.exe -C build test -R -v -ddots
+        ./build/muon.exe internal eval tools/project_test_timings.meson build
