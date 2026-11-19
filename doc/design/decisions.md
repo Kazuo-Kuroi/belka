@@ -2160,3 +2160,17 @@ assembler](#native-gcc-target-and-assembler-2026-11-18).
   This replaces mkdir's earlier EINVAL result for root; parent lookup itself
   and the rename/removal rules are unchanged. GCC's libcody build exposed
   the discrepancy through mkdir -p ./.
+
+## Executable text files and PATH search (2026-11-19)
+
+- Follow the [POSIX.1-2001 exec interfaces](https://pubs.opengroup.org/onlinepubs/009695399/functions/exec.html):
+  execlp and execvp interpret an executable text file through the shell when
+  execve returns ENOEXEC. Keep execve's error unchanged. Empty components of
+  PATH search the current directory, including leading and trailing ones.
+- Select /bin/sh with the sh utility personality. Passing the caller's
+  name as the interpreter's name can select mksh's restricted mode when
+  that name starts with r; GCC's generated ranlib script exposed this.
+  Preserve the script path, subsequent arguments and environment. Test
+  both static and shared libc, including arguments containing spaces and
+  empty arguments. No kernel executable-format or syscall ABI change is
+  involved.

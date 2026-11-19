@@ -243,6 +243,8 @@ cp contrib/netbsd/etc/rc.d/* etc/rc.d/* "$src/etc/rc.d/"
 
 if [ $test -eq 1 ]; then
         install_prog boottest usr/tests/boottest
+        install_prog exectest usr/tests/exectest
+        cp usr/tests/exectest.c "$src/usr/tests/"
         cp usr/tests/utiltest.sh usr/tests/compiler.sh usr/tests/buildtools.sh "$src/usr/tests/"
         # ksenon-utils' own suite, over a directory of just its 45
         # utilities and their links, as its tests/run.sh expects (../cmd).

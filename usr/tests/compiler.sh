@@ -5,6 +5,8 @@
 # Sourced by utiltest.sh with its check/status helpers and temporary directory.
 
 echo "compilertest: C driver, linking, and TLS"
+status "static exec regression compile" 0 gcc -static /usr/tests/exectest.c -o exec-static
+status "static exec regression" 0 ./exec-static "$PWD"
 check "GCC target" x86_64-unknown-belka gcc -dumpmachine
 check "GCC version" 14.2.0 gcc -dumpfullversion
 cat > compiler-c.c <<'C'

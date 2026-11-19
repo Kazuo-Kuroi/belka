@@ -940,3 +940,10 @@ MKDATA_TEST     = rm -f $(DATA_TEST_IMG) && $(MKE2FS) -q -F -t ext2 -b 1024 \
 root-image: $(ROOT_IMG)
 
 .PHONY: root-image
+
+$(SYS_OBJ)/exectest.o: usr/tests/exectest.c $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
+
+$(SYS_DIR)/exectest: $(SYS_OBJ)/exectest.o $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$<)
