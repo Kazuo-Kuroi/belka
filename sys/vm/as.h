@@ -18,6 +18,7 @@
 #define _VM_AS_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <sys/synch.h>
 
@@ -28,6 +29,7 @@
 struct hat;
 
 struct as {
+        volatile uint32_t a_ref;        /* process and temporary owners */
         struct mrlock   a_lock;
         struct seg      *a_segs;        /* address order */
         struct hat      *a_hat;
@@ -36,6 +38,7 @@ struct as {
 
 void as_init(void);
 struct as *as_alloc(void);
+void as_hold(struct as *);
 void as_free(struct as *);
 struct as *as_dup(struct as *);
 int as_map(struct as *, vaddr_t, size_t, int (*)(struct seg *, void *),

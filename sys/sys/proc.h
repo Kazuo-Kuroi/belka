@@ -15,8 +15,9 @@
  * Locking:
  * - proctree_lock (a mutex) protects the process tree, the pid hash,
  *   p_stat, and the wait information; p_waitsv is waited on with it.
- * - p_lock (a mutex) protects a process's file table, directories, and
- *   break.
+ * - p_lock (a mutex) protects a process's directories and break.
+ * - p_fdt's fd_lock protects the descriptor table, which can be shared
+ *   by separate processes. It precedes p_lock for resource-limit reads.
  * - p_as may be replaced only by the process itself (exec, exit), under
  *   proctree_lock, so its own LWP reads it without a lock and others
  *   (/proc) with proctree_lock.
@@ -47,6 +48,7 @@
 struct as;
 struct cred;
 struct file;
+struct fdt;
 struct kthread;
 struct trapframe;
 struct vnode;
@@ -162,10 +164,9 @@ struct proc {
         struct sv       p_lwpsv;        /* LWP state changed */
         struct sv       p_rendezsv;     /* parked LWPs wait here */
 
+        /* Descriptor-table ownership; its contents have their own lock. */
+        struct fdt      *p_fdt;         /* stable until single-threaded detach */
         /* Under p_lock. */
-        struct file     **p_ofile;
-        uint8_t         *p_pofile;      /* FD_CLOEXEC per descriptor */
-        int             p_nofile;       /* slots in the tables */
         struct vnode    *p_cdir;
         struct vnode    *p_rdir;        /* NULL: the system root */
         mode_t          p_cmask;
@@ -300,6 +301,8 @@ int fd_cloexec(struct proc *, int, int);
 struct file *fd_get(struct proc *, int);
 int fd_close(struct proc *, int);
 void fd_dup_table(struct proc *, struct proc *);
+void fd_init_table(struct proc *);
+void fd_share_table(struct proc *, struct proc *);
 void fd_close_all(struct proc *);
 void fd_close_exec(struct proc *);
 

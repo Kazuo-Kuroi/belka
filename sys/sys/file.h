@@ -49,6 +49,14 @@ struct file {
         struct cred     *f_cred;
 };
 
+struct fdt {
+        struct mutex    fd_lock;
+        unsigned int    fd_refs;
+        struct file     **fd_files;
+        uint8_t         *fd_flags;
+        int             fd_size;
+};
+
 struct file *falloc(struct vnode *, int);
 void fhold(struct file *);
 void frele(struct file *);

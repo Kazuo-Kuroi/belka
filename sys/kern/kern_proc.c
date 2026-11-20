@@ -82,6 +82,7 @@ proc_init(void)
         mutex_init(&proctree_lock, "proctree");
         sock_init();
         mutex_init(&proc0.p_lock, "proc");
+        fd_init_table(&proc0);
         sv_init(&proc0.p_waitsv, "wait");
         proc0.p_pid = 0;
         proc0.p_stat = SRUN;
@@ -155,6 +156,7 @@ proc_alloc(struct proc *parent)
 
         memset(p, 0, sizeof(*p));
         mutex_init(&p->p_lock, "proc");
+        fd_init_table(p);
         sv_init(&p->p_waitsv, "wait");
         sv_init(&p->p_lwpsv, "lwps");
         sv_init(&p->p_rendezsv, "parked");
@@ -215,12 +217,9 @@ proc_unlink(struct proc *p)
 void
 proc_free(struct proc *p)
 {
+        if (p->p_fdt != NULL)
+                fd_close_all(p);
         crfree(p->p_cred);
-        if (p->p_ofile != NULL) {
-                kmem_free(p->p_ofile, (size_t)p->p_nofile *
-                    sizeof(struct file *));
-                kmem_free(p->p_pofile, (size_t)p->p_nofile);
-        }
         kmem_zone_free(proc_zone, p);
         (void)atomic_dec_32_nv(&nprocs);
 }

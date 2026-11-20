@@ -21,9 +21,10 @@ object locks below.
 | `proctree_lock` (`kern/kern_proc.c`) | the process tree, the pid hash, `p_stat`, and wait information | Waiters for children sleep on `p_waitsv` with it. Never held across anything that sleeps for long. |
 | `fn_lock`, one per pipe (`fs/fifofs/fifo_vnops.c`) | the pipe's buffer, its counts of open ends | Held while data moves to or from the user's buffer, so a fault on it is taken under the lock: it ranks above `a_lock`. Readers sleep on `fn_rsv` and writers on `fn_wsv` with it. After dropping the mutex for notification callbacks, recheck the reader/room predicate under the mutex before entering the writer wait. |
 | `sb_lock`, one per LWP semaphore and address-wait hash bucket (`kern/kern_lwp.c`) | changes to semaphore counts in user memory; the bucket's list of address waiters and their woken marks | Held across the copyin and copyout of the count, and across an address waiter's check of its word and its queueing, so it ranks above `a_lock` and a file system's locks. Waiters sleep on the bucket's `sb_sv` with it. |
-| `p_lock`, one per process (`sys/proc.h`) | the descriptor table, current directory, break, and command name | Not held while closing a file (`frele` may sleep in a file system). |
+| `fd_lock`, one per descriptor table (`sys/file.h`) | descriptor slots, descriptor flags, table growth and ownership count | Precedes `p_lock` for descriptor-limit reads and `sd_lock` for STREAMS registration. Drop it before releasing file references or record locks. A process changes its table pointer only before it runs or after making itself single-threaded. |
+| `p_lock`, one per process (`sys/proc.h`) | current directory, break, limits and command name | May follow `fd_lock`. Not held while closing a file (`frele` may sleep in a file system). |
 | `f_offlock`, one per open file (`sys/file.h`) | the file offset | Held across a read or write through the file, so it ranks above the file system's own locks. |
-| `sd_lock`, one per stream head (`kern/strhead.c`) | signal registrations and loopback queue | May be taken under `p_lock` for registration and close. Event delivery takes the subscriber's `p_siglock` while holding `sd_lock`. Read and write prefault the user buffer before taking it. |
+| `sd_lock`, one per stream head (`kern/strhead.c`) | signal registrations and loopback queue | May be taken under `fd_lock` for registration and close. Event delivery takes the subscriber's `p_siglock` while holding `sd_lock`. Read and write prefault the user buffer before taking it. |
 | `sp_lock`, one per local socket pair (`kern/sockfs.c`) | both receive queues, urgent marks, registered owners, and lifetime | Precedes `proctree_lock` for urgent notification and the poll head lock when waking waiters. Owner validation releases `proctree_lock` before taking `sp_lock`. Read and write prefault the user buffer before taking it. |
 | `local_lock` (`kern/sockfs.c`) | bound socket names, listeners, and connection publication | Bind holds it across filesystem node creation. Accept holds it across address copyout and descriptor publication under `p_lock`. Close drops it before releasing endpoint files. |
 | `a_lock` (mrlock), one per address space (`vm/as.h`) | the segment list and each segment's range | Faults take it shared, layout changes exclusive. A fault may call `VOP_GETPAGE`, so it ranks above a file system's locks. read and write therefore fault their user buffer in before calling the file system (`uio_prefault`), so the copy inside cannot fault into another file's (or the same file's) `VOP_GETPAGE` with that file system's locks held; mapped pages stay until unmapped, so nothing can undo the prefault meanwhile. |
@@ -66,6 +67,9 @@ Listed roughly from outermost to innermost.
 
 ## Rules
 
+- Address-space ownership uses an atomic reference count independently of
+  `a_lock`. The last owner releases it only after every processor has
+  stopped using its page tables.
 - Spin locks raise to splhi. Never sleep or block while holding one.
 - `prf_lock` is the only lock that may be taken while holding another
   lock of the same rank or deeper. Anything that prints must therefore

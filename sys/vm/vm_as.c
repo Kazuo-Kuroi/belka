@@ -22,6 +22,7 @@
 #include <sys/systm.h>
 
 #include <machine/param.h>
+#include <machine/atomic.h>
 #include <machine/vmparam.h>
 
 #include <vm/as.h>
@@ -85,13 +86,23 @@ as_alloc(void)
         as->a_segs = NULL;
         as->a_hat = hat_alloc();
         as->a_nsegs = 0;
+        as->a_ref = 1;
         return as;
 }
 
-/* Tear down an address space that no processor has loaded. */
+/* The caller already owns a reference or holds its owner's interlock. */
+void
+as_hold(struct as *as)
+{
+        (void)atomic_inc_32_nv(&as->a_ref);
+}
+
+/* Drop an owner; the last release requires that no processor has it loaded. */
 void
 as_free(struct as *as)
 {
+        if (atomic_dec_32_nv(&as->a_ref) != 0)
+                return;
         mrupdate(&as->a_lock);
         while (as->a_segs != NULL) {
                 struct seg *seg = as->a_segs;

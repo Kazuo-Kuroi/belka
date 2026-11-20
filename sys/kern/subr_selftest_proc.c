@@ -22,6 +22,7 @@
 #include <stdint.h>
 
 #include <sys/errno.h>
+#include <sys/file.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
 #include <sys/param.h>
@@ -142,6 +143,12 @@ test_vm(void)
         CHECK(as_fault(as, b + ptob(16), S_READ) == FC_NOMAP);
         CHECK(as_fault(as, b, S_EXEC) == FC_PROT);
 
+        /* Releasing one owner must preserve mappings for the survivor. */
+        as_hold(as);
+        as_free(as);
+        CHECK(anon_pages() - base == 16);
+        CHECK(as_fault(as, b + ptob(15), S_WRITE) == FC_OK);
+
         /* A hole in the middle splits the segment and frees its anons. */
         CHECK(as_unmap(as, b + ptob(4), ptob(4)) == 0);
         CHECK(anon_pages() - base == 12);
@@ -169,6 +176,53 @@ test_vm(void)
         CHECK(anon_pages() - base == 12);
         as_free(as);
         CHECK(anon_pages() == base);
+}
+
+static void
+test_shared_fds(void)
+{
+        struct proc *p[3];
+        struct vnode *vp;
+        struct file *fp, *held;
+        int fd, error;
+
+        error = vn_open("/p/bin/hello", FREAD, 0, &vp);
+        CHECK(error == 0);
+        if (error != 0)
+                return;
+        for (int i = 0; i < 3; i++) {
+                p[i] = kmem_zalloc(sizeof(*p[i]), KM_SLEEP);
+                mutex_init(&p[i]->p_lock, "testproc");
+                rlimit_init(p[i]);
+                fd_init_table(p[i]);
+        }
+        fp = falloc(vp, FREAD);
+        CHECK(fd_alloc(p[0], fp, 0, &fd) == 0);
+        fd_share_table(p[0], p[1]);
+        CHECK(fd_cloexec(p[1], fd, 1) == 1);
+        CHECK(fd_cloexec(p[0], fd, -1) == 1);
+        fhold(fp);
+        CHECK(fd_install(p[1], fp, 200) == 0);
+        held = fd_get(p[0], 200);
+        CHECK(held == fp);
+        if (held != NULL)
+                frele(held);
+
+        /* Exec detaches before acting on the shared close-on-exec flags. */
+        fd_close_exec(p[1]);
+        CHECK(fd_cloexec(p[1], fd, -1) == -1);
+        CHECK(fd_cloexec(p[0], fd, -1) == 1);
+        CHECK(fd_cloexec(p[1], 200, -1) == 0);
+        fd_share_table(p[0], p[2]);
+        fd_close_all(p[0]);
+        CHECK(fd_cloexec(p[2], fd, -1) == 1);
+        CHECK(fd_close(p[2], 200) == 0);
+        CHECK(fd_cloexec(p[1], 200, -1) == 0);
+        fd_close_all(p[2]);
+        CHECK(fd_cloexec(p[1], 200, -1) == 0);
+        fd_close_all(p[1]);
+        for (int i = 0; i < 3; i++)
+                kmem_free(p[i], sizeof(*p[i]));
 }
 
 /* A signal posted by the kernel ends a process that waits for one. */
@@ -231,6 +285,8 @@ selftest_proc(void)
         /* The device names. */
         CHECK(vn_mkdir("/dev", 0755) == 0);
         CHECK(vfs_mount("devfs", "/dev", NULL) == 0);
+
+        test_shared_fds();
 
         CHECK(run("/p/bin/hello", hello, CLD_EXITED, 0));
         CHECK(run("/p/bin/segv", segv, CLD_KILLED, SIGSEGV));

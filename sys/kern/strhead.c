@@ -85,12 +85,12 @@ strsig_ioctl(struct proc *p, int fd, unsigned long cmd, uint64_t arg)
         struct stdata *st;
         int events = 0, error = 0;
 
-        mutex_lock(&p->p_lock);
-        if (fd < 0 || fd >= p->p_nofile || p->p_ofile[fd] == NULL) {
+        mutex_lock(&p->p_fdt->fd_lock);
+        if (fd < 0 || fd >= p->p_fdt->fd_size || p->p_fdt->fd_files[fd] == NULL) {
                 error = EBADF;
                 goto out;
         }
-        st = p->p_ofile[fd]->f_vnode->v_stream;
+        st = p->p_fdt->fd_files[fd]->f_vnode->v_stream;
         if (st == NULL) {
                 error = ENOSTR;
                 goto out;
@@ -125,7 +125,7 @@ strsig_ioctl(struct proc *p, int fd, unsigned long cmd, uint64_t arg)
         }
         mutex_unlock(&st->sd_lock);
 out:
-        mutex_unlock(&p->p_lock);
+        mutex_unlock(&p->p_fdt->fd_lock);
         if (old != NULL)
                 kmem_free(old, sizeof(*old));
         if (error == 0 && cmd == I_GETSIG)

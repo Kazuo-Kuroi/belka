@@ -2228,3 +2228,22 @@ This completes the initial acceptance work described in
   compiler/runtime checks passed. The full comparison has not been
   repeated with that driver-only change; the DejaGNU suite remains future
   verification. Keep these limits explicit in the native development guide.
+
+## Shareable process resource ownership (2026-11-20)
+
+- Address spaces carry an atomic ownership count. as_alloc supplies one
+  reference, as_hold adds another, and as_free releases it. Only the last
+  release destroys segments and page tables; all processors must have
+  stopped using the address space before that final release.
+- Move descriptor arrays and close-on-exec flags into a separately owned
+  table with its own mutex. Process limits remain under p_lock; the table
+  mutex precedes p_lock when checking a descriptor limit. File release and
+  record-lock cleanup run after dropping the table mutex.
+- An exiting owner releases its own record locks and STREAMS registration
+  while preserving the shared table's file references for remaining
+  owners. Exec first obtains a private table, then closes its marked
+  descriptors. Fork still copies the table and omits private AIO references.
+- These ownership rules prepare process resources for sproc creation.
+  They replace the original assumption that a process exclusively owns
+  its address space and descriptor arrays; they do not change syscall
+  numbers or expose a share-group creation interface yet.
