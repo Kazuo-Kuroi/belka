@@ -2207,3 +2207,24 @@ of the three-stage build and comparison.
   that filter stop after one buffer and produce a truncated header. Cover
   reopening streams after both EOF and read errors in the static/shared
   libc regression suite.
+
+## Native GCC runtime selection and acceptance (2026-11-19)
+
+This completes the initial acceptance work described in
+[Native GCC source bootstrap kit](#native-gcc-source-bootstrap-kit-2026-11-19).
+
+- Keep /usr/lib64 in GCC's standard startup-file and library search list.
+  Do not inject an early -L/usr/lib64 through LINK_SPEC: explicit user
+  directories and the compiler's private runtime directories must retain
+  their normal precedence. Test this by linking against a user archive
+  that shadows a system library.
+- Validate a staged compiler using its own cc1/cc1plus, libgcc, libstdc++
+  and Belka CRT objects. Exercise static and dynamic C/C++, PIE, TLS,
+  exceptions, threads and shared libraries before replacing system tools.
+- GCC 14.2.0 completed three native stages and the stage-two/stage-three
+  object comparison under QEMU TCG. The run started with 4 GB and one job
+  and finished with 8 GB and two jobs. The library-search correction was
+  applied afterward, the drivers rebuilt natively, and all 46 staged
+  compiler/runtime checks passed. The full comparison has not been
+  repeated with that driver-only change; the DejaGNU suite remains future
+  verification. Keep these limits explicit in the native development guide.

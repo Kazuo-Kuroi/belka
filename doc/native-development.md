@@ -185,7 +185,8 @@ sh /usr/src/gcc-bootstrap/native-gcc-check.sh
 ```
 
 The machine-description generator alone needs more than a gigabyte of
-memory. Use 4 GB of guest RAM and start with one build job.
+memory. Use 4 GB of guest RAM and start with one build job. The completed
+bootstrap also ran with 8 GB and two jobs under QEMU TCG.
 
 The default work directory is `/var/tmp/gcc-bootstrap`; an optional first
 argument selects another directory. The default target is bootstrap-lean,
@@ -200,13 +201,21 @@ The check verifies that the staged installation supplies the compiler's
 private programs, libraries and Belka CRT objects. It then runs the native
 compiler regression suite with that installation first in PATH, including
 static and dynamic C/C++, PIE, TLS, exceptions and shared libraries.
+It also checks that user library directories precede system defaults.
 
 Belka's CRT array-boundary objects are now built and installed by libgcc
 alongside GCC's exception-registration CRT. The port also uses POSIX tail
 syntax in GCC's assembler probe. Compiler work remains on fork/exec with
 posix_spawn and sbrk probes disabled.
 
-## Remaining compiler bootstrap
+## Bootstrap verification and remaining work
 
-Full GCC source self-bootstrap is a later acceptance stage.
+GCC 14.2.0 completed its native three-stage bootstrap and stage-two/stage-three
+object comparison on Belka. After that comparison, a driver library-search
+correction was rebuilt natively and the staged compiler and runtimes passed
+all 46 native checks. The full three-stage comparison has not been repeated
+with that driver-only change; GCC's DejaGNU suite has not been run.
+
+The next acceptance stage is rebuilding Belka's userland with the native
+tools and expanding compiler regression coverage.
 PathScale is not a bootstrap dependency. Networking is outside these stages.

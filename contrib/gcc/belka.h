@@ -33,7 +33,7 @@
 #define LINK_SPEC \
         "-64 %{shared:-G -dy} %{static:-dn} " \
         "%{!shared:%{!static:-dy -I /usr/lib64/ld.so.1}} " \
-        "%{pie:-z type=pie} -z defs -L%R/usr/lib64"
+        "%{pie:-z type=pie} -z defs"
 /* LINK_SPEC already translates PIE to the illumos option. */
 #undef LINK_PIE_SPEC
 #define LINK_PIE_SPEC ""

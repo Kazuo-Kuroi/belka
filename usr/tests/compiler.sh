@@ -175,6 +175,25 @@ CPP
 status "native C++ thread compile" 0 g++ -std=c++17 -pthread compiler-thread.cc -o compiler-thread
 check "native C++ thread TLS" 'thread TLS 8 7' ./compiler-thread
 echo "compilertest: multiprecision libraries and diagnostics"
+cat > compiler-search.c <<'C'
+int belka_search_order(void) { return 42; }
+C
+cat > compiler-search-main.c <<'C'
+#include <stdio.h>
+extern int belka_search_order(void);
+int main(void)
+{
+        printf("library search %d\n", belka_search_order());
+        return 0;
+}
+C
+status "library search object" 0 gcc -c compiler-search.c -o compiler-search.o
+status "library search archive" 0 ar rc libm.a compiler-search.o
+status "library search index" 0 ranlib libm.a
+status "user library precedes system library" 0 gcc compiler-search-main.c \
+    -L"$PWD" -lm -o compiler-search
+check "user library selected" 'library search 42' ./compiler-search
+status "library search cleanup" 0 rm libm.a
 cat > compiler-math.c <<'C'
 #include <stdio.h>
 #include <gmp.h>
