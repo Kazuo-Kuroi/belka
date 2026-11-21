@@ -38,28 +38,33 @@ int
 sys_brk(const uint64_t *args, uint64_t *rv __unused)
 {
         struct proc *p = curproc;
+        struct as *as = p->p_as;
         vaddr_t addr = (vaddr_t)args[0];
         size_t newsize;
         int error;
 
+        mutex_lock(&as->a_brklock);
         mutex_lock(&p->p_lock);
-        if (addr < p->p_brkbase || addr >= USRSTACK - VM_STACK_SIZE) {
+        if (addr < as->a_brkbase || addr >= USRSTACK - VM_STACK_SIZE) {
                 mutex_unlock(&p->p_lock);
+                mutex_unlock(&as->a_brklock);
                 return ENOMEM;
         }
-        newsize = pround(addr) - p->p_brkbase;
+        newsize = pround(addr) - as->a_brkbase;
         if ((rlim_t)newsize > p->p_rlimit[RLIMIT_DATA].rlim_cur ||
-            (newsize > p->p_brksize &&
+            (newsize > as->a_brksize &&
             p->p_rlimit[RLIMIT_VMEM].rlim_cur != RLIM_INFINITY &&
-            (rlim_t)(as_size(p->p_as) + newsize - p->p_brksize) >
+            (rlim_t)(as_size(p->p_as) + newsize - as->a_brksize) >
             p->p_rlimit[RLIMIT_VMEM].rlim_cur)) {
                 mutex_unlock(&p->p_lock);
+                mutex_unlock(&as->a_brklock);
                 return ENOMEM;
         }
-        error = as_brk(p->p_as, p->p_brkbase, p->p_brksize, newsize);
+        error = as_brk(p->p_as, as->a_brkbase, as->a_brksize, newsize);
         if (error == 0)
-                p->p_brksize = newsize;
+                as->a_brksize = newsize;
         mutex_unlock(&p->p_lock);
+        mutex_unlock(&as->a_brklock);
         return error;
 }
 

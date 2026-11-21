@@ -2247,3 +2247,66 @@ This completes the initial acceptance work described in
   They replace the original assumption that a process exclusively owns
   its address space and descriptor arrays; they do not change syscall
   numbers or expose a share-group creation interface yet.
+
+## Share-group creation and control (2026-11-20)
+
+This extends [Shareable process resource ownership](#shareable-process-resource-ownership-2026-11-20)
+with independently implemented sproc interfaces and replaces process-local
+heap bookkeeping with address-space-owned heap state.
+
+- Assign Belka extension syscall numbers 242–245 to sproc, sprocsp, prctl
+  and procblk. Preserve the existing System V carry/error and two-register
+  result convention. Public sharing flags and supported control option
+  values follow the documented interface; this is not IRIX binary ABI
+  compatibility. Unknown control options return EINVAL.
+- Members are separate, waitable processes with independent signals and
+  timers. A creator becomes a member with all sharing permissions. Child
+  sharing can only narrow its parent's permissions. A process cannot mix
+  sproc membership with the historical use of multiple LWPs until exec.
+- Share address spaces and descriptor tables by ownership reference.
+  Synchronize directory, umask, soft file-size limit and credential
+  snapshots through group master versions at syscall and user-return
+  boundaries. Credential synchronization copies full credentials for a
+  privileged recipient and only effective uid/gid for other recipients.
+  Serialize group membership under proctree_lock and its master state
+  under sg_lock; keep filesystem operations outside these locks.
+- Reserve automatic stacks top-down in the common address space and
+  allocate their pages on demand. Use the stack limit by default, or
+  64 MB for an unlimited limit. These are full virtual reservations,
+  rather than incrementally grown stack regions. Retain the creator's
+  original stack until the address space dies; release automatic member
+  stacks on exit/exec. Caller-supplied stacks remain caller-owned.
+- Keep heap extent and its mutex in the address space so shared brk calls
+  operate on one extent. Ordinary fork makes a private copy of the entire
+  shared layout, including stacks, without joining the group. Exec leaves
+  the group, obtains a private descriptor table before close-on-exec, and
+  installs a new address space. Surviving members continue after creator
+  exit. Members share their creator's fair-share scheduling job.
+- Implement counted process blocking, unblock credits, group operations,
+  exit/abort notifications, parent-exit SIGHUP, unblock-on-exec/exit and
+  group queries. Preserve range and permission checks without reproducing
+  the reference's undefined success result for group blocking. Stack-limit
+  control respects Belka's existing restriction on unprivileged hard-limit
+  increases.
+- On amd64, retain callee-saved registers and floating-point controls,
+  reset floating-point registers, and enter with the normal C stack
+  alignment. Use separate FS bases for libc TLS. An optional sixth raw
+  creation argument supplies a private-data pointer and a one-byte
+  retirement address; zero supplies neither. The kernel writes retirement
+  only after the process can no longer return to the old user context.
+- mlibc prepares a separate initialized TCB before making a child runnable,
+  with a unique logical lock-owner id within the shared VM. Its runtime
+  linker tracks allocation bases and retirement bytes; subsequent creation
+  and successful exit waits reclaim retired TLS and local metadata. A
+  child callback returns through exit(0); group exits release libc's exit
+  guard so survivors can also exit. PR_NOLIBC skips fresh TLS allocation
+  and leaves concurrent libc use to the caller. Raw test children use no
+  libc TLS and call only the raw syscall helpers.
+- This step does not add per-member mapping overlays/MAP_LOCAL, a fixed
+  PRDA, address attachment, gang scheduling controls or checkpoint PID
+  selection. Private-address-space creation has fork-like libc lock
+  constraints when other members are concurrently using the runtime.
+- Cover both static and shared libc. GNU strip was observed removing
+  initialized TLS from an illumos-linked static executable's file-backed
+  LOAD range. Link installed static tests again with the link-editor's -s
+  option, preserving TLS and keeping the test images small.

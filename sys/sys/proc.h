@@ -15,7 +15,8 @@
  * Locking:
  * - proctree_lock (a mutex) protects the process tree, the pid hash,
  *   p_stat, and the wait information; p_waitsv is waited on with it.
- * - p_lock (a mutex) protects a process's directories and break.
+ * - p_lock (a mutex) protects a process's directories, limits and
+ *   blocking counters. The address space owns the break.
  * - p_fdt's fd_lock protects the descriptor table, which can be shared
  *   by separate processes. It precedes p_lock for resource-limit reads.
  * - p_as may be replaced only by the process itself (exec, exit), under
@@ -49,6 +50,7 @@ struct as;
 struct cred;
 struct file;
 struct fdt;
+struct sharegroup;
 struct kthread;
 struct trapframe;
 struct vnode;
@@ -110,6 +112,8 @@ struct ksigaction {
 #define PL_SINGLE       0x0001  /* exit or exec: other LWPs are going */
 #define PL_RENDEZ       0x0002  /* other LWPs are to park */
 #define PL_CONTNOTIFY   0x0004  /* tell the parent of a continue */
+#define PL_SPROC        0x0008  /* share-group member: no pthread creation */
+#define PL_THREADED     0x0010  /* pthread model selected until exec */
 
 /* p_sigflags */
 #define PS_JCTL         0x0001  /* tell the parent of stops (SIGCHLD) */
@@ -166,13 +170,30 @@ struct proc {
 
         /* Descriptor-table ownership; its contents have their own lock. */
         struct fdt      *p_fdt;         /* stable until single-threaded detach */
+        struct sharegroup *p_sharegroup;
+        struct proc     *p_shnext;
+        unsigned int    p_shmask;
+        uint64_t        p_shseen[4];
+        vaddr_t         p_shstack;
+        size_t          p_shstacksize;
+        vaddr_t         p_sprocexited;  /* optional userspace retirement byte */
+        /* The following control fields are under proctree_lock. */
+        int             p_exitsig;
+        int             p_abortsig;
+        int             p_termchild;
+        int             p_willexit;
+        pid_t           p_unblockpid;
+        uint64_t        p_unblockidentity;
+        /* Blocking counters are under p_lock; unlocked reads are hints. */
+        volatile int    p_blockwait;
+        int             p_blockcredit;
+        int             p_blocksleep;
+        struct sv       p_blocksv;
         /* Under p_lock. */
         struct vnode    *p_cdir;
         struct vnode    *p_rdir;        /* NULL: the system root */
         mode_t          p_cmask;
         int             p_nice;         /* 0 to 2 * NZERO - 1 (p_lock) */
-        vaddr_t         p_brkbase;
-        size_t          p_brksize;
         struct rlimit   p_rlimit[RLIM_NLIMITS];
         /* lbolt of the next processor time check, 0 for none; racy reads. */
         volatile uint64_t p_cpucheck;
@@ -253,6 +274,13 @@ int proc_wait(pid_t, int *, int *);
 /* kern_time.c */
 uint64_t proc_ticks(struct proc *, uint64_t *);
 void proc_exit(int, int) __dead;
+void sproc_sync(struct proc *);
+void sproc_publish(struct proc *, unsigned int);
+void sproc_detach(struct proc *, int);
+void sproc_drop_stack(struct proc *, struct as *);
+void sproc_userret(void);
+void sproc_unblock_on_exec(struct proc *);
+void sproc_notify_exit(struct proc *);
 unsigned int proc_count(void);
 
 /* kern_sig.c */

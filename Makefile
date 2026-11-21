@@ -318,8 +318,8 @@ $(ABICHECK)/ok: tools/abicheck/kernel.c tools/abicheck/libc.c \
 LIBC_DIR        := build/user-libc-$(TOOLCHAIN)$(LDSUFFIX)
 LIBC_DBGDIR     := $(LIBC_DIR)-debug
 LIBC_PROGS      := hello segv argtest utest sigtest lwptest libctest \
-                   threadtest dyntest credtest ttytest ptytest
-LIBC_SPROGS     := libctest-static
+                   threadtest dyntest credtest ttytest ptytest sproctest
+LIBC_SPROGS     := libctest-static sproctest-static
 LIBC_PIEPROGS   := dyntest-pie
 LIBC_DBGBINS    := $(addprefix $(LIBC_DBGDIR)/,$(LIBC_PROGS))
 LIBC_DBINS      := $(addprefix $(LIBC_DIR)/,$(LIBC_PROGS) $(LIBC_PIEPROGS))
@@ -387,10 +387,12 @@ $(LIBC_DBGDIR)/%-pie: usr/tests/%.c $(LIBC_PROG_DEPS) $(TESTLIB) $(PIE_BEGIN) \
 
 $(LIBC_SBINS): $(LIBC_DIR)/%: $(LIBC_DBGDIR)/%
 	@mkdir -p $(LIBC_DIR)
-	strip --strip-debug -o $@ $<
+	$(LINK_PROGRAM) -s $(LIBC_CRT0) $(PROGRAM_BEGIN) $<.o $(MLIBC) \
+	    $(LIBC_RTLIB) $(PROGRAM_END) $(LIBC_CRTN)
 
 # GNU strip rewrites the illumos link-editor's dynamic objects wrongly
-# (moving segments), so dynamic programs are copied as they are, and
+# (moving segments), and removes initialized TLS from static LOAD ranges.
+# Static tests are linked again with -s; dynamic programs are copied, and
 # the shared objects are linked again with the link-editor's -s:
 # samu's command for each is run with it. The images get the shared
 # objects with the programs.

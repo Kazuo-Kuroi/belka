@@ -65,5 +65,7 @@ sy_call_t sys_stime;
 /* kern_cred.c */
 sy_call_t sys_setuid, sys_seteuid, sys_setgid, sys_setegid, sys_getuid;
 sy_call_t sys_getgid, sys_getgroups, sys_setgroups;
+/* kern_sproc.c */
+sy_call_t sys_sproc, sys_sprocsp, sys_prctl, sys_procblk;
 
 #endif /* _SYS_SYSENT_H_ */

@@ -21,6 +21,7 @@
 #include <sys/cred.h>
 #include <sys/errno.h>
 #include <sys/proc.h>
+#include <sys/prctl.h>
 #include <sys/signal.h>
 #include <sys/syscall.h>
 #include <sys/sysent.h>
@@ -174,6 +175,10 @@ sys_umask(const uint64_t *args, uint64_t *rv)
 }
 
 static sy_call_t *const sysent[NSYSCALL] = {
+        [SYS_sproc] = sys_sproc,
+        [SYS_sprocsp] = sys_sprocsp,
+        [SYS_prctl] = sys_prctl,
+        [SYS_procblk] = sys_procblk,
         [SYS_exit] = sys_exit,
         [SYS_fork] = sys_fork,
         [SYS_read] = sys_read,
@@ -316,10 +321,40 @@ static sy_call_t *const sysent[NSYSCALL] = {
 int
 syscall_dispatch(uint64_t code, const uint64_t *args, uint64_t *rv)
 {
+        int error;
+        unsigned int changed = 0;
+
+        sproc_sync(curproc);
+        cred_refresh(curlwp);
         if (code >= NSYSCALL || sysent[code] == NULL) {
                 if (code != SYS_invsys)
                         psignal(curproc, SIGSYS);
                 return EINVAL;
         }
-        return sysent[code](args, rv);
+        error = sysent[code](args, rv);
+        if (error == 0) {
+                switch (code) {
+                case SYS_chdir:
+                case SYS_fchdir:
+                        changed = PR_SDIR;
+                        break;
+                case SYS_umask:
+                        changed = PR_SUMASK;
+                        break;
+                case SYS_setrlimit:
+                        if (args[0] == RLIMIT_FSIZE)
+                                changed = PR_SULIMIT;
+                        break;
+                case SYS_setuid:
+                case SYS_seteuid:
+                case SYS_setgid:
+                case SYS_setegid:
+                case SYS_setgroups:
+                        changed = PR_SID;
+                        break;
+                }
+                if (changed != 0)
+                        sproc_publish(curproc, changed);
+        }
+        return error;
 }

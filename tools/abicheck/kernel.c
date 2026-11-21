@@ -16,6 +16,7 @@
 #include <sys/errno.h>
 #include <sys/fcntl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>

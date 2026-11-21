@@ -25,6 +25,7 @@ void fpu_cpu_init(void);
 void *fpu_area_alloc(void);
 void fpu_area_free(void *);
 void fpu_area_reset(void *);
+void fpu_area_sproc(void *);
 void fpu_save(void *);
 void fpu_restore(void *);
 void fpu_sanitize(void *);

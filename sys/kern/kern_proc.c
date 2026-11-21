@@ -152,12 +152,13 @@ struct proc *
 proc_alloc(struct proc *parent)
 {
         struct proc *p = kmem_zone_alloc(proc_zone, KM_SLEEP);
-        unsigned int h;
+        unsigned int h, attempts = 0;
 
         memset(p, 0, sizeof(*p));
         mutex_init(&p->p_lock, "proc");
         fd_init_table(p);
         sv_init(&p->p_waitsv, "wait");
+        sv_init(&p->p_blocksv, "procblk");
         sv_init(&p->p_lwpsv, "lwps");
         sv_init(&p->p_rendezsv, "parked");
         p->p_stat = SIDL;
@@ -179,6 +180,13 @@ proc_alloc(struct proc *parent)
 
         mutex_lock(&proctree_lock);
         do {
+                if (attempts++ == PID_MAX - 1) {
+                        mutex_unlock(&proctree_lock);
+                        fd_close_all(p);
+                        crfree(p->p_cred);
+                        kmem_zone_free(proc_zone, p);
+                        return NULL;
+                }
                 p->p_pid = nextpid++;
                 if (nextpid >= PID_MAX)
                         nextpid = 1;
@@ -280,6 +288,11 @@ spawn(const char *path, char *const argv[], char *const envp[], pid_t *pidp,
         sp->sp_args = ea;
 
         p = proc_alloc(&proc0);
+        if (p == NULL) {
+                kmem_free(sp, sizeof(*sp));
+                execargs_free(ea);
+                return EAGAIN;
+        }
         for (const char *c = path; *c != '\0'; c++) {
                 if (*c == '/')
                         base = c + 1;
@@ -417,7 +430,7 @@ proc_exit(int code, int data)
         struct lwp *l = curlwp;
         struct proc *p = l->l_proc;
         struct as *as;
-        struct vnode *cdir;
+        struct vnode *cdir, *rdir;
         struct proc *c, *heir, *zombies = NULL;
         pid_t pgids[EXIT_PGIDS];
         int s, nowait, npgids = 0, heir_zombie = 0;
@@ -426,16 +439,23 @@ proc_exit(int code, int data)
         if (proc_single(1) != 0)
                 lwp_exit();
         itimer_exit(p);
+        sproc_notify_exit(p);
+        sproc_unblock_on_exec(p);
         fd_close_all(p);
+        sproc_detach(p, code);
         /* A session leader's terminal is let go (SIGHUP). */
         if (p->p_pid == p->p_sid)
                 tty_session_end(p->p_sid);
         mutex_lock(&p->p_lock);
         cdir = p->p_cdir;
+        rdir = p->p_rdir;
         p->p_cdir = NULL;
+        p->p_rdir = NULL;
         mutex_unlock(&p->p_lock);
         if (cdir != NULL)
                 VN_RELE(cdir);
+        if (rdir != NULL)
+                VN_RELE(rdir);
 
         /* Leave the address space before freeing it (see <sys/proc.h>). */
         mutex_lock(&proctree_lock);
@@ -445,8 +465,10 @@ proc_exit(int code, int data)
         hat_activate(NULL);
         splx(s);
         mutex_unlock(&proctree_lock);
-        if (as != NULL)
+        if (as != NULL) {
+                sproc_drop_stack(p, as);
                 as_free(as);
+        }
 
         /*
          * Detach the LWP: from here on this is a kernel thread. Posters
@@ -477,6 +499,8 @@ proc_exit(int code, int data)
         heir = initproc != NULL && initproc != p ? initproc : NULL;
         while ((c = p->p_children) != NULL) {
                 p->p_children = c->p_sibling;
+                if (c->p_termchild)
+                        psignal(c, SIGHUP);
                 exit_note_pgid(pgids, &npgids, c->p_pgid);
                 if (heir != NULL) {
                         c->p_parent = heir;

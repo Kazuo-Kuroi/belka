@@ -159,6 +159,11 @@
 #define SYS_aio_notify  240
 #define SYS_aio_dup     241
 
-#define NSYSCALL        242     /* table size: UnixWare's 210, and Belka's */
+#define SYS_sproc       242
+#define SYS_sprocsp     243
+#define SYS_prctl       244
+#define SYS_procblk     245
+
+#define NSYSCALL        246     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

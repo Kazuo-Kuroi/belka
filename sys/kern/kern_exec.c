@@ -518,6 +518,10 @@ exec_common(const char *path, struct execargs *ea)
                 goto fail_vp;
         }
 
+        nas->a_brkbase = brk;
+        sproc_notify_exit(p);
+        sproc_unblock_on_exec(p);
+        sproc_detach(p, 0);
         /* The point of no return: switch to the new image. */
         mutex_lock(&proctree_lock);     /* for others reading p_as */
         s = splhi();
@@ -526,8 +530,10 @@ exec_common(const char *path, struct execargs *ea)
         hat_activate(nas->a_hat);
         splx(s);
         mutex_unlock(&proctree_lock);
-        if (oas != NULL)
+        if (oas != NULL) {
+                sproc_drop_stack(p, oas);
                 as_free(oas);
+        }
         VN_RELE(vp);            /* the mappings hold it */
         if (ivp != NULL)
                 VN_RELE(ivp);
@@ -542,8 +548,6 @@ exec_common(const char *path, struct execargs *ea)
                 proc_exit(CLD_KILLED, SIGKILL);
         }
         mutex_lock(&p->p_lock);
-        p->p_brkbase = brk;
-        p->p_brksize = 0;
         for (const char *c = path; *c != '\0'; c++) {
                 if (*c == '/')
                         base = c + 1;

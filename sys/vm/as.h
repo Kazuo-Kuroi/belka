@@ -31,6 +31,9 @@ struct hat;
 struct as {
         volatile uint32_t a_ref;        /* process and temporary owners */
         struct mrlock   a_lock;
+        struct mutex    a_brklock;      /* heap extent, before a_lock */
+        vaddr_t         a_brkbase;
+        size_t          a_brksize;
         struct seg      *a_segs;        /* address order */
         struct hat      *a_hat;
         unsigned int    a_nsegs;
@@ -51,6 +54,8 @@ int as_gap(struct as *, size_t, vaddr_t, vaddr_t *);
 int as_findgap(struct as *, size_t, vaddr_t, vaddr_t *);
 int as_brk(struct as *, vaddr_t, size_t, size_t);
 int as_map_anywhere(struct as *, size_t, vaddr_t,
+    int (*)(struct seg *, void *), void *, vaddr_t *);
+int as_map_topdown(struct as *, size_t, vaddr_t,
     int (*)(struct seg *, void *), void *, vaddr_t *);
 struct seg *as_findseg(struct as *, vaddr_t);
 

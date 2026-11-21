@@ -47,6 +47,8 @@ void md_lwp_init(struct lwp *, vaddr_t);
 void md_lwp_free(struct lwp *);
 void md_setregs(struct lwp *, uint64_t, uint64_t);
 void md_lwp_fork(struct lwp *, struct lwp *);
+void md_lwp_sproc(struct lwp *, struct lwp *, uint64_t, uint64_t,
+    uint64_t, size_t, uint64_t);
 void md_set_return(struct lwp *, uint64_t, uint64_t);
 int md_set_private(struct lwp *, uint64_t);
 

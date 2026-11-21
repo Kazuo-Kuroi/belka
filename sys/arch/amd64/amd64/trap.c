@@ -235,6 +235,8 @@ static void
 userret(void)
 {
         sched_preempt_check();
+        if (curlwp != NULL)
+                sproc_userret();
         if (curlwp != NULL && curproc->p_cpucheck != 0 &&
             lbolt >= curproc->p_cpucheck)
                 rlimit_cpu_check();

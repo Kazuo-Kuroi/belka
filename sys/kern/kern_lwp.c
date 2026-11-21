@@ -133,7 +133,7 @@ lwp_newthread(struct lwp *l, void (*fn)(void *), void *arg)
 
 /*
  * Put l's thread in time-sharing, in the job of leader (another LWP of
- * the process) if there is one, so that a process's LWPs share one
+ * process or share group) if there is one, so that they share one
  * fair-share balance, at the weight of the process's nice value. The
  * thread has not run yet.
  */
@@ -404,6 +404,12 @@ sys_lwpcreate(const uint64_t *args, uint64_t *rv)
 
         if ((flags & ~(uint64_t)(LWP_DETACHED | LWP_SUSPENDED)) != 0)
                 return EINVAL;
+        s = spin_lock(&p->p_siglock);
+        if ((p->p_lwpflags & PL_SPROC) != 0) {
+                spin_unlock(&p->p_siglock, s);
+                return EPERM;
+        }
+        spin_unlock(&p->p_siglock, s);
         uc = kmem_alloc(sizeof(*uc), KM_SLEEP);
         if ((error = copyin((const void *)(uintptr_t)args[0], uc,
             sizeof(*uc))) != 0 || (error = md_context_ok(uc)) != 0 ||
@@ -414,6 +420,7 @@ sys_lwpcreate(const uint64_t *args, uint64_t *rv)
         lwp_newthread(nl, lwp_user_start, NULL);
         md_lwp_setcontext(nl, uc);
         s = spin_lock(&p->p_siglock);
+        p->p_lwpflags |= PL_THREADED;
         nl->l_sigmask = (uc->uc_flags & UC_SIGMASK) != 0 ?
             sig_mask_from_user(&uc->uc_sigmask) : l->l_sigmask;
         if ((flags & LWP_DETACHED) != 0)

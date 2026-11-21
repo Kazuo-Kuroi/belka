@@ -156,6 +156,26 @@ fpu_area_reset(void *area)
         memcpy(area, fpu_template, PAGESIZE);
 }
 
+/* New execution state, with the saved x87 and SSE control settings. */
+void
+fpu_area_sproc(void *area)
+{
+        uint16_t control;
+        uint32_t mxcsr;
+
+        memcpy(&control, area, sizeof(control));
+        memcpy(&mxcsr, (char *)area + 24, sizeof(mxcsr));
+        memset(area, 0, PAGESIZE);
+        memcpy(area, &control, sizeof(control));
+        memcpy((char *)area + 24, &mxcsr, sizeof(mxcsr));
+        memcpy((char *)area + 28, (char *)fpu_template + 28, 4);
+        if (fpu_use_xsave) {
+                uint64_t present = 3;   /* x87 and SSE; other state is initial */
+
+                memcpy((char *)area + 512, &present, sizeof(present));
+        }
+}
+
 void
 fpu_save(void *area)
 {

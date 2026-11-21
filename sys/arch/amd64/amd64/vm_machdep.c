@@ -172,6 +172,34 @@ md_lwp_fork(struct lwp *parent, struct lwp *child)
         splx(s);
 }
 
+void
+md_lwp_sproc(struct lwp *parent, struct lwp *child, uint64_t entry,
+    uint64_t arg, uint64_t top, size_t len, uint64_t private)
+{
+        struct trapframe saved;
+        struct trapframe *tf = child->l_tf;
+
+        md_lwp_fork(parent, child);
+        saved = *tf;
+        memset(tf, 0, sizeof(*tf));
+        tf->tf_rbx = saved.tf_rbx;
+        tf->tf_rbp = saved.tf_rbp;
+        tf->tf_r12 = saved.tf_r12;
+        tf->tf_r13 = saved.tf_r13;
+        tf->tf_r14 = saved.tf_r14;
+        tf->tf_r15 = saved.tf_r15;
+        tf->tf_cs = saved.tf_cs;
+        tf->tf_ss = saved.tf_ss;
+        tf->tf_rflags = PSL_I | PSL_RESERVED1;
+        tf->tf_rip = entry;
+        tf->tf_rsp = (top & ~UINT64_C(15)) - 8;
+        tf->tf_rdi = arg;
+        tf->tf_rsi = len;
+        tf->tf_rdx = 1;
+        child->l_fsbase = private;
+        fpu_area_sproc(child->l_fpu);
+}
+
 /*
  * Make dst, which has not run, a copy of src, which is parked and so
  * has its user registers in its trap frame and its floating-point state

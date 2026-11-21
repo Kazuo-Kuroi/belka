@@ -83,6 +83,9 @@ as_alloc(void)
         struct as *as = kmem_zone_alloc(as_zone, KM_SLEEP);
 
         mrinit(&as->a_lock, "as");
+        mutex_init(&as->a_brklock, "brk");
+        as->a_brkbase = 0;
+        as->a_brksize = 0;
         as->a_segs = NULL;
         as->a_hat = hat_alloc();
         as->a_nsegs = 0;
@@ -134,6 +137,9 @@ as_dup(struct as *as)
 {
         struct as *nas = as_alloc();
 
+        mutex_lock(&as->a_brklock);
+        nas->a_brkbase = as->a_brkbase;
+        nas->a_brksize = as->a_brksize;
         mrupdate(&as->a_lock);
         for (struct seg *seg = as->a_segs; seg != NULL; seg = seg->s_next) {
                 struct seg *nseg = seg_alloc(nas, seg->s_base, seg->s_size);
@@ -141,11 +147,13 @@ as_dup(struct as *as)
                 if (seg->s_ops->so_dup(seg, nseg) != 0) {
                         seg_free(nseg);
                         mrunlock(&as->a_lock);
+                        mutex_unlock(&as->a_brklock);
                         as_free(nas);
                         return NULL;
                 }
         }
         mrunlock(&as->a_lock);
+        mutex_unlock(&as->a_brklock);
         return nas;
 }
 
@@ -375,6 +383,45 @@ as_map_anywhere(struct as *as, size_t len, vaddr_t hint,
         if ((error = as_gap(as, len, hint, &base)) == 0) {
                 seg = seg_alloc(as, base, len);
                 if ((error = crfn(seg, args)) != 0)
+                        seg_free(seg);
+                else
+                        *basep = base;
+        }
+        mrunlock(&as->a_lock);
+        return error;
+}
+
+/* Reserve the highest available range below ceiling in one layout update. */
+int
+as_map_topdown(struct as *as, size_t len, vaddr_t ceiling,
+    int (*crfn)(struct seg *, void *), void *args, vaddr_t *basep)
+{
+        vaddr_t next = VM_USER_MIN, base = 0;
+        struct seg *seg;
+        int error = ENOMEM;
+
+        if (len == 0 || len > VM_USER_MAX - VM_USER_MIN)
+                return ENOMEM;
+        len = pround(len);
+        ceiling = ptrunc(ceiling);
+        if (ceiling > VM_USER_MAX || ceiling < VM_USER_MIN)
+                return EINVAL;
+        mrupdate(&as->a_lock);
+        for (seg = as->a_segs; seg != NULL; seg = seg->s_next) {
+                vaddr_t end = seg->s_base < ceiling ? seg->s_base : ceiling;
+
+                if (end >= next && end - next >= len)
+                        base = end - len;
+                if (seg->s_base >= ceiling)
+                        break;
+                next = seg->s_base + seg->s_size;
+        }
+        if (seg == NULL && ceiling >= next && ceiling - next >= len)
+                base = ceiling - len;
+        if (base != 0) {
+                seg = seg_alloc(as, base, len);
+                error = crfn(seg, args);
+                if (error != 0)
                         seg_free(seg);
                 else
                         *basep = base;

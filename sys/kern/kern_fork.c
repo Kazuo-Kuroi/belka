@@ -72,14 +72,21 @@ fork_common(int all, uint64_t *rv)
                 return EAGAIN;
         }
         cp = proc_alloc(p);
+        if (cp == NULL) {
+                as_free(cas);
+                if (rendez)
+                        lwp_rendezvous_done();
+                return EAGAIN;
+        }
         cp->p_as = cas;
         fd_dup_table(p, cp);
         mutex_lock(&p->p_lock);
         cp->p_cdir = p->p_cdir;
+        cp->p_rdir = p->p_rdir;
         if (cp->p_cdir != NULL)
                 VN_HOLD(cp->p_cdir);
-        cp->p_brkbase = p->p_brkbase;
-        cp->p_brksize = p->p_brksize;
+        if (cp->p_rdir != NULL)
+                VN_HOLD(cp->p_rdir);
         memcpy(cp->p_comm, p->p_comm, PSCOMSIZ);
         mutex_unlock(&p->p_lock);
 
