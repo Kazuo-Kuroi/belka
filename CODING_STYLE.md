@@ -407,7 +407,7 @@ Choose names that make the meaning and scope of each value clear.
 
 ## 8. Indentation and whitespace
 
--   Use four spaces for each indentation level.
+-   Use eight spaces for each indentation level.
 -   Do not mix tabs and spaces for indentation.
 -   Indent the contents of blocks consistently.
 -   Indent continuation lines enough to make the relationship to the
