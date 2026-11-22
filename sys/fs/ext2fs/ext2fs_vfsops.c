@@ -345,6 +345,15 @@ ext2fs_mount(struct vfs *vfsp, const void *data, struct cred *cr __unused)
                 return EINVAL;
         if ((dev = blkdev_lookup(args->ea_dev)) == NULL)
                 return ENXIO;
+        /*
+         * A disk holds one mounted file system: a second would keep its
+         * own copy of the superblock, bitmaps and inodes. vfs_mutex is
+         * held (vfs_mount_named), or nothing else is mounted yet.
+         */
+        for (struct vfs *v = rootvfs; v != NULL; v = v->vfs_next)
+                if (v->vfs_op == &ext2fs_vfsops &&
+                    ((struct ext2mount *)v->vfs_data)->em_dev == dev)
+                        return EBUSY;
         if ((error = bread(dev, EXT2_SB_SECTOR, EXT2_SBSIZE, &bp)) != 0)
                 return error;
 

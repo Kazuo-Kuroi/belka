@@ -138,6 +138,8 @@ check "mnttab vd1" "/dev/vd1 /mnt ext2fs rw" awk '$1 == "/dev/vd1" { print $1, $
 check "df vd1" "/dev/vd1 /mnt" sh -c 'set -- $(df -P /mnt | tail -n 1) && echo $1 $6'
 check "write on vd1" "on vd1" sh -c 'echo "on vd1" > /mnt/f && cat /mnt/f'
 status "mount twice" 1 mount /dev/vd1 /mnt
+status "mount twice elsewhere" 1 sh -c 'mkdir -p /tmp/m2 && mount /dev/vd1 /tmp/m2'
+status "mount the root again" 1 sh -c 'mkdir -p /tmp/m3 && mount -r /dev/vd0 /tmp/m3'
 status "umount busy" 1 sh -c 'cd /mnt && umount /mnt'
 status "umount" 0 umount /mnt
 check "unmounted" "" awk '$1 == "/dev/vd1"' /etc/mnttab
