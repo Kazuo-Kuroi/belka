@@ -378,6 +378,31 @@ OFF(struct stat, st_blksize, struct stat, st_blksize)
 OFF(struct stat, st_blocks, struct stat, st_blocks)
 OFF(struct stat, st_fstype, struct stat, st_fstype)
 
+/* Record locks (fcntl) and flock. */
+CONST(F_SETLK)
+CONST(F_SETLKW)
+CONST(F_GETLK)
+CONST(F_RDLCK)
+CONST(F_WRLCK)
+CONST(F_UNLCK)
+CONST(LOCK_SH)
+CONST(LOCK_EX)
+CONST(LOCK_NB)
+CONST(LOCK_UN)
+SIZE(struct flock, struct flock)
+OFF(struct flock, l_type, struct flock, l_type)
+OFF(struct flock, l_whence, struct flock, l_whence)
+OFF(struct flock, l_start, struct flock, l_start)
+OFF(struct flock, l_len, struct flock, l_len)
+OFF(struct flock, l_pid, struct flock, l_pid)
+
+/* mount(2). */
+CONST(MS_RDONLY)
+CONST(MS_FSS)
+CONST(MS_DATA)
+CONST(MS_NOSUID)
+CONST(MS_REMOUNT)
+
 /* Memory mapping. */
 CONST(PROT_NONE)
 CONST(PROT_READ)
