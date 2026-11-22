@@ -1734,11 +1734,69 @@ Recorded 2026-11-07.
   `lckpwdf()`, now in mlibc, a write lock on `/etc/.pwd.lock` tried each
   second for up to 15 seconds, as System V has it. It writes
   `/etc/stmp`, mode 0400, and renames it over `/etc/shadow`.
-- **Ageing:** the fields are kept but not enforced; login is still built
-  without password ageing.
+- **Ageing (2026-11-16)** is System V's, from the shadow fields (login,
+  patched under `BELKA_SHADOW`, and `compat_shadow_age`): an account
+  past its expiry day is refused, and warned of before it; a last change
+  of 0 (`passwd -f`) or a password older than `max` days makes the user
+  choose a new one before the login goes on, through login's own path,
+  which runs passwd once unprivileged, rather than NetBSD's outright
+  refusal; one expired more than `inact` days ago is refused; one within
+  `warn` days of its end is warned of. passwd keeps users to `min` days
+  between changes, and gives the superuser `-n`, `-x`, `-w`, `-f`, `-l`
+  (`*LK*`) and `-d`, and anyone `-s`, the state in System V's form.
+- **crypt's failure** is libxcrypt's `*0` (or `*1`), not NULL: login and
+  su compare its answer without looking for NULL, so a locked account
+  crashed login.
+- **su** is NetBSD's, without PAM: the hash from `/etc/shadow`; only
+  members of `wheel` may become root.
+- **lastlogx:** the "Last login" line. NetBSD's `getlastlogx` and
+  `updlastlogx` are Belka's own in the compat library: a db(3) hash by
+  uid in `/var/adm/lastlogx`, under `flock` locks.
 - **Tests:** boottest: the user cannot read `/etc/shadow`; after passwd
   it is still root's and 0400, with a new hash and today's date; the old
-  password fails and the new one works.
+  password fails and the new one works, and that login names the last.
+  On test3: the change `passwd -f` makes due is asked for at login, the
+  warning, `min`, an expired account and a locked one. su: refused to
+  root outside `wheel`, test2 with its password, not without.
+
+## Utilities, mount and rc.d (2026-11-16)
+
+- **ksenon-utils' own suite runs on Belka** (boottest, over a directory
+  of just the 45 utilities): 525 checks, all passing. Its harness was
+  made to run on BSD-style systems too (still 554 of 554 on GNU/Linux):
+  file times through BSD's `stat -f` where there is no GNU `stat -c`,
+  a deep tree built and read a directory at a time, and none of GNU's
+  `head -c` and bare `nice`.
+- **What it found, in mlibc:** `getopt()` permuted operands as glibc's
+  does, so NetBSD's find took its expression for paths; it now stops at
+  the first operand on Belka (`MLIBC_POSIX_GETOPT`; `getopt_long` keeps
+  GNU's permutation). `getopt` also kept its place in a word after a
+  cluster ended it (`grep -cv -e PAT` failed), and refused an
+  option-argument beginning with `-`. `mktime` and `timegm` did not
+  normalise a `struct tm`, so touch took a 13th month.
+- **New tools:** NetBSD's mktemp, seq, stat (readlink), find, xargs,
+  getconf and hostname. find's `-fstype local` takes every Belka file
+  system as local (a two-line patch). Their BSD needs are compat stand-
+  ins: `st_flags` reads a spare stat field (Belka has no file flags),
+  `major` and `minor` in Belka's encoding (not mlibc's Linux one), a
+  small `parsedate` of Belka's own, `sys_signame`, `strmode`,
+  `setmode` (NetBSD's) and the rest.
+- **mount(2) and umount(2)** are System V's (21, 22): `MS_DATA` with a
+  type name; ext2fs on a disk's block device, tmpfs on any name, and
+  `MS_RDONLY`; the superuser's. devfs has a block node per disk
+  (`/dev/vd0`, major 6), not yet readable. The mount table names a disk
+  by its node. `mount` and `umount` are Belka's own, System V's, over
+  `/etc/vfstab`; `/tmp` is a tmpfs, 1777. Not yet: remounting, nosuid,
+  file system options.
+- **rc.d:** NetBSD's `rc.subr` and its marker scripts, Belka's own
+  `rcorder` (NetBSD's has a four-clause licence with an advertising
+  clause), and `/etc/rc` as a small driver of its own: NetBSD's `rc`
+  needs NetBSD's `sh` (`fdflags`) for its boot log. Belka's scripts:
+  `mountall` (provides NetBSD's mountcrit stages), `terminfo`,
+  `hostname` (rc.conf's `hostname` or `/etc/myname`). There is no
+  `rc.shutdown` yet: halt and reboot go straight to uadmin.
+- **sysinfo(2)** (139, System V's) reports the uname names and lets the
+  superuser set the host name, which `sethostname` uses.
 
 ## Signal values and waits (2026-11-17)
 
