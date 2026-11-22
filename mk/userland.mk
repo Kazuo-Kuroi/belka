@@ -315,8 +315,11 @@ $(CU_LIB): $(patsubst %,$(CU_OBJ)/%.o,$(CU_SRCS) instr)
 SYS_DYNLINK     = $(call LINK_DYNAMIC,$(DYN_INTERP),) $(LIBC_CRT0) \
                   $(PROGRAM_BEGIN) $(1) $(COMPAT_LIB) $(SYSLIB)/libc.so \
                   $(LIBC_RTLIB) $(PROGRAM_END) $(LIBC_CRTN)
+# With belka-cc's start files (BELKA_CRT_BEGIN, BELKA_CRT_END), which differ
+# from PROGRAM_BEGIN and PROGRAM_END under LINKER=gnu.
 SYS_DYNDEPS     := $(COMPAT_LIB) $(MLIBC_SHARED) $(PROGRAM_BEGIN) \
-                   $(PROGRAM_END) $(LD_DEPS)
+                   $(PROGRAM_END) $(LD_DEPS) $(CRT_DIR)/crtbegin.o \
+                   $(CRT_DIR)/crtend.o
 
 $(TI_OBJ)/prog/tic.o: $(NB)/usr.bin/tic/tic.c
 $(TI_OBJ)/prog/infocmp.o: $(NB)/usr.bin/infocmp/infocmp.c
@@ -491,11 +494,18 @@ $(SYS_DIR)/$(1): $(patsubst %,$(SYS_OBJ)/$(1)/%.o,$(call tool_srcs,$(1))) \
 endef
 $(foreach t,$(FILE_TOOLS),$(eval $(call file_tool,$(t))))
 
-# Hosted cross builds use the same start files and illumos link-editor as userland.
+# Hosted cross builds link with the illumos link-editor, as userland does
+# by default, and so with Belka's own start files (usr/lib/crt), which
+# give the init and fini array bounds that link-editor does not: not
+# PROGRAM_BEGIN and PROGRAM_END, which under LINKER=gnu are the host
+# compiler's. The image's SDK, for Belka's own native link-editor, takes
+# the same ones.
+BELKA_CRT_BEGIN = $(CRT_DIR)/crtbegin.o
+BELKA_CRT_END   = $(CRT_DIR)/crtend.o
 BELKA_CC_ENV = BELKA_SYSROOT="$(abspath $(SYSROOT))" \
     BELKA_CC_INCLUDE="$(CC_INCLUDE)" BELKA_LD="$(abspath $(ILLUMOS_LD))" \
     BELKA_LD_DRIVER="$(abspath tools/ld/illumos-cc)" \
-    BELKA_CRTBEGIN="$(abspath $(PROGRAM_BEGIN))" BELKA_CRTEND="$(abspath $(PROGRAM_END))" \
+    BELKA_CRTBEGIN="$(abspath $(BELKA_CRT_BEGIN))" BELKA_CRTEND="$(abspath $(BELKA_CRT_END))" \
     BELKA_RTLIB="$(LIBC_RTLIB)"
 BELKA_CC = $(abspath tools/ld/belka-cc) $(LIBC_CC)
 NATIVE_LD_DIR := $(SYS_DIR)/illumos-ld
@@ -526,9 +536,10 @@ $(SYS_DIR)/libl.a: $(SYS_OBJ)/lex/libmain.o $(SYS_OBJ)/lex/libyywrap.o
 	$(AR) rcs $@ $^
 
 $(SYS_DIR)/sdk.stamp: contrib/illumos-ld/README.md $(NATIVE_LD_STAMP) $(SYS_DIR)/libl.a \
-                    $(SYS_OBJ)/devhello.o $(SYS_OBJ)/devvalue.o $(MLIBC) tools/mksdk.sh usr/share/dev/relink.mk
+                    $(SYS_OBJ)/devhello.o $(SYS_OBJ)/devvalue.o $(MLIBC) tools/mksdk.sh usr/share/dev/relink.mk \
+                    $(BELKA_CRT_BEGIN) $(BELKA_CRT_END)
 	sh tools/mksdk.sh $(SYS_DIR)/sdk $(SYSROOT) $(NATIVE_LD_DIR) \
-	    $(PROGRAM_BEGIN) $(PROGRAM_END) $(LIBC_RTLIB)
+	    $(BELKA_CRT_BEGIN) $(BELKA_CRT_END) $(LIBC_RTLIB)
 	cp $(SYS_DIR)/libl.a $(SYS_DIR)/sdk/usr/lib64/
 	ln -s libl.a $(SYS_DIR)/sdk/usr/lib64/libfl.a
 	mkdir -p $(SYS_DIR)/sdk/usr/tests/dev

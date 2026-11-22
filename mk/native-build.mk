@@ -28,7 +28,8 @@ $(MUON_NATIVE_CROSS): tools/native-build.cross FORCE
 	    { cmp -s $@.new $@ && rm -f $@.new || mv $@.new $@; }
 
 $(MUON_NATIVE_BUILD)/build.ninja: $(MUON_NATIVE_CROSS) $(MUON_SRC)/meson.build \
-        $(MUON_SRC)/meson_options.txt tools/ld/belka-cc
+        $(MUON_SRC)/meson_options.txt tools/ld/belka-cc \
+        $(BELKA_CRT_BEGIN) $(BELKA_CRT_END)
 	$(BELKA_CC_ENV) $(MUON) -C $(MUON_SRC) setup \
 	    -pcross:$(abspath $(MUON_NATIVE_CROSS)) $(MUON_NATIVE_OPTS) \
 	    $(abspath $(MUON_NATIVE_BUILD))
