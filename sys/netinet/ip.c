@@ -386,22 +386,29 @@ ip_send(mblk_t *mp)
                 ip->ip_ttl = IP_DEFTTL;
         ip->ip_sum = 0;
         ip->ip_sum = htons(in_cksum(mp, hlen));
-        /* UDP's checksum covers the source, so it is finished here. */
-        if (ip->ip_p == IPPROTO_UDP && len >= hlen + 8 &&
-            pullupmsg(mp, (ssize_t)(hlen + 8))) {
-                uint8_t *uh;
+        /*
+         * UDP's and TCP's checksums cover the source, so they are
+         * finished here: at offset 6 of UDP's 8-byte header, 16 of
+         * TCP's 20.
+         */
+        if ((ip->ip_p == IPPROTO_UDP || ip->ip_p == IPPROTO_TCP)) {
+                size_t off = ip->ip_p == IPPROTO_UDP ? 6 : 16;
+                uint8_t proto = ip->ip_p, *th;
                 uint16_t sum;
 
-                ip = (struct ip *)mp->b_rptr;
-                uh = mp->b_rptr + hlen;
-                uh[6] = uh[7] = 0;
-                sum = in_fold(in_sum(mp, hlen, len - hlen,
-                    in_pseudo(ip->ip_src, ip->ip_dst, IPPROTO_UDP,
-                    len - hlen)));
-                if (sum == 0)
-                        sum = 0xffff;   /* 0 is no checksum at all */
-                uh[6] = (uint8_t)(sum >> 8);
-                uh[7] = (uint8_t)sum;
+                if (len >= hlen + off + 2 &&
+                    pullupmsg(mp, (ssize_t)(hlen + off + 2))) {
+                        ip = (struct ip *)mp->b_rptr;
+                        th = mp->b_rptr + hlen;
+                        th[off] = th[off + 1] = 0;
+                        sum = in_fold(in_sum(mp, hlen, len - hlen,
+                            in_pseudo(ip->ip_src, ip->ip_dst, proto,
+                            len - hlen)));
+                        if (sum == 0 && proto == IPPROTO_UDP)
+                                sum = 0xffff;   /* 0: no checksum at all */
+                        th[off] = (uint8_t)(sum >> 8);
+                        th[off + 1] = (uint8_t)sum;
+                }
         }
         ip_output(mp);
 }

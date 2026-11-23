@@ -7,12 +7,16 @@
 /*
  * The Transport Provider Interface: the messages between a transport
  * user (the socket layer, or a program by putmsg and getmsg) and a
- * transport provider (/dev/udp), each a struct below at the start of
- * an M_PROTO or M_PCPROTO block, addresses and options after it at
- * the offsets given. Requests go down as M_PROTO; acknowledgements
- * (T_INFO_ACK, T_BIND_ACK, T_OK_ACK, T_ERROR_ACK) come up as M_PCPROTO,
- * indications as M_PROTO. Fields are 32 bits wide, whatever the size of
- * a long. Belka's providers so far are connectionless (T_CLTS).
+ * transport provider (/dev/udp, /dev/tcp), each a struct below at the
+ * start of an M_PROTO or M_PCPROTO block, addresses and options after
+ * it at the offsets given. Requests go down as M_PROTO; acknowledgements
+ * (T_INFO_ACK, T_BIND_ACK, T_OK_ACK, T_ERROR_ACK, T_ADDR_ACK,
+ * T_CAPABILITY_ACK) come up as M_PCPROTO, indications as M_PROTO. Data
+ * may go down as T_DATA_REQ or plain M_DATA, and comes up as M_DATA.
+ * Fields are 32 bits wide, whatever the size of a long. UDP is
+ * connectionless (T_CLTS), TCP connection-oriented with orderly release
+ * (T_COTS_ORD); T_CONN_RES names the stream that takes a connection by
+ * the ACCEPTOR_id its T_CAPABILITY_ACK gives.
  */
 
 #ifndef _SYS_TIHDR_H_
@@ -50,6 +54,16 @@ typedef uint32_t        t_uscalar_t;
 #define T_UDERROR_IND   21
 #define T_OPTMGMT_ACK   22
 #define T_ORDREL_IND    23
+
+/* Belka has these as Solaris does: addresses, and the acceptor's id. */
+#define T_ADDR_REQ      25
+#define T_ADDR_ACK      27
+#define T_CAPABILITY_REQ 28
+#define T_CAPABILITY_ACK 30
+
+/* T_CAPABILITY_REQ's CAP_bits1: what to report. */
+#define TC1_INFO        0x0001
+#define TC1_ACCEPTOR_ID 0x0002
 
 /* Kinds of service. */
 #define T_COTS          1
@@ -112,9 +126,65 @@ struct T_conn_req {
         t_scalar_t      OPT_offset;
 };
 
+struct T_conn_res {
+        t_scalar_t      PRIM_type;
+        t_uscalar_t     ACCEPTOR_id;
+        t_scalar_t      OPT_length;
+        t_scalar_t      OPT_offset;
+        t_scalar_t      SEQ_number;
+};
+
 struct T_discon_req {
         t_scalar_t      PRIM_type;
         t_scalar_t      SEQ_number;
+};
+
+struct T_data_req {
+        t_scalar_t      PRIM_type;
+        t_scalar_t      MORE_flag;
+};
+
+struct T_ordrel_req {
+        t_scalar_t      PRIM_type;
+};
+
+struct T_conn_ind {
+        t_scalar_t      PRIM_type;
+        t_scalar_t      SRC_length;
+        t_scalar_t      SRC_offset;
+        t_scalar_t      OPT_length;
+        t_scalar_t      OPT_offset;
+        t_scalar_t      SEQ_number;
+};
+
+struct T_conn_con {
+        t_scalar_t      PRIM_type;
+        t_scalar_t      RES_length;
+        t_scalar_t      RES_offset;
+        t_scalar_t      OPT_length;
+        t_scalar_t      OPT_offset;
+};
+
+struct T_discon_ind {
+        t_scalar_t      PRIM_type;
+        t_scalar_t      DISCON_reason;  /* an errno */
+        t_scalar_t      SEQ_number;
+};
+
+struct T_ordrel_ind {
+        t_scalar_t      PRIM_type;
+};
+
+struct T_addr_req {
+        t_scalar_t      PRIM_type;
+};
+
+struct T_addr_ack {
+        t_scalar_t      PRIM_type;
+        t_scalar_t      LOCADDR_length;
+        t_scalar_t      LOCADDR_offset;
+        t_scalar_t      REMADDR_length;
+        t_scalar_t      REMADDR_offset;
 };
 
 struct T_info_req {
@@ -190,10 +260,33 @@ struct T_uderror_ind {
         t_scalar_t      ERROR_type;     /* an errno */
 };
 
+struct T_capability_req {
+        t_scalar_t      PRIM_type;
+        t_uscalar_t     CAP_bits1;
+};
+
+struct T_capability_ack {
+        t_scalar_t      PRIM_type;
+        t_uscalar_t     CAP_bits1;
+        struct T_info_ack INFO_ack;
+        t_uscalar_t     ACCEPTOR_id;
+};
+
 union T_primitives {
         t_scalar_t              type;
         struct T_conn_req       conn_req;
+        struct T_conn_res       conn_res;
         struct T_discon_req     discon_req;
+        struct T_data_req       data_req;
+        struct T_ordrel_req     ordrel_req;
+        struct T_conn_ind       conn_ind;
+        struct T_conn_con       conn_con;
+        struct T_discon_ind     discon_ind;
+        struct T_ordrel_ind     ordrel_ind;
+        struct T_addr_req       addr_req;
+        struct T_addr_ack       addr_ack;
+        struct T_capability_req capability_req;
+        struct T_capability_ack capability_ack;
         struct T_info_req       info_req;
         struct T_info_ack       info_ack;
         struct T_bind_req       bind_req;

@@ -90,7 +90,8 @@ DLPI provider) on QEMU's user-mode network; `nettest` talks ARP with
 QEMU's gateway through it. `iptest` links it under `/dev/ip` (IPv4 and
 ARP, `sys/netinet`), configures it, and pings the gateway, itself and
 127.0.0.1. `udptest` links an IP stream under `/dev/udp` (a TPI
-provider) and uses `AF_INET` datagram sockets over the loopback.
+provider) and uses `AF_INET` datagram sockets over the loopback, and
+`tcptest` does the same with `/dev/tcp` and stream sockets.
 Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU
@@ -124,7 +125,7 @@ downloads a pinned, checksummed Limine release into `build/`.
 | `sys/dev/acpi`, `sys/dev/pci` | ACPI tables, PCI bus support |
 | `sys/dev/virtio` | virtio transport, virtqueues, and drivers |
 | `sys/fs` | file systems: tmpfs and ext2 |
-| `sys/netinet` | IPv4, ICMP and ARP, as the `/dev/ip` STREAMS driver, and UDP as `/dev/udp` |
+| `sys/netinet` | IPv4, ICMP and ARP, as the `/dev/ip` STREAMS driver, and UDP and TCP as `/dev/udp` and `/dev/tcp` |
 | `sys/arch/amd64/amd64` | amd64 machine-dependent code |
 | `sys/arch/amd64/include/machine` | amd64 headers (`<machine/...>`) |
 | `sys/arch/amd64/conf` | source lists and linker script |

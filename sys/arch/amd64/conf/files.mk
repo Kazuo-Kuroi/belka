@@ -101,6 +101,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/dev/virtio/vionet.c \
                    sys/netinet/arp.c \
                    sys/netinet/ip.c \
+                   sys/netinet/tcp.c \
                    sys/netinet/udp.c \
                    sys/dev/ic/ns16550.c
 

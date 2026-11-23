@@ -185,6 +185,7 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_recvfrom] = sys_recvfrom,
         [SYS_getsockname] = sys_getsockname,
         [SYS_getpeername] = sys_getpeername,
+        [SYS_shutdown] = sys_shutdown,
         [SYS_exit] = sys_exit,
         [SYS_fork] = sys_fork,
         [SYS_read] = sys_read,

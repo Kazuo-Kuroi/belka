@@ -2611,3 +2611,62 @@ heap bookkeeping with address-space-owned heap state.
   stream directly, and exercises the sockets over the loopback,
   including port unreachable as seen on a raw ICMP stream (which also
   shows the checksums IP computes are the ones UDP accepts).
+
+## TCP and stream sockets over TPI (2026-11-23)
+
+- **TCP is a multiplexing STREAMS driver, `/dev/tcp`** (`netinet/tcp.c`),
+  one perimeter for all its streams and its timer, plumbed as UDP is:
+  one IP stream linked by the superuser, bound to protocol 6. The timer
+  is a tick every 100 ms (`qtimeout` on the lower stream), which counts
+  down each connection's retransmission and TIME_WAIT timers and times
+  round trips. Unlinking the IP stream ends every connection
+  (`ENETDOWN`).
+- **The upper side is TPI, connection-oriented with orderly release**
+  (`T_COTS_ORD`). `T_BIND_REQ` with a `CONIND_number` listens.
+  `T_CONN_REQ` is answered by `T_OK_ACK` and then `T_CONN_CON` or
+  `T_DISCON_IND`. A listener's connections are indicated by `T_CONN_IND`
+  once their handshake is done, and `T_CONN_RES` gives one to another
+  stream, named by the `ACCEPTOR_id` from that stream's
+  `T_CAPABILITY_ACK`. `T_CAPABILITY_REQ`/`ACK` and `T_ADDR_REQ`/`ACK`
+  are Belka's as Solaris numbers them. Data goes down as `M_DATA` or
+  `T_DATA_REQ` and comes up as `M_DATA`; `T_ORDREL_REQ` and
+  `T_ORDREL_IND` are the FINs; `T_DISCON_REQ` aborts (a reset), and
+  `T_DISCON_IND` gives the reason as an errno.
+- **The protocol** (RFC 9293): the whole state machine, the MSS option,
+  retransmission with RFC 6298's timer (at least 200 ms, at most 60 s,
+  doubling, twelve tries, six for a SYN), slow start and congestion
+  avoidance, window probes on a closed window, challenge ACKs for an
+  in-window SYN (RFC 5961), and TIME_WAIT of 60 s. Windows are at most
+  64 KB (no scaling); the send buffer is 64 KB. A connection's own
+  address may be left to IP, which fills in the source and computes
+  the checksum as for UDP; TCP learns it from the first segment back.
+  Not yet: window scaling, timestamps, SACK, fast retransmit, queueing
+  out-of-order segments (they are dropped and acknowledged), Nagle's
+  algorithm, delayed ACKs, urgent data, keep-alives, options, ICMP
+  errors, and RFC 6528 initial sequence numbers.
+- **Closing a stream closes as a socket does:** with a FIN, finished by
+  the connection as an orphan, or with a reset if data the reader never
+  took was waiting (in TCP or at the stream head, which TCP looks at in
+  its close, the head's syncq claimed with its own). An orphan in
+  FIN_WAIT_2 waits at most 60 s. Binding is as with `SO_REUSEADDR`: a
+  port is held only by a listener or a bound socket not yet used, so a
+  server may bind again over its old connections.
+- **Stream sockets** (`kern/sock_tpi.c`): `listen` binds again with the
+  backlog; `accept` takes a `T_CONN_IND`, opens a new `/dev/tcp`
+  stream, and answers with `T_CONN_RES` (a connection reset before then
+  is passed over); `connect` waits for the connection, even on a
+  non-blocking socket, until there is a way to wait for it that `poll`
+  can see; `send` writes 16 KB messages under the stream's flow control;
+  `recv` takes what is there, putting back what does not fit, one reader
+  at a time (`ts_rdlock`). The end of the peer's data reads as 0, a
+  reset as `ECONNRESET` once and then 0. `shutdown` (Belka's system
+  call 252) sends `T_ORDREL_REQ` for `SHUT_WR`; writing after it is
+  `EPIPE` and `SIGPIPE`. A local socket's ends have no `shutdown` yet.
+  `getsockname` asks TCP (`T_ADDR_REQ`), since IP chose the address.
+- **Testing:** `tcptest` plumbs TCP over IP, speaks TPI to `/dev/tcp`
+  directly, and over the loopback checks listening and binding,
+  connect and accept, a mebibyte each way between two processes,
+  closed windows holding a writer off, a SYN dropped by a full backlog
+  and sent again, orderly release, a refused connection and a reset.
+  The loopback loses nothing else, so retransmission of data is not
+  yet exercised.

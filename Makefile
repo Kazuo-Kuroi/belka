@@ -324,7 +324,7 @@ LIBC_DIR        := build/user-libc-$(TOOLCHAIN)$(LDSUFFIX)
 LIBC_DBGDIR     := $(LIBC_DIR)-debug
 LIBC_PROGS      := hello segv argtest utest sigtest lwptest libctest \
                    threadtest dyntest credtest ttytest ptytest sproctest \
-                   strtest nettest iptest udptest
+                   strtest nettest iptest udptest tcptest
 LIBC_SPROGS     := libctest-static sproctest-static
 LIBC_PIEPROGS   := dyntest-pie
 LIBC_DBGBINS    := $(addprefix $(LIBC_DBGDIR)/,$(LIBC_PROGS))

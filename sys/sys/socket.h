@@ -19,6 +19,9 @@
 #define MSG_TRUNC       0x0020
 #define MSG_DONTWAIT    0x0040
 #define MSG_NOSIGNAL    0x4000
+#define SHUT_RD         0
+#define SHUT_WR         1
+#define SHUT_RDWR       2
 
 #include <stdint.h>
 
@@ -54,6 +57,9 @@ int tpisock_connect(struct vnode *, uint64_t, uint64_t);
 int tpisock_sendto(struct file *, const uint64_t *, uint64_t *);
 int tpisock_recvfrom(struct file *, const uint64_t *, uint64_t *);
 int tpisock_name(struct vnode *, int, uint64_t, uint64_t);
+int tpisock_listen(struct vnode *, int);
+int tpisock_accept(struct file *, const uint64_t *, uint64_t *);
+int tpisock_shutdown(struct vnode *, int);
 #endif
 
 #endif /* _SYS_SOCKET_H_ */

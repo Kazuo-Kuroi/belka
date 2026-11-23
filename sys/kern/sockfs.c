@@ -558,6 +558,27 @@ sock_sys_name(const uint64_t *args, int peer)
         return error;
 }
 
+/* shutdown(fd, how): TPI sockets; a local socket's ends do not yet. */
+int
+sys_shutdown(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        struct vnode *vp;
+        int error;
+
+        if (fp == NULL)
+                return EBADF;
+        vp = fp->f_vnode;
+        if (tpisock_is(vp))
+                error = tpisock_shutdown(vp, (int)args[1]);
+        else if (vp->v_op == &local_ops || vp->v_op == &sock_ops)
+                error = EOPNOTSUPP;
+        else
+                error = ENOTSOCK;
+        frele(fp);
+        return error;
+}
+
 int
 sys_getsockname(const uint64_t *args, uint64_t *rv __unused)
 {
@@ -809,6 +830,11 @@ sys_listen(const uint64_t *args, uint64_t *rv __unused)
         struct file *fp;
         int backlog = (int)args[1], error;
 
+        if ((fp = tpi_file((int)args[0])) != NULL) {
+                error = tpisock_listen(fp->f_vnode, backlog);
+                frele(fp);
+                return error;
+        }
         if ((error = local_get((int)args[0], &fp, &local)) != 0)
                 return error;
         mutex_lock(&local_lock);
@@ -947,6 +973,11 @@ sys_accept(const uint64_t *args, uint64_t *rv)
 
         if ((flags & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) != 0)
                 return EINVAL;
+        if ((fp = tpi_file((int)args[0])) != NULL) {
+                error = tpisock_accept(fp, args, rv);
+                frele(fp);
+                return error;
+        }
         if ((error = local_get((int)args[0], &fp, &server)) != 0)
                 return error;
         mutex_lock(&local_lock);

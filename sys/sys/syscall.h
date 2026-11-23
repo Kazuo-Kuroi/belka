@@ -171,7 +171,8 @@
 #define SYS_recvfrom    249
 #define SYS_getsockname 250
 #define SYS_getpeername 251
+#define SYS_shutdown    252
 
-#define NSYSCALL        252     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        253     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

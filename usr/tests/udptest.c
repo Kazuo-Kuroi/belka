@@ -190,7 +190,7 @@ main(void)
         test_tpi();
 
         /* Which sockets there are. */
-        CHECK(socket(AF_INET, SOCK_STREAM, 0) == -1 &&
+        CHECK(socket(AF_INET, SOCK_SEQPACKET, 0) == -1 &&
             errno == EPROTONOSUPPORT);
         CHECK(socket(AF_INET, SOCK_DGRAM, IPPROTO_TCP) == -1 &&
             errno == EPROTONOSUPPORT);

@@ -2163,6 +2163,42 @@ str_kputmsg(struct stdata *sd, mblk_t *mp, int ioflag)
 }
 
 /*
+ * Wait (unless ioflag says not to) until an ordinary message would fit,
+ * for a writer that sends with str_ksend once it has made its message.
+ */
+int
+str_kwaitwrite(struct stdata *sd, int ioflag)
+{
+        return str_waitwrite(sd, 0, ioflag);
+}
+
+/* Send mp down now, whatever the flow control says. */
+int
+str_ksend(struct stdata *sd, mblk_t *mp)
+{
+        int error;
+
+        mutex_lock(&sd->sd_lock);
+        error = str_werror(sd);
+        mutex_unlock(&sd->sd_lock);
+        if (error != 0) {
+                freemsg(mp);
+                return error;
+        }
+        str_down(sd, mp);
+        return 0;
+}
+
+/* What is left of a message str_kgetmsg took, back at the front. */
+void
+str_kunget(struct stdata *sd, mblk_t *mp)
+{
+        mutex_lock(&sd->sd_lock);
+        (void)putbq(sd->sd_rq, mp);
+        mutex_unlock(&sd->sd_lock);
+}
+
+/*
  * Take the next message from the head: the high priority one first in
  * line if hipri, else the first ordinary one (which may wait behind
  * it). peek leaves it there and gives a copy. *mpp is NULL at hang-up
