@@ -751,6 +751,15 @@ test_network(void)
                     rts[i].rt_gateway == inet4(10, 0, 2, 2))
                         found = 1;
         CHECK(found);
+        /* The static route of /etc/routed/static_route.conf; no forwarding. */
+        found = 0;
+        for (int i = 0; i < n && i < 16; i++)
+                if (rts[i].rt_dst == inet4(10, 77, 0, 0) &&
+                    rts[i].rt_mask == inet4(255, 255, 0, 0) &&
+                    rts[i].rt_gateway == inet4(10, 0, 2, 2))
+                        found = 1;
+        CHECK(found);
+        CHECK(ipstr(ipfd, IP_GETFORWARD, NULL, 0) == 0);
         close(ipfd);
         CHECK(ping(inet4(10, 0, 2, 2), 3000));
 

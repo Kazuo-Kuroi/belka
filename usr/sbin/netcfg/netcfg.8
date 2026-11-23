@@ -26,6 +26,9 @@
 .Ar destination
 .Op Ar gateway
 .Nm
+.Cm forwarding
+.Op Cm on | off
+.Nm
 .Cm show
 .Sh DESCRIPTION
 Belka's network stack is a set of STREAMS multiplexing drivers:
@@ -70,8 +73,17 @@ which must be reachable on an interface.
 The longest prefix that matches a datagram's destination is its route.
 .It Cm route delete Ar destination Op Ar gateway
 Remove that route.
+.It Cm forwarding Op Cm on | off
+Forward datagrams for other hosts, as a router does, or stop; or, with
+neither, say which.
+Forwarding is off until it is turned on.
+A forwarded datagram goes on with its time to live one less, or an
+ICMP error goes back to its sender: time exceeded, host unreachable,
+or fragmentation needed; one that leaves by the interface it came in
+on also brings the sender an ICMP redirect.
 .It Cm show
-List the interfaces, the routes and the ARP cache.
+List the interfaces, whether IP forwards, the routes and the ARP
+cache.
 .El
 .Pp
 Changing the configuration needs the superuser.
@@ -79,7 +91,7 @@ The loopback interface,
 .Li lo0
 (127.0.0.1/8), is always there.
 .Sh FILES
-.Bl -tag -width "/etc/rc.d/network" -compact
+.Bl -tag -width "/etc/rc.d/staticroute" -compact
 .It Pa /etc/rc.d/network
 runs
 .Nm
@@ -87,9 +99,23 @@ at boot, from the settings in
 .Xr rc.conf 5 :
 .Va network ,
 .Va net_interfaces ,
-.Va ifaddr_ Ns Ar interface
+.Va ifaddr_ Ns Ar interface ,
+.Va defaultroute
 and
-.Va defaultroute .
+.Va ip_forwarding .
+.It Pa /etc/rc.d/staticroute
+adds the routes in
+.Pa /etc/routed/static_route.conf ,
+one a line:
+.Ar destination
+and
+.Ar gateway ,
+as
+.Cm route add
+takes them.
+It runs when
+.Va staticroute
+is set, as it is by default.
 .El
 .Sh EXIT STATUS
 .Ex -std

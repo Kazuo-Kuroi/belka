@@ -13,6 +13,7 @@
  *      netcfg addr if a.b.c.d/len      its address and subnet
  *      netcfg route add dest gw        a route (dest: a.b.c.d/len or
  *      netcfg route delete dest [gw]       default)
+ *      netcfg forwarding [on|off]      forward, or not; or say which
  *      netcfg show                     interfaces, routes, ARP
  *
  * The links are persistent: they outlast netcfg, until the system goes
@@ -42,7 +43,8 @@ usage(void)
             "       %s addr interface address/length\n"
             "       %s route add destination gateway\n"
             "       %s route delete destination [gateway]\n"
-            "       %s show\n", prog, prog, prog, prog, prog, prog);
+            "       %s forwarding [on | off]\n"
+            "       %s show\n", prog, prog, prog, prog, prog, prog, prog);
         exit(2);
 }
 
@@ -246,6 +248,30 @@ cmd_route(int add, const char *dest, const char *gw)
         return failed;
 }
 
+/* IP forwarding on or off (on: 1, 0), or (on: -1) say whether it is. */
+static int
+cmd_forwarding(int on)
+{
+        int32_t v = on;
+        int ipfd, r, failed = 0;
+
+        if ((ipfd = open_dev("ip")) < 0)
+                return 1;
+        if (on < 0) {
+                if ((r = istr(ipfd, IP_GETFORWARD, NULL, 0)) < 0) {
+                        warnerr("forwarding", errno);
+                        failed = 1;
+                } else {
+                        printf("forwarding %s\n", r ? "on" : "off");
+                }
+        } else if (istr(ipfd, IP_SETFORWARD, &v, sizeof(v)) != 0) {
+                warnerr("forwarding", errno);
+                failed = 1;
+        }
+        close(ipfd);
+        return failed;
+}
+
 /* One of the lists, in a buffer that grows until it all fits. */
 static void *
 getlist(int fd, int cmd, size_t size, int *np)
@@ -309,6 +335,8 @@ cmd_show(void)
                     (unsigned long long)ii->ii_drops);
         }
         free(ifs);
+        printf("forwarding %s\n", istr(ipfd, IP_GETFORWARD, NULL, 0) > 0 ?
+            "on" : "off");
         if ((rts = getlist(ipfd, IP_ROUTELIST, sizeof(*rts), &n)) != NULL) {
                 printf("routes:\n");
                 for (int i = 0; i < n; i++) {
@@ -366,6 +394,14 @@ main(int argc, char **argv)
                 if (strcmp(argv[2], "delete") == 0)
                         return cmd_route(0, argv[3], argc == 5 ? argv[4] :
                             NULL);
+        }
+        if (strcmp(argv[1], "forwarding") == 0 && argc <= 3) {
+                if (argc == 2)
+                        return cmd_forwarding(-1);
+                if (strcmp(argv[2], "on") == 0)
+                        return cmd_forwarding(1);
+                if (strcmp(argv[2], "off") == 0)
+                        return cmd_forwarding(0);
         }
         if (strcmp(argv[1], "show") == 0 && argc == 2)
                 return cmd_show();

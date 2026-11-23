@@ -2548,7 +2548,9 @@ heap bookkeeping with address-space-owned heap state.
   echo requests and sends protocol-unreachable for a protocol no stream
   has bound; local addresses are delivered without the network. It does
   not forward, fragment or reassemble yet: a datagram larger than the
-  interface's MTU is refused, and fragments are dropped.
+  interface's MTU is refused, and fragments are dropped. (Superseded:
+  forwarding and fragmenting came after; see "IP forwarding". Fragments
+  for us are still dropped.)
 - **ARP** (RFC 826) keeps a cache per interface: an unresolved next hop
   holds up to three datagrams, and the request is sent again each second
   up to three times, after which they are dropped. Entries last twenty
@@ -2791,3 +2793,70 @@ heap bookkeeping with address-space-owned heap state.
   `connect` again), and what `poll` says in each state. `udptest` checks
   the socket's own options, sharing a port, `SO_BROADCAST`, and
   `SO_RCVBUF` dropping what does not fit.
+
+## IP forwarding (2026-11-23)
+
+- **IP forwards when told to:** `IP_SETFORWARD` (an int, 1 or 0, the
+  superuser's) turns it on and off, and `IP_GETFORWARD` returns which
+  (both `/dev/ip` ioctls, numbered after `IP_BINDPROTO`). It starts off.
+  `netcfg forwarding on`, `off`, or with neither, says; `netcfg show`
+  says too. At boot `/etc/rc.d/network` sets it from `ip_forwarding` in
+  `rc.conf` (`NO` by default).
+- **A datagram not for us is forwarded** (RFC 1812 5.2 and 5.3) by the
+  routing table, the longest prefix, with its TTL one less and its
+  header checksum made again. It is not forwarded if it came to a link
+  broadcast or multicast address (DLPI's `dl_group_address`), if its
+  source or destination is a martian (0/8, 127/8, the broadcast,
+  multicast and reserved), or if its source is ours. ICMP errors go back
+  to the sender: time exceeded for a TTL of 1 or less, host unreachable
+  for no route (network unreachable being obsolete), and fragmentation
+  needed, with the next hop's MTU (RFC 1191), for one too big that may
+  not be fragmented. A datagram that leaves by the interface it came in
+  on, from a sender on that interface's subnet, brings the sender a host
+  redirect to the better gateway, and is forwarded all the same
+  (not when it has IP options, which a source route may be among).
+- **ICMP errors** now follow the rules for them (RFC 1122 3.2.2, RFC
+  1812 4.3.2.7): none about an ICMP error (an echo request may have
+  one), a fragment but the first, or a datagram to or from a broadcast
+  or multicast address or from 0.0.0.0. One about a datagram for us
+  comes from the address it was sent to; one about a forwarded datagram
+  from the address IP chooses toward the sender. They are not rate
+  limited yet.
+- **IP fragments** what is too big for the interface it leaves by, ours
+  as well as forwarded (RFC 791): pieces of a multiple of 8 bytes, the
+  first with the whole header, the rest with only the options marked to
+  be copied; a datagram that may not be fragmented is dropped (a
+  forwarded one with the ICMP error above). A fragment is forwarded as
+  any datagram is, and fragmented again if need be. Reassembly is still
+  to come: fragments for us are dropped. ARP holds at most three
+  datagrams for a hop it is resolving, so a datagram of more fragments
+  than that to a hop not yet resolved loses the rest.
+- **Static routes** are added at boot by `/etc/rc.d/staticroute` (after
+  `network`, before `NETWORKING`, when `staticroute` is set, as it is by
+  default) from `/etc/routed/static_route.conf`: a route a line,
+  destination (`address/length` or `default`) and gateway, `#` to the
+  end of a line a comment, each added with `netcfg route add`; a line
+  that cannot be added is reported, and the rest are added. The
+  directory is where a routing daemon's configuration will go.
+  `defaultroute` in `rc.conf` still gives the default route, which DHCP
+  will set later.
+- **Not yet:** a routing daemon, ICMP redirects taken by a host, the
+  router alert and source route options, rate limiting ICMP errors,
+  directed broadcasts (a broadcast to one of our subnets is ours, never
+  forwarded), multicast forwarding, and a per-interface or counted view
+  of what was forwarded.
+- **Testing:** the self-test boot has two more virtio-net devices
+  (`vionet1` and `vionet2`) on a QEMU hub of their own. `fwdtest`
+  attaches `vionet1` under IP as 10.1.0.1/24, with a route to
+  10.9.0.0/16 through 10.1.0.3, and plays 10.1.0.2 and 10.1.0.3 through
+  raw DLPI streams on `vionet2`, answering IP's ARP requests. It checks
+  that nothing is forwarded while forwarding is off; that, on, a
+  datagram comes back out to the gateway's station with its TTL one
+  less and the sender gets a redirect; time exceeded, host unreachable,
+  nothing for a link broadcast or a martian source, and no redirect for
+  a sender off the subnet; and that a datagram of ours of 3000 bytes
+  goes out as three fragments that make it whole again, and one that
+  may not be fragmented goes nowhere. Fragmentation needed is not
+  tested, the hub's two links having one MTU. `boottest` checks the
+  route a test image adds to `static_route.conf`, and that forwarding is
+  off.

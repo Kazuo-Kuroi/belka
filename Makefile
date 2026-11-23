@@ -183,10 +183,13 @@ QEMU_CPU        ?= max,+invtsc
 QEMU_BASE       := -machine q35,accel=kvm:tcg -cpu $(QEMU_CPU) -smp $(SMP) -m $(MEM) \
                    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
                    -device isa-debug-exit,iobase=0xf4,iosize=0x04
-# The self-test boots: the raw test disk and the two ext2 images, and a
+# The self-test boots: the raw test disk and the two ext2 images, a
 # virtio-net device on QEMU's user-mode network (no host privilege), at a
-# station address usr/tests/nettest.c expects.
+# station address usr/tests/nettest.c expects, and two more on a hub of
+# their own, for usr/tests/fwdtest.c (the IP interface, and the hosts).
 TEST_MAC        := 52:54:00:12:34:56
+TEST_MAC1       := 52:54:00:12:34:57
+TEST_MAC2       := 52:54:00:12:34:58
 QEMU_FLAGS      := $(QEMU_BASE) \
                    -drive file=$(DISK),if=none,id=vd0,format=raw \
                    -device virtio-blk-pci,drive=vd0,disable-legacy=on \
@@ -196,6 +199,10 @@ QEMU_FLAGS      := $(QEMU_BASE) \
                    -device virtio-blk-pci,drive=vd2,disable-legacy=on \
                    -nic none -netdev user,id=n0 \
                    -device virtio-net-pci,netdev=n0,mac=$(TEST_MAC),disable-legacy=on \
+                   -netdev hubport,id=h1,hubid=1 \
+                   -device virtio-net-pci,netdev=h1,mac=$(TEST_MAC1),disable-legacy=on \
+                   -netdev hubport,id=h2,hubid=1 \
+                   -device virtio-net-pci,netdev=h2,mac=$(TEST_MAC2),disable-legacy=on \
                    -display none -no-reboot
 # A normal boot: the root image (tools/mkroot.sh) as vd0, and the
 # virtio-net device on QEMU's user-mode network, which /etc/rc.conf
@@ -328,7 +335,7 @@ LIBC_DIR        := build/user-libc-$(TOOLCHAIN)$(LDSUFFIX)
 LIBC_DBGDIR     := $(LIBC_DIR)-debug
 LIBC_PROGS      := hello segv argtest utest sigtest lwptest libctest \
                    threadtest dyntest credtest ttytest ptytest sproctest \
-                   strtest nettest iptest udptest tcptest
+                   strtest nettest iptest udptest tcptest fwdtest
 LIBC_SPROGS     := libctest-static sproctest-static
 LIBC_PIEPROGS   := dyntest-pie
 LIBC_DBGBINS    := $(addprefix $(LIBC_DBGDIR)/,$(LIBC_PROGS))

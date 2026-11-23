@@ -242,6 +242,9 @@ ln -s ../dev/mnttab "$src/etc/mnttab"
 mkdir -p "$src/etc/rc.d"
 cp contrib/netbsd/etc/rc.subr "$src/etc/rc.subr"
 cp contrib/netbsd/etc/rc.d/* etc/rc.d/* "$src/etc/rc.d/"
+# The static routes, for rc.d/staticroute.
+mkdir -p "$src/etc/routed"
+cp etc/routed/static_route.conf "$src/etc/routed/static_route.conf"
 
 if [ $test -eq 1 ]; then
         install_prog boottest usr/tests/boottest
@@ -277,6 +280,9 @@ if [ $test -eq 1 ]; then
         echo "test3:$hash:$(($(date +%s) / 86400))::::::" >> "$src/etc/shadow"
         mkdir -p "$src/home/test"
         echo belkatest > "$src/etc/myname"     # the hostname script
+        # A static route, which boottest looks for.
+        printf '10.77.0.0/16\t10.0.2.2\t# boottest\n' \
+            >> "$src/etc/routed/static_route.conf"
         cat > "$src/etc/rc.local" <<'EOF'
 # The boot test: in the background, so that init goes on to multi-user.
 /usr/tests/boottest test belka-test 100 /home/test &

@@ -6,9 +6,10 @@
 #
 # The IPv4 network, by netcfg(8): IP linked under UDP and TCP, then
 # each of net_interfaces whose device there is, with its ifaddr_<name>
-# (address/length), and the default route through defaultroute. A
-# missing interface is passed over; a configuration that fails is an
-# error.
+# (address/length), the default route through defaultroute, and IP
+# forwarding as ip_forwarding says. A missing interface is passed over;
+# a configuration that fails is an error. Other static routes are
+# rc.d/staticroute's.
 
 # PROVIDE: network
 # REQUIRE: hostname
@@ -38,6 +39,12 @@ network_start()
         done
         if [ -n "$defaultroute" ]; then
                 /sbin/netcfg route add default $defaultroute || return 1
+        fi
+        if checkyesno ip_forwarding; then
+                /sbin/netcfg forwarding on || return 1
+                echo "Network: forwarding."
+        else
+                /sbin/netcfg forwarding off || return 1
         fi
         return 0
 }

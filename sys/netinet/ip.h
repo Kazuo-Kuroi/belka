@@ -46,7 +46,15 @@ struct icmp {
 #define ICMP_ECHOREPLY          0
 #define ICMP_UNREACH            3
 #define ICMP_UNREACH_PROTOCOL   2
+#define ICMP_UNREACH_HOST       1
 #define ICMP_UNREACH_PORT       3
+#define ICMP_UNREACH_NEEDFRAG   4       /* the next hop's MTU in icmp_seq */
+#define ICMP_REDIRECT           5       /* the gateway in icmp_id, icmp_seq */
+#define ICMP_REDIRECT_HOST      1
 #define ICMP_ECHO               8
+#define ICMP_TIMXCEED           11
+#define ICMP_TIMXCEED_INTRANS   0
+#define ICMP_PARAMPROB          12
+#define ICMP_SOURCEQUENCH       4
 
 #endif /* _NETINET_IP_H_ */

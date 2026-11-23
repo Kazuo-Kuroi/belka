@@ -945,7 +945,7 @@ ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    contrib/netbsd/external/bsd/less/dist/less.1 \
                    contrib/zlib/README usr/bin/chsh/chsh.1 usr/sbin/accounts/accounts.8 \
                    usr/sbin/netcfg/netcfg.8) \
-                   $(wildcard etc/* etc/defaults/* etc/rc.d/* \
+                   $(wildcard etc/* etc/defaults/* etc/rc.d/* etc/routed/* \
                    contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 
 $(ROOT_IMG): $(ROOT_DEPS)

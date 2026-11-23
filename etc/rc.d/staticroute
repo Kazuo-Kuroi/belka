@@ -1,0 +1,42 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-23
+# SPDX-License-Identifier: MIT
+#
+# Static routes, by netcfg(8), from /etc/routed/static_route.conf: a
+# route a line, "destination gateway", as netcfg route add takes them.
+# A route that cannot be added is reported, and the rest are added.
+
+# PROVIDE: staticroute
+# REQUIRE: network
+# BEFORE: NETWORKING
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="staticroute"
+rcvar=$name
+start_cmd="staticroute_start"
+stop_cmd=":"
+
+staticroute_start()
+{
+        _file=/etc/routed/static_route.conf
+        [ -r $_file ] || return 0
+        _status=0
+        while read -r _line; do
+                _line=${_line%%#*}
+                set -- $_line
+                [ $# -eq 0 ] && continue
+                if [ $# -ne 2 ]; then
+                        echo "$_file: not a destination and gateway: $*"
+                        _status=1
+                        continue
+                fi
+                /sbin/netcfg route add "$1" "$2" || _status=1
+        done < $_file
+        return $_status
+}
+
+load_rc_config $name
+run_rc_command "$1"

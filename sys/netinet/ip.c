@@ -5,12 +5,15 @@
  */
 
 /*
- * IPv4 (RFC 791), with ICMP's echo and protocol-unreachable (RFC 792),
- * as a multiplexing STREAMS driver, /dev/ip (doc/design/decisions.md,
- * "ARP and IPv4"). Lower streams are DLPI streams, two per interface,
- * one for IPv4 and one for ARP (arp.c); upper streams bind a protocol
- * and send and receive whole datagrams. Every stream and timer of IP's
- * is in one syncq (SQLVL_MODULE), which is what guards the tables.
+ * IPv4 (RFC 791), with ICMP's echo and its errors (RFC 792), as a
+ * multiplexing STREAMS driver, /dev/ip (doc/design/decisions.md, "ARP
+ * and IPv4" and "IP forwarding"). Lower streams are DLPI streams, two
+ * per interface, one for IPv4 and one for ARP (arp.c); upper streams
+ * bind a protocol and send and receive whole datagrams. With forwarding
+ * on (IP_SETFORWARD), a router's duties too (RFC 1812): datagrams for
+ * others on toward them, and fragmenting what is too big for a link.
+ * Every stream and timer of IP's is in one syncq (SQLVL_MODULE), which
+ * is what guards the tables.
  */
 
 #include <stddef.h>
@@ -41,6 +44,7 @@ static struct ip_rt *ip_routes;
 static struct ip_upper *ip_uppers;
 static struct ip_if ip_lo;
 static int ip_ready;
+static int ip_forwarding;               /* IP_SETFORWARD */
 static uint16_t ip_nextid = 1;
 
 static const uint8_t ip_bcast_hw[IP_HWADDRLEN] = {
@@ -264,6 +268,26 @@ ip_ours(in_addr_t dst)
         return 0;
 }
 
+/* Multicast or reserved: 224.0.0.0 and above, the broadcast among them. */
+static int
+ip_classde(in_addr_t a)
+{
+        return (ntohl(a) >> 28) >= 0xe;
+}
+
+/*
+ * An address no one host on the network has, which a router passes on
+ * neither to nor from (RFC 1812 5.3.7): 0.0.0.0/8, 127.0.0.0/8, the
+ * broadcast, multicast and reserved.
+ */
+static int
+ip_martian(in_addr_t a)
+{
+        uint32_t h = ntohl(a);
+
+        return (h >> 24) == 0 || (h >> 24) == 127 || ip_classde(a);
+}
+
 static void
 ip_init(void)
 {
@@ -308,12 +332,128 @@ ip_xmit(struct ip_if *ifp, const uint8_t *hw, mblk_t *mp)
         (void)putnext(wq, cp);
 }
 
-/* A finished datagram (header contiguous, checksummed): out, or to us. */
+/* A datagram to its next hop on ifp: hop by ARP, or (bcast) to all. */
+static void
+ip_hop(struct ip_if *ifp, int bcast, in_addr_t hop, mblk_t *mp)
+{
+        if (bcast)
+                ip_xmit(ifp, ip_bcast_hw, mp);
+        else
+                arp_resolve(ifp, hop, mp);
+}
+
+/* len bytes of a message from byte off, into to. */
+static void
+ip_copydata(const mblk_t *mp, size_t off, size_t len, uint8_t *to)
+{
+        for (; mp != NULL && len > 0; mp = mp->b_cont) {
+                size_t n = MBLKL(mp);
+
+                if (off >= n) {
+                        off -= n;
+                        continue;
+                }
+                n -= off;
+                if (n > len)
+                        n = len;
+                memcpy(to, mp->b_rptr + off, n);
+                to += n;
+                len -= n;
+                off = 0;
+        }
+}
+
+/*
+ * The header of the fragments after the first, from the datagram's (hdr,
+ * hlen bytes) into out: the options whose copied flag is set, padded to
+ * a word (RFC 791). Its length.
+ */
+static size_t
+ip_fraghdr(const uint8_t *hdr, size_t hlen, uint8_t *out)
+{
+        size_t i = IP_MINHLEN, olen = IP_MINHLEN;
+
+        memcpy(out, hdr, IP_MINHLEN);
+        while (i < hlen) {
+                uint8_t type = hdr[i];
+                size_t n;
+
+                if (type == 0)
+                        break;          /* the end of the options */
+                if (type == 1) {
+                        i++;            /* a no-op, not copied */
+                        continue;
+                }
+                if (i + 1 >= hlen || (n = hdr[i + 1]) < 2 || i + n > hlen)
+                        break;
+                if ((type & 0x80) != 0) {
+                        memcpy(out + olen, hdr + i, n);
+                        olen += n;
+                }
+                i += n;
+        }
+        while (olen % 4 != 0)
+                out[olen++] = 0;
+        out[0] = (uint8_t)(0x40 | (olen / 4));
+        return olen;
+}
+
+/*
+ * A datagram too big for ifp in fragments (RFC 791), each on to the
+ * next hop; not one at all if it may not be fragmented. Frees mp.
+ */
+static void
+ip_fragment(struct ip_if *ifp, int bcast, in_addr_t hop, mblk_t *mp)
+{
+        struct ip *ip = (struct ip *)mp->b_rptr;
+        size_t hlen = IP_HLEN(ip), plen = msgdsize(mp) - hlen, ohlen, chunk;
+        uint16_t off = ntohs(ip->ip_off);
+        uint8_t hdr[60], ohdr[60];
+
+        if ((off & IP_DF) != 0 || ifp->if_mtu < 60 + 8) {
+                ifp->if_drops++;
+                freemsg(mp);
+                return;
+        }
+        memcpy(hdr, ip, hlen);
+        ohlen = ip_fraghdr(hdr, hlen, ohdr);
+        for (size_t pos = 0; pos < plen; pos += chunk) {
+                size_t h = pos == 0 ? hlen : ohlen;
+                int more;
+                struct ip *fip;
+                mblk_t *fp;
+
+                chunk = (ifp->if_mtu - h) & ~(size_t)7;
+                if (chunk > plen - pos)
+                        chunk = plen - pos;
+                more = pos + chunk < plen || (off & IP_MF) != 0;
+                if ((fp = allocb(h + chunk, BPRI_MED)) == NULL) {
+                        ifp->if_drops++;
+                        break;          /* the rest is lost with it */
+                }
+                memcpy(fp->b_wptr, pos == 0 ? hdr : ohdr, h);
+                ip_copydata(mp, hlen + pos, chunk, fp->b_wptr + h);
+                fp->b_wptr += h + chunk;
+                fip = (struct ip *)fp->b_rptr;
+                fip->ip_len = htons((uint16_t)(h + chunk));
+                fip->ip_off = htons((uint16_t)(((off & IP_OFFMASK) +
+                    pos / 8) | (more ? IP_MF : 0)));
+                fip->ip_sum = 0;
+                fip->ip_sum = htons(in_cksum(fp, h));
+                ip_hop(ifp, bcast, hop, fp);
+        }
+        freemsg(mp);
+}
+
+/*
+ * A finished datagram (header contiguous, checksummed): out, in
+ * fragments if it must be, or to us.
+ */
 void
 ip_output(mblk_t *mp)
 {
         struct ip *ip = (struct ip *)mp->b_rptr;
-        in_addr_t dst = ip->ip_dst;
+        in_addr_t dst = ip->ip_dst, hop = dst;
         struct ip_if *ifp;
         struct ip_rt *rt;
         int ours = ip_ours(dst);
@@ -334,28 +474,23 @@ ip_output(mblk_t *mp)
                         freemsg(mp);
                         return;
                 }
-                ip_xmit(ifp, ip_bcast_hw, mp);
-                return;
+        } else {
+                if ((rt = ip_route(dst)) == NULL) {
+                        freemsg(mp);    /* no route to the host */
+                        return;
+                }
+                ifp = rt->rt_if;
+                if ((ifp->if_flags & IPIF_LOOPBACK) != 0) {
+                        ip_local(mp, 0);
+                        return;
+                }
+                if (rt->rt_gateway != 0)
+                        hop = rt->rt_gateway;
         }
-        if ((rt = ip_route(dst)) == NULL) {
-                freemsg(mp);            /* no route to the host */
-                return;
-        }
-        ifp = rt->rt_if;
-        if ((ifp->if_flags & IPIF_LOOPBACK) != 0) {
-                ip_local(mp, 0);
-                return;
-        }
-        if (msgdsize(mp) > ifp->if_mtu) {
-                ifp->if_drops++;        /* no fragmentation yet */
-                freemsg(mp);
-                return;
-        }
-        if (ours == 2) {
-                ip_xmit(ifp, ip_bcast_hw, mp);
-                return;
-        }
-        arp_resolve(ifp, rt->rt_gateway != 0 ? rt->rt_gateway : dst, mp);
+        if (msgdsize(mp) > ifp->if_mtu)
+                ip_fragment(ifp, ours == 2, hop, mp);
+        else
+                ip_hop(ifp, ours == 2, hop, mp);
 }
 
 /*
@@ -434,27 +569,55 @@ ip_newdgram(in_addr_t src, in_addr_t dst, uint8_t proto, size_t len)
         return mp;
 }
 
-/* An ICMP error about mp (a datagram for us) to its sender; frees mp. */
+/* Whether mp (its header contiguous) is an ICMP error message. */
+static int
+icmp_iserror(mblk_t *mp)
+{
+        struct ip *ip = (struct ip *)mp->b_rptr;
+        size_t hlen = IP_HLEN(ip);
+        uint8_t type;
+
+        if (ip->ip_p != IPPROTO_ICMP)
+                return 0;
+        if (msgdsize(mp) <= hlen || !pullupmsg(mp, (ssize_t)hlen + 1))
+                return 1;               /* nothing to tell: as if one */
+        type = mp->b_rptr[hlen];
+        return type == ICMP_UNREACH || type == ICMP_SOURCEQUENCH ||
+            type == ICMP_REDIRECT || type == ICMP_TIMXCEED ||
+            type == ICMP_PARAMPROB;
+}
+
+/*
+ * An ICMP error about mp (its header contiguous) to its sender, info
+ * (network order) as the message's second word: a redirect's gateway,
+ * the next hop's MTU. None about an ICMP error, a fragment but the
+ * first, or a datagram not from one host to one host (RFC 1122 3.2.2,
+ * RFC 1812 4.3.2.7). It comes from where the datagram went if that was
+ * us, else from the address IP chooses toward the sender. Frees mp.
+ */
 static void
-icmp_error(mblk_t *mp, uint8_t type, uint8_t code)
+icmp_error(mblk_t *mp, uint8_t type, uint8_t code, uint32_t info)
 {
         struct ip *ip = (struct ip *)mp->b_rptr;
         size_t hlen = IP_HLEN(ip), quote = hlen + 8, len = msgdsize(mp);
+        in_addr_t src = ip->ip_src, dst = ip->ip_dst;
         struct icmp *ic;
         mblk_t *ep;
 
         if (len < quote)
                 quote = len;
-        if (ip->ip_p == IPPROTO_ICMP || ip_ours(ip->ip_src) == 2 ||
-            ip->ip_src == INADDR_ANY ||
-            (ep = ip_newdgram(ip->ip_dst, ip->ip_src, IPPROTO_ICMP,
-            ICMP_MINLEN + quote)) == NULL) {
+        if (src == INADDR_ANY || ip_classde(src) || ip_ours(src) == 2 ||
+            ip_classde(dst) || ip_ours(dst) == 2 ||
+            (ntohs(ip->ip_off) & IP_OFFMASK) != 0 || icmp_iserror(mp) ||
+            (ep = ip_newdgram(ip_ours(dst) == 1 ? dst : INADDR_ANY, src,
+            IPPROTO_ICMP, ICMP_MINLEN + quote)) == NULL) {
                 freemsg(mp);
                 return;
         }
         ic = (struct icmp *)(ep->b_rptr + IP_MINHLEN);
         ic->icmp_type = type;
         ic->icmp_code = code;
+        memcpy((uint8_t *)ic + 4, &info, sizeof(info));
         {
                 uint8_t *to = (uint8_t *)ic + ICMP_MINLEN;
                 size_t done = 0;
@@ -534,14 +697,70 @@ ip_local(mblk_t *mp, int bcast)
         if (proto == IPPROTO_ICMP)
                 icmp_input(mp, bcast);
         else if (!taken && !bcast)
-                icmp_error(mp, ICMP_UNREACH, ICMP_UNREACH_PROTOCOL);
+                icmp_error(mp, ICMP_UNREACH, ICMP_UNREACH_PROTOCOL, 0);
         else
                 freemsg(mp);
 }
 
-/* A datagram from ifp's IPv4 lower stream. */
+/*
+ * A datagram not for us, with forwarding on (RFC 1812 5.2 and 5.3): on
+ * toward its destination with its TTL one less, or an ICMP error back
+ * (time exceeded, no route, too big to fragment). Never one that came
+ * as a link broadcast (group), nor one to or from a martian or from us.
+ * When it leaves by the interface it came in on, from a sender on that
+ * interface's subnet, a redirect to the better hop as well. Frees mp.
+ */
 static void
-ip_input(struct ip_if *ifp, mblk_t *mp)
+ip_forward(struct ip_if *inif, mblk_t *mp, int group)
+{
+        struct ip *ip = (struct ip *)mp->b_rptr;
+        in_addr_t src = ip->ip_src, dst = ip->ip_dst, hop;
+        struct ip_if *out;
+        struct ip_rt *rt;
+
+        if (group || ip_martian(src) || ip_martian(dst) ||
+            ip_ours(src) != 0) {
+                inif->if_drops++;
+                freemsg(mp);
+                return;
+        }
+        if (ip->ip_ttl <= 1) {
+                icmp_error(mp, ICMP_TIMXCEED, ICMP_TIMXCEED_INTRANS, 0);
+                return;
+        }
+        if ((rt = ip_route(dst)) == NULL ||
+            (rt->rt_if->if_flags & IPIF_LOOPBACK) != 0) {
+                icmp_error(mp, ICMP_UNREACH, ICMP_UNREACH_HOST, 0);
+                return;
+        }
+        out = rt->rt_if;
+        hop = rt->rt_gateway != 0 ? rt->rt_gateway : dst;
+        if (msgdsize(mp) > out->if_mtu &&
+            (ntohs(ip->ip_off) & IP_DF) != 0) {
+                icmp_error(mp, ICMP_UNREACH, ICMP_UNREACH_NEEDFRAG,
+                    htonl(out->if_mtu));
+                return;
+        }
+        if (out == inif && IP_HLEN(ip) == IP_MINHLEN &&
+            (src & inif->if_mask) == (inif->if_addr & inif->if_mask)) {
+                mblk_t *cp = copymsg(mp);
+
+                if (cp != NULL)
+                        icmp_error(cp, ICMP_REDIRECT, ICMP_REDIRECT_HOST,
+                            hop);
+        }
+        ip->ip_ttl--;
+        ip->ip_sum = 0;
+        ip->ip_sum = htons(in_cksum(mp, IP_HLEN(ip)));
+        ip_output(mp);
+}
+
+/*
+ * A datagram from ifp's IPv4 lower stream; group: it came to a link
+ * broadcast or multicast address.
+ */
+static void
+ip_input(struct ip_if *ifp, mblk_t *mp, int group)
 {
         struct ip *ip;
         size_t hlen, len, have = msgdsize(mp);
@@ -561,17 +780,20 @@ ip_input(struct ip_if *ifp, mblk_t *mp)
                 goto bad;
         if (len < have)
                 (void)adjmsg(mp, -(ssize_t)(have - len));
-        if ((ntohs(ip->ip_off) & (IP_MF | IP_OFFMASK)) != 0) {
-                ifp->if_drops++;        /* no reassembly yet */
-                freemsg(mp);
-                return;
-        }
         ours = ip_ours(ip->ip_dst);
         if (ours == 0 && (ifp->if_flags & IPIF_BROADCAST) != 0 &&
             ip->ip_dst == (ifp->if_addr | ~ifp->if_mask))
                 ours = 2;
         if (ours == 0) {
-                freemsg(mp);            /* not a router */
+                if (ip_forwarding)
+                        ip_forward(ifp, mp, group);
+                else
+                        freemsg(mp);    /* not a router */
+                return;
+        }
+        if ((ntohs(ip->ip_off) & (IP_MF | IP_OFFMASK)) != 0) {
+                ifp->if_drops++;        /* no reassembly yet */
+                freemsg(mp);
                 return;
         }
         ip_local(mp, ours == 2);
@@ -669,12 +891,16 @@ ip_dlpi(struct ip_lower *il, mblk_t *mp)
         case DL_UNITDATA_IND:
                 if (ifp != NULL && ifp->if_attaching == 0 &&
                     mp->b_cont != NULL) {
+                        dl_unitdata_ind_t ind;
                         mblk_t *dp = mp->b_cont;
 
+                        memset(&ind, 0, sizeof(ind));
+                        memcpy(&ind, mp->b_rptr, MBLKL(mp) < sizeof(ind) ?
+                            MBLKL(mp) : sizeof(ind));
                         mp->b_cont = NULL;
                         freeb(mp);
                         if (il->il_kind == IL_IP)
-                                ip_input(ifp, dp);
+                                ip_input(ifp, dp, ind.dl_group_address != 0);
                         else
                                 arp_input(ifp, dp);
                         return;
@@ -1071,6 +1297,29 @@ ip_ioctl(queue_t *q, mblk_t *mp)
                 else
                         error = ip_routedel(data);
                 break;
+        case IP_SETFORWARD: {
+                int32_t on;
+
+                if (!root) {
+                        error = EPERM;
+                } else if ((data = ip_iocdata(mp, sizeof(on))) == NULL) {
+                        error = EINVAL;
+                } else {
+                        memcpy(&on, data, sizeof(on));
+                        if (on != 0 && on != 1)
+                                error = EINVAL;
+                        else
+                                ip_forwarding = on;
+                }
+                break;
+        }
+        case IP_GETFORWARD:
+                if (mp->b_cont != NULL) {
+                        freemsg(mp->b_cont);
+                        mp->b_cont = NULL;
+                }
+                miocack(q, mp, 0, ip_forwarding);
+                return;
         case IP_IFLIST:
                 ip_listioc(q, mp, sizeof(struct ip_ifinfo), fill_ifs);
                 return;
@@ -1159,7 +1408,7 @@ ip_uctl(mblk_t *mp)
             IP_HLEN((struct ip *)dp->b_rptr) >= IP_MINHLEN &&
             pullupmsg(dp, (ssize_t)IP_HLEN((struct ip *)dp->b_rptr)) &&
             ip_ours(((struct ip *)dp->b_rptr)->ip_dst) == 1)
-                icmp_error(dp, ICMP_UNREACH, (uint8_t)ic.ic_arg);
+                icmp_error(dp, ICMP_UNREACH, (uint8_t)ic.ic_arg, 0);
         else
                 freemsg(dp);
 }
