@@ -102,6 +102,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/netinet/arp.c \
                    sys/netinet/ip.c \
                    sys/netinet/tcp.c \
+                   sys/netinet/tpi_opt.c \
                    sys/netinet/udp.c \
                    sys/dev/ic/ns16550.c
 

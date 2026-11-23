@@ -37,6 +37,7 @@
 #include <termios.h>
 #include <ucontext.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #include "kernel-abi.h"
 

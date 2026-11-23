@@ -49,6 +49,7 @@
 #define TPI_MAXDGRAM    (65535 - 20 - 8)
 #define TPI_CHUNK       16384   /* a stream's writes, a message apiece */
 #define TPI_MAXBACKLOG  128
+#define TPI_OPTMAX      16      /* an option's value, at most */
 
 /* The providers, by the family, type and protocol that name them. */
 static const struct tpiproto {
@@ -77,6 +78,8 @@ struct tpisock {
         int             ts_eof;         /* the peer's data has ended */
         int             ts_rdshut;
         int             ts_wrshut;
+        int             ts_soerror;     /* SO_ERROR: pending, said once */
+        int             ts_broadcast;   /* SO_BROADCAST, as set */
         struct sockaddr_in ts_local;
         struct sockaddr_in ts_peer;
 };
@@ -89,7 +92,8 @@ tpi_sock(struct vnode *vp)
         return vp->v_data;
 }
 
-static int tpi_sconnect(struct tpisock *, const struct sockaddr_in *);
+static int tpi_sconnect(struct tpisock *, const struct sockaddr_in *, int);
+static void tpi_tidy(struct tpisock *);
 
 int
 tpisock_is(const struct vnode *vp)
@@ -131,6 +135,8 @@ tpi_errno(const struct T_error_ack *ea)
         case TBADSEQ:
                 return ECONNABORTED;    /* the connection has gone */
         case TBADF:
+        case TBADOPT:
+        case TBADFLAG:
                 return EINVAL;
         default:
                 return EPROTO;
@@ -326,11 +332,14 @@ tpisock_bind(struct vnode *vp, uint64_t uaddr, uint64_t len)
         return error;
 }
 
-/* connect: the peer datagrams go to and alone come from; AF_UNSPEC none. */
+/*
+ * connect: the peer datagrams go to and alone come from; AF_UNSPEC none.
+ * A stream socket's connection (tpi_sconnect).
+ */
 int
-tpisock_connect(struct vnode *vp, uint64_t uaddr, uint64_t len)
+tpisock_connect(struct file *fp, uint64_t uaddr, uint64_t len)
 {
-        struct tpisock *ts = tpi_sock(vp);
+        struct tpisock *ts = tpi_sock(fp->f_vnode);
         struct sockaddr_in sin;
         struct T_conn_req cr;
         int unspec, error;
@@ -343,7 +352,8 @@ tpisock_connect(struct vnode *vp, uint64_t uaddr, uint64_t len)
         if (sin.sin_addr.s_addr == INADDR_ANY)
                 sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   /* this host */
         if (ts->ts_type == SOCK_STREAM)
-                return unspec ? EAFNOSUPPORT : tpi_sconnect(ts, &sin);
+                return unspec ? EAFNOSUPPORT : tpi_sconnect(ts, &sin,
+                    fp->f_flag);
         mutex_lock(&ts->ts_lock);
         if (ts->ts_conn)
                 error = tpi_disconnect(ts);
@@ -386,10 +396,16 @@ tpi_prim(const mblk_t *mp, union T_primitives *pr)
         return pr->type;
 }
 
-/* The socket's state from an indication: T_CONN_CON and the ends. */
-static void
+/*
+ * The socket's state from an indication: T_CONN_CON and the ends. For
+ * T_DISCON_IND, its error: the reason it gives, else ECONNREFUSED for
+ * a connection being made and ECONNRESET for one made.
+ */
+static int
 tpi_indication(struct tpisock *ts, const union T_primitives *pr)
 {
+        int error = 0;
+
         mutex_lock(&ts->ts_lock);
         switch (pr->type) {
         case T_CONN_CON:
@@ -400,12 +416,80 @@ tpi_indication(struct tpisock *ts, const union T_primitives *pr)
                 ts->ts_eof = 1;
                 break;
         case T_DISCON_IND:
+                error = pr->discon_ind.DISCON_reason != 0 ?
+                    pr->discon_ind.DISCON_reason : ts->ts_connecting ?
+                    ECONNREFUSED : ECONNRESET;
                 ts->ts_connecting = 0;
                 ts->ts_conn = 0;
                 ts->ts_eof = 1;
                 break;
         }
         mutex_unlock(&ts->ts_lock);
+        /* A poll that saw the message left this state to change: again. */
+        pollwakeup(&ts->ts_sd->sd_poll);
+        return error;
+}
+
+/* The pending error (SO_ERROR), taken. */
+static int
+tpi_takeerror(struct tpisock *ts)
+{
+        int error;
+
+        mutex_lock(&ts->ts_lock);
+        error = ts->ts_soerror;
+        ts->ts_soerror = 0;
+        mutex_unlock(&ts->ts_lock);
+        return error;
+}
+
+/*
+ * Without waiting, the messages at the front of the head that change
+ * the socket's state, for poll and the calls that ask after it: a
+ * stream socket's connection made or refused, or the peer's end
+ * (T_DISCON_IND's error is then pending, for SO_ERROR or the next
+ * call); a listener's notices of connections it was never given; a
+ * datagram socket's T_UDERROR_IND. Not while a reader has the stream.
+ */
+static void
+tpi_tidy(struct tpisock *ts)
+{
+        union T_primitives pr;
+        mblk_t *mp;
+
+        if (!mutex_trylock(&ts->ts_rdlock))
+                return;
+        while (str_kgetmsg(ts->ts_sd, 0, IO_NONBLOCK, 0, &mp) == 0 &&
+            mp != NULL) {
+                int prim = tpi_prim(mp, &pr), error = 0;
+
+                if (ts->ts_type != SOCK_STREAM) {
+                        if (prim != T_UDERROR_IND) {
+                                str_kunget(ts->ts_sd, mp);
+                                break;
+                        }
+                        error = pr.uderror_ind.ERROR_type != 0 ?
+                            pr.uderror_ind.ERROR_type : EIO;
+                } else if (ts->ts_listening) {
+                        if (prim == T_CONN_IND) {
+                                str_kunget(ts->ts_sd, mp);
+                                break;
+                        }
+                } else if (prim == T_CONN_CON || prim == T_ORDREL_IND ||
+                    prim == T_DISCON_IND) {
+                        error = tpi_indication(ts, &pr);
+                } else {
+                        str_kunget(ts->ts_sd, mp);      /* data first */
+                        break;
+                }
+                freemsg(mp);
+                if (error != 0) {
+                        mutex_lock(&ts->ts_lock);
+                        ts->ts_soerror = error;
+                        mutex_unlock(&ts->ts_lock);
+                }
+        }
+        mutex_unlock(&ts->ts_rdlock);
 }
 
 /*
@@ -429,11 +513,7 @@ tpi_settle(struct tpisock *ts)
                 }
                 if (tpi_prim(mp, &pr) == T_CONN_CON ||
                     pr.type == T_DISCON_IND) {
-                        tpi_indication(ts, &pr);
-                        if (pr.type == T_DISCON_IND)
-                                error = pr.discon_ind.DISCON_reason != 0 ?
-                                    pr.discon_ind.DISCON_reason :
-                                    ECONNREFUSED;
+                        error = tpi_indication(ts, &pr);
                         freemsg(mp);
                         break;
                 }
@@ -444,21 +524,30 @@ tpi_settle(struct tpisock *ts)
         return error;
 }
 
-/* connect for a stream socket: it waits until the connection is made. */
+/*
+ * connect for a stream socket: it waits until the connection is made,
+ * unless the file is non-blocking: then EINPROGRESS, poll says when it
+ * is writable, and SO_ERROR (or connect again) says how it went.
+ */
 static int
-tpi_sconnect(struct tpisock *ts, const struct sockaddr_in *sin)
+tpi_sconnect(struct tpisock *ts, const struct sockaddr_in *sin, int fflag)
 {
         struct T_conn_req cr;
         mblk_t *req;
         int error = 0;
 
+        tpi_tidy(ts);                   /* how an earlier one went */
         mutex_lock(&ts->ts_lock);
-        if (ts->ts_conn)
+        if (ts->ts_soerror != 0) {
+                error = ts->ts_soerror; /* it failed: said once */
+                ts->ts_soerror = 0;
+        } else if (ts->ts_conn) {
                 error = EISCONN;
-        else if (ts->ts_connecting)
+        } else if (ts->ts_connecting) {
                 error = EALREADY;
-        else if (ts->ts_listening || ts->ts_used)
+        } else if (ts->ts_listening || ts->ts_used) {
                 error = EINVAL;
+        }
         if (error == 0 && !ts->ts_bound)
                 error = tpi_bind(ts, NULL, 0);
         if (error == 0) {
@@ -476,7 +565,20 @@ tpi_sconnect(struct tpisock *ts, const struct sockaddr_in *sin)
                 }
         }
         mutex_unlock(&ts->ts_lock);
-        return error != 0 ? error : tpi_settle(ts);
+        if (error != 0)
+                return error;
+        if ((fflag & FNONBLOCK) == 0)
+                return tpi_settle(ts);
+        tpi_tidy(ts);                   /* made already, or refused */
+        mutex_lock(&ts->ts_lock);
+        if (ts->ts_connecting) {
+                error = EINPROGRESS;
+        } else {
+                error = ts->ts_soerror;
+                ts->ts_soerror = 0;
+        }
+        mutex_unlock(&ts->ts_lock);
+        return error;
 }
 
 /* A SIGPIPE for writing where the stream's sending has ended. */
@@ -502,10 +604,14 @@ tpi_ssend(struct tpisock *ts, struct uio *uio, int flags, int fflag,
 
         *done = 0;
         mutex_lock(&ts->ts_lock);
-        if (ts->ts_wrshut || (ts->ts_eof && !ts->ts_conn))
+        if (ts->ts_soerror != 0) {
+                error = ts->ts_soerror; /* the connection failed */
+                ts->ts_soerror = 0;
+        } else if (ts->ts_wrshut || (ts->ts_eof && !ts->ts_conn)) {
                 error = EPIPE;
-        else if (!ts->ts_conn && !ts->ts_connecting)
+        } else if (!ts->ts_conn && !ts->ts_connecting) {
                 error = ENOTCONN;
+        }
         mutex_unlock(&ts->ts_lock);
         while (error == 0 && uio->uio_resid > 0) {
                 size_t n = (size_t)uio->uio_resid;
@@ -543,11 +649,15 @@ tpi_srecv(struct tpisock *ts, struct uio *uio, int flags, int fflag)
         int error = 0, got = 0;
 
         mutex_lock(&ts->ts_lock);
-        if (ts->ts_rdshut || (ts->ts_eof && !ts->ts_conn &&
-            !ts->ts_connecting))
+        if (ts->ts_soerror != 0) {
+                error = ts->ts_soerror; /* what ended it, once */
+                ts->ts_soerror = 0;
+        } else if (ts->ts_rdshut || (ts->ts_eof && !ts->ts_conn &&
+            !ts->ts_connecting)) {
                 error = -1;             /* nothing more: 0 */
-        else if (!ts->ts_conn && !ts->ts_connecting)
+        } else if (!ts->ts_conn && !ts->ts_connecting) {
                 error = ENOTCONN;
+        }
         mutex_unlock(&ts->ts_lock);
         if (error != 0)
                 return error < 0 ? 0 : error;
@@ -621,9 +731,7 @@ tpi_srecv(struct tpisock *ts, struct uio *uio, int flags, int fflag)
                                 str_kunget(ts->ts_sd, mp);
                                 break;
                         }
-                        tpi_indication(ts, &pr);
-                        error = pr.discon_ind.DISCON_reason != 0 ?
-                            pr.discon_ind.DISCON_reason : ECONNRESET;
+                        error = tpi_indication(ts, &pr);
                         freemsg(mp);
                         break;
                 default:
@@ -842,6 +950,10 @@ tpi_send(struct tpisock *ts, struct uio *uio, int flags, int fflag,
                         return EINVAL;
                 if (sin.sin_addr.s_addr == INADDR_ANY)
                         sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                /* UDP drops it too; the error is the socket's to give. */
+                if (sin.sin_addr.s_addr == INADDR_BROADCAST &&
+                    !ts->ts_broadcast)
+                        return EACCES;
         }
         if (n > TPI_MAXDGRAM)
                 return EMSGSIZE;
@@ -892,6 +1004,8 @@ tpi_recv(struct tpisock *ts, struct uio *uio, int flags, int fflag,
 
         *hasfrom = 0;
         *total = 0;
+        if ((error = tpi_takeerror(ts)) != 0)
+                return error;           /* a T_UDERROR_IND, taken before */
         for (;;) {
                 union T_primitives pr;
 
@@ -1030,14 +1144,174 @@ tpisock_name(struct vnode *vp, int peer, uint64_t uaddr, uint64_t ulen)
         return sockaddr_out(&sin, sizeof(sin), uaddr, ulen);
 }
 
+/* --- Options. --- */
+
+/*
+ * One option by T_OPTMGMT_REQ: mgmt T_NEGOTIATE to set it to val (n
+ * bytes), T_CURRENT for its value, into out (up to *outlen bytes;
+ * *outlen then says how many).
+ */
+static int
+tpi_option(struct tpisock *ts, t_scalar_t mgmt, int level, int name,
+    const void *val, size_t n, void *out, size_t *outlen)
+{
+        struct T_optmgmt_req req;
+        struct T_optmgmt_ack oa;
+        struct t_opthdr oh;
+        size_t have, vlen;
+        mblk_t *mp, *ack;
+        int error;
+
+        memset(&req, 0, sizeof(req));
+        req.PRIM_type = T_OPTMGMT_REQ;
+        req.OPT_length = (t_scalar_t)(sizeof(oh) + n);
+        req.OPT_offset = sizeof(req);
+        req.MGMT_flags = mgmt;
+        memset(&oh, 0, sizeof(oh));
+        oh.len = (t_uscalar_t)(sizeof(oh) + n);
+        oh.level = (t_uscalar_t)level;
+        oh.name = (t_uscalar_t)name;
+        mp = tpi_reqblk(sizeof(req) + sizeof(oh) + n);
+        memcpy(mp->b_rptr, &req, sizeof(req));
+        memcpy(mp->b_rptr + sizeof(req), &oh, sizeof(oh));
+        if (n > 0)
+                memcpy(mp->b_rptr + sizeof(req) + sizeof(oh), val, n);
+        mutex_lock(&ts->ts_lock);
+        error = tpi_request(ts, mp, T_OPTMGMT_ACK, &ack);
+        mutex_unlock(&ts->ts_lock);
+        if (error != 0)
+                return error;
+        have = MBLKL(ack);
+        memset(&oa, 0, sizeof(oa));
+        memcpy(&oa, ack->b_rptr, have < sizeof(oa) ? have : sizeof(oa));
+        if (oa.OPT_offset < 0 || oa.OPT_length < (t_scalar_t)sizeof(oh) ||
+            (size_t)oa.OPT_offset > have ||
+            (size_t)oa.OPT_length > have - (size_t)oa.OPT_offset) {
+                freemsg(ack);
+                return EPROTO;
+        }
+        memcpy(&oh, ack->b_rptr + oa.OPT_offset, sizeof(oh));
+        if (oh.len < sizeof(oh) || oh.len > (size_t)oa.OPT_length) {
+                freemsg(ack);
+                return EPROTO;
+        }
+        switch (oh.status) {
+        case T_SUCCESS:
+        case T_PARTSUCCESS:
+                vlen = oh.len - sizeof(oh);
+                if (out != NULL) {
+                        if (vlen > *outlen)
+                                vlen = *outlen;
+                        memcpy(out, ack->b_rptr + oa.OPT_offset + sizeof(oh),
+                            vlen);
+                        *outlen = vlen;
+                }
+                break;
+        case T_FAILURE:
+                error = EINVAL;         /* a value it will not take */
+                break;
+        default:
+                error = ENOPROTOOPT;    /* T_NOTSUPPORT, T_READONLY */
+                break;
+        }
+        freemsg(ack);
+        return error;
+}
+
+/*
+ * An option's value out to the user, as getsockopt gives one: up to
+ * *ulen bytes of it, and how many in *ulen (a 32-bit socklen_t).
+ */
+int
+sockopt_out(const void *val, uint32_t len, uint64_t uval, uint64_t ulen)
+{
+        uint32_t room;
+        int error;
+
+        if ((error = copyin((const void *)(uintptr_t)ulen, &room,
+            sizeof(room))) != 0)
+                return error;
+        if (room > len)
+                room = len;
+        if (room > 0 && (error = copyout(val, (void *)(uintptr_t)uval,
+            room)) != 0)
+                return error;
+        return copyout(&room, (void *)(uintptr_t)ulen, sizeof(room));
+}
+
+/*
+ * setsockopt: SO_TYPE, SO_ERROR and SO_ACCEPTCONN are the socket's to
+ * report, not set; the rest are the provider's.
+ */
+int
+tpisock_setsockopt(struct vnode *vp, int level, int name, uint64_t uval,
+    uint64_t len)
+{
+        struct tpisock *ts = tpi_sock(vp);
+        uint8_t val[TPI_OPTMAX];
+        size_t n = len < sizeof(val) ? (size_t)len : sizeof(val);
+        int error, v;
+
+        if (len > UINT32_MAX)
+                return EINVAL;
+        if (level == SOL_SOCKET && (name == SO_TYPE || name == SO_ERROR ||
+            name == SO_ACCEPTCONN))
+                return ENOPROTOOPT;
+        memset(val, 0, sizeof(val));
+        if (n > 0 && (error = copyin((const void *)(uintptr_t)uval, val,
+            n)) != 0)
+                return error;
+        error = tpi_option(ts, T_NEGOTIATE, level, name, val, n, NULL, NULL);
+        if (error == 0 && level == SOL_SOCKET && name == SO_BROADCAST &&
+            n >= sizeof(v)) {
+                memcpy(&v, val, sizeof(v));
+                ts->ts_broadcast = v != 0;
+        }
+        return error;
+}
+
+int
+tpisock_getsockopt(struct vnode *vp, int level, int name, uint64_t uval,
+    uint64_t ulen)
+{
+        struct tpisock *ts = tpi_sock(vp);
+        uint8_t out[TPI_OPTMAX];
+        size_t outlen = sizeof(out);
+        int error, v;
+
+        if (level == SOL_SOCKET && (name == SO_TYPE || name == SO_ERROR ||
+            name == SO_ACCEPTCONN)) {
+                if (name == SO_TYPE) {
+                        v = ts->ts_type;
+                } else if (name == SO_ACCEPTCONN) {
+                        v = ts->ts_listening;
+                } else {
+                        tpi_tidy(ts);   /* an error waiting at the head */
+                        v = tpi_takeerror(ts);
+                }
+                return sockopt_out(&v, sizeof(v), uval, ulen);
+        }
+        memset(out, 0, sizeof(out));
+        if ((error = tpi_option(ts, T_CURRENT, level, name, NULL, 0, out,
+            &outlen)) != 0)
+                return error;
+        return sockopt_out(out, (uint32_t)outlen, uval, ulen);
+}
+
 /* --- The socket's vnode: read, write and poll on the stream's terms. --- */
 
+/*
+ * A socket's close does not wait, as a stream's does, for its output to
+ * drain (up to 15 s, for a peer whose window is shut): what is left of
+ * it goes on after, the provider's to send (TCP takes what is still on
+ * its queue into the connection when the stream closes).
+ */
 static int
 tpi_close(struct vnode *vp, int flags, struct cred *cr)
 {
         struct tpisock *ts = tpi_sock(vp);
 
-        return VOP_CLOSE(ts->ts_stream, flags, cr);
+        return VOP_CLOSE(ts->ts_stream, flags | FNONBLOCK, cr);
 }
 
 static int
@@ -1080,13 +1354,49 @@ tpi_write(struct vnode *vp, struct uio *uio, int ioflag,
         return tpi_send(ts, uio, 0, fflag, 0, 0);
 }
 
+/*
+ * The stream head's readiness, corrected by the socket's state: the
+ * head holds acknowledgements and indications as well as data, and a
+ * socket can be readable or writable with nothing there (read finds the
+ * end, write fails at once). A stream socket's state is brought up to
+ * date first (tpi_tidy).
+ */
 static int
 tpi_poll(struct vnode *vp, short events, short *revents,
     struct pollhead **ph, struct cred *cr)
 {
         struct tpisock *ts = tpi_sock(vp);
+        short ready;
+        int error;
 
-        return VOP_POLL(ts->ts_stream, events, revents, ph, cr);
+        if (ts->ts_type == SOCK_STREAM)
+                tpi_tidy(ts);
+        if ((error = VOP_POLL(ts->ts_stream, POLL_READ | POLL_WRITE |
+            POLLRDNORM, &ready, ph, cr)) != 0)
+                return error;
+        ready &= ~(POLLPRI | POLLRDBAND | POLLWRBAND);  /* no bands */
+        mutex_lock(&ts->ts_lock);
+        if (ts->ts_type == SOCK_STREAM) {
+                if (ts->ts_connecting) {
+                        /* Only T_CONN_CON or T_DISCON_IND can be there. */
+                        ready &= ~(POLLIN | POLLRDNORM | POLLOUT);
+                } else if (ts->ts_listening) {
+                        ready &= ~POLLOUT;      /* POLLIN: T_CONN_IND */
+                } else if (!ts->ts_conn) {
+                        ready |= POLLOUT | POLLHUP;
+                }
+                if (ts->ts_eof || ts->ts_rdshut)
+                        ready |= POLLIN | POLLRDNORM;
+                if (ts->ts_wrshut)
+                        ready |= POLLOUT;
+                if (ts->ts_eof && ts->ts_wrshut)
+                        ready |= POLLHUP;
+        }
+        if (ts->ts_soerror != 0)
+                ready |= POLLERR;
+        mutex_unlock(&ts->ts_lock);
+        *revents = ready & (events | POLLERR | POLLHUP);
+        return 0;
 }
 
 static const struct vnodeops tpi_ops = {

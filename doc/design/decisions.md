@@ -2650,13 +2650,16 @@ heap bookkeeping with address-space-owned heap state.
   its close, the head's syncq claimed with its own). An orphan in
   FIN_WAIT_2 waits at most 60 s. Binding is as with `SO_REUSEADDR`: a
   port is held only by a listener or a bound socket not yet used, so a
-  server may bind again over its old connections.
+  server may bind again over its old connections. (Superseded: binding
+  over connections now takes `SO_REUSEADDR`; see "Socket options, and
+  connecting without waiting".)
 - **Stream sockets** (`kern/sock_tpi.c`): `listen` binds again with the
   backlog; `accept` takes a `T_CONN_IND`, opens a new `/dev/tcp`
   stream, and answers with `T_CONN_RES` (a connection reset before then
   is passed over); `connect` waits for the connection, even on a
   non-blocking socket, until there is a way to wait for it that `poll`
-  can see; `send` writes 16 KB messages under the stream's flow control;
+  can see (superseded: see "Socket options, and connecting without
+  waiting"); `send` writes 16 KB messages under the stream's flow control;
   `recv` takes what is there, putting back what does not fit, one reader
   at a time (`ts_rdlock`). The end of the peer's data reads as 0, a
   reset as `ECONNRESET` once and then 0. `shutdown` (Belka's system
@@ -2694,3 +2697,97 @@ heap bookkeeping with address-space-owned heap state.
 - **Testing:** `boottest` checks that the boot configured `vionet0`
   and the default route, pings the gateway, uses TCP and UDP sockets
   over the loopback, and runs `netcfg show`.
+
+## Socket options, and connecting without waiting (2026-11-23)
+
+- **`setsockopt` and `getsockopt` are Belka's system calls 253 and
+  254.** Levels and names are numbered as Linux numbers them, which is
+  what mlibc's headers already say: `SOL_SOCKET` 1, `SO_REUSEADDR` 2,
+  and so on; `TCP_NODELAY` 1, `TCP_MAXSEG` 2, `TCP_KEEPIDLE` 4,
+  `TCP_KEEPINTVL` 5 and `TCP_KEEPCNT` 6 (`<netinet/tcp.h>`). An int
+  option takes at least an int (`EINVAL` if shorter); `getsockopt` copies
+  at most the caller's length and sets it to what it copied. An unknown
+  option, or one only to be read, is `ENOPROTOOPT`; a value the option
+  will not take is `EINVAL`. On anything but a socket, `ENOTSOCK`.
+- **The provider has a socket's options, by `T_OPTMGMT_REQ`.** The
+  socket layer sends one option at a time: `T_NEGOTIATE` with the value
+  to set it, `T_CURRENT` with none to read it. The options follow the
+  request as XTI lays them out, a `struct t_opthdr` (length, level,
+  name, status) and the value, each at a multiple of 4 bytes; the
+  acknowledgement has each option back with its value and status
+  (`T_SUCCESS`, `T_FAILURE`, `T_READONLY`, `T_NOTSUPPORT`), and its
+  `MGMT_flags` is the worst of them. The levels and names are the
+  sockets' own rather than XTI's. Other flags (`T_CHECK`, `T_DEFAULT`)
+  are `TBADFLAG`. `netinet/tpi_opt.c` takes a request apart and builds
+  the acknowledgement for UDP and TCP, each with its own function for
+  one option. `SO_TYPE`, `SO_ERROR` and `SO_ACCEPTCONN` are the socket
+  layer's, not the provider's.
+- **TCP's options** are kept per stream until it binds and in its
+  connection's state after; a listener's connections take the
+  listener's, and the stream that accepts one takes them from it.
+  `SO_REUSEADDR` now decides binding over connections: without it, any
+  connection on the port (in TIME_WAIT, say) makes the bind
+  `EADDRINUSE`; with it, only a listener or another bound socket does.
+  `SO_KEEPALIVE` probes a connection with nothing in flight that has been
+  idle `TCP_KEEPIDLE` seconds (7200 by default), every `TCP_KEEPINTVL`
+  (75), with a segment just behind the window that the peer must answer;
+  `TCP_KEEPCNT` (8) unanswered drop it with `ETIMEDOUT`. `SO_RCVBUF` is
+  the receive window, 2 KB to 64 KB (a smaller one takes back no window
+  already offered); `SO_SNDBUF` the send buffer, 2 KB to 256 KB.
+  `SO_LINGER` with a time of 0 makes close a reset; a longer time is kept
+  but not waited for, close never blocking. `TCP_NODELAY` is kept and
+  reported, but there is no Nagle's algorithm for it to turn off.
+  `TCP_MAXSEG` reads the peer's MSS (536 until it says).
+- **UDP's options:** `SO_REUSEADDR` lets sockets share a port when both
+  have it (a datagram goes to the most specific endpoint, a broadcast to
+  each); `SO_BROADCAST` is needed to send to or connect to
+  255.255.255.255 (`EACCES` without it); `SO_RCVBUF` is the stream
+  head's high-water mark, set by `M_SETOPTS`, so datagrams past it are
+  dropped (64 KB by default, which UDP now sets when its stream opens:
+  the head's 5 KB was too little); `SO_SNDBUF` is only kept. A
+  directed broadcast is not yet recognised as one.
+- **A non-blocking connect returns `EINPROGRESS`** (or finishes at once:
+  0, or the refusal). The socket is writable when the connection is
+  made or has failed; `SO_ERROR` then gives the failure, once, and a
+  second `connect` gives `EALREADY` while it goes on, `EISCONN` once
+  made, and the failure (once) if it failed. A blocking connect a signal
+  interrupts goes on in the same way. A send or receive also gives a
+  pending error first.
+- **`poll` sees a socket's state, not just its stream head's.** The
+  head holds acknowledgements and indications as well as data, so the
+  socket corrects what the head says: before it does, it takes any
+  `T_CONN_CON`, `T_ORDREL_IND` or `T_DISCON_IND` at the front of the
+  head without waiting (and a listener's `T_DISCON_IND` for a connection
+  it never had), unless a reader has the stream (`ts_rdlock` is tried,
+  not waited for). A connecting socket is neither readable nor writable;
+  a listener is readable with a connection waiting and never writable;
+  an unconnected stream socket is writable and hung up, as Linux has it;
+  the end of the peer's data makes it readable for good; a pending error
+  is `POLLERR`; and the head's high-priority messages and bands are not
+  the socket's (`POLLPRI` is not reported). A change of state made by a
+  reader wakes pollers again.
+- **Closing a socket never waits.** A stream's last close waits up to
+  15 s for its output to drain; a socket's passes `FNONBLOCK` down, so a
+  close behind a peer's shut window returns at once, and the connection
+  sends what is left as an orphan (TCP takes what is still on its write
+  queue when the stream closes).
+- **A local socket** reports `SO_TYPE`, `SO_ERROR` (always 0),
+  `SO_ACCEPTCONN` and its fixed 4 KB buffer for `SO_SNDBUF` and
+  `SO_RCVBUF`, and takes no options.
+- **Not yet:** `SO_RCVTIMEO` and `SO_SNDTIMEO`, `SO_LINGER`'s wait,
+  `SO_OOBINLINE`, `SO_DONTROUTE`, the IP level (`IP_TTL`, `IP_TOS`,
+  multicast), `SO_RCVLOWAT`, and ICMP errors to sockets. The keep-alive
+  timeout is not tested: over the loopback the peer always answers.
+  `TCP_KEEPIDLE`, `TCP_KEEPINTVL` and `TCP_KEEPCNT` are extensions, as
+  on Linux and the BSDs, which POSIX 2001 programs do not see.
+- **Testing:** `tcptest` sends `T_OPTMGMT_REQ` to `/dev/tcp` directly,
+  then checks each option through the sockets (defaults, setting, the
+  clamped sizes, read-only and unknown options, short and cut-short
+  values, `ENOTSOCK`, a local socket's), a listener's options passing to
+  its connections, binding with and without `SO_REUSEADDR`, a smaller
+  `SO_RCVBUF` holding a writer off sooner, keep-alive probes counted on
+  `lo0` with the connection alive after, an abortive close, non-blocking
+  connects that succeed and that are refused (`poll`, `SO_ERROR`,
+  `connect` again), and what `poll` says in each state. `udptest` checks
+  the socket's own options, sharing a port, `SO_BROADCAST`, and
+  `SO_RCVBUF` dropping what does not fit.

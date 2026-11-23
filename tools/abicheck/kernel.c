@@ -34,6 +34,7 @@
 #include <sys/wait.h>
 
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #define CONST(n)        printf("#define K_%s (%lldLL)\n", #n, (long long)(n));
 #define SIZE(k, l)      printf("#define K_SIZE_%d %zu\n", __LINE__, sizeof(k));

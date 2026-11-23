@@ -12,8 +12,11 @@
  * protocol 17; datagrams for us come up from it with their IP header,
  * and ours go down with one, for IP to finish (the source, if left
  * unset, and the checksum, which covers it). Every queue of UDP's is in
- * one syncq (SQLVL_MODULE), which guards the endpoints. See
- * doc/design/decisions.md, "UDP and sockets over TPI".
+ * one syncq (SQLVL_MODULE), which guards the endpoints. Options come by
+ * T_OPTMGMT_REQ: SO_REUSEADDR, SO_BROADCAST, SO_RCVBUF (the stream
+ * head's high-water mark), and SO_SNDBUF, which is only kept. See
+ * doc/design/decisions.md, "UDP and sockets over TPI" and "Socket
+ * options, and connecting without waiting".
  */
 
 #include <stddef.h>
@@ -38,6 +41,10 @@
 #define UDP_PORT_FIRST  49152   /* the ephemeral ports, host order */
 #define UDP_PORT_LAST   65535
 #define UDP_REPLYSZ     64      /* replies fit in a block this big */
+#define UDP_SNDBUF      65536
+#define UDP_RCVBUF      65536   /* the stream head's high-water mark */
+#define UDP_MINBUF      2048
+#define UDP_MAXBUF      262144
 
 struct udp_ep {
         struct udp_ep   *ue_next;
@@ -49,6 +56,10 @@ struct udp_ep {
         in_port_t       ue_lport;       /* network order, as the rest */
         in_addr_t       ue_faddr;
         in_port_t       ue_fport;
+        int             ue_reuse;       /* SO_REUSEADDR */
+        int             ue_broadcast;   /* SO_BROADCAST */
+        uint32_t        ue_sndbuf;      /* SO_SNDBUF: kept, and reported */
+        uint32_t        ue_rcvbuf;      /* SO_RCVBUF */
 };
 
 static struct udp_ep *udp_eps;
@@ -159,12 +170,16 @@ udp_addr(const mblk_t *mp, t_scalar_t len, t_scalar_t off,
 
 /* --- Binding. --- */
 
-/* Whether the port (network order) at laddr would clash with a binding. */
+/*
+ * Whether the port (network order) at laddr would clash with a binding:
+ * not if both have SO_REUSEADDR (reuse is the binder's).
+ */
 static int
-udp_inuse(in_addr_t laddr, in_port_t port)
+udp_inuse(in_addr_t laddr, in_port_t port, int reuse)
 {
         for (struct udp_ep *ue = udp_eps; ue != NULL; ue = ue->ue_next)
                 if (ue->ue_state == TS_IDLE && ue->ue_lport == port &&
+                    !(reuse && ue->ue_reuse) &&
                     (ue->ue_laddr == INADDR_ANY || laddr == INADDR_ANY ||
                     ue->ue_laddr == laddr))
                         return 1;
@@ -206,7 +221,7 @@ udp_bind(queue_t *q, mblk_t *mp)
 
                         udp_nextport = udp_nextport == UDP_PORT_LAST ?
                             UDP_PORT_FIRST : udp_nextport + 1;
-                        if (!udp_inuse(sin.sin_addr.s_addr, p))
+                        if (!udp_inuse(sin.sin_addr.s_addr, p, 0))
                                 sin.sin_port = p;
                 }
                 if (sin.sin_port == 0) {
@@ -216,7 +231,8 @@ udp_bind(queue_t *q, mblk_t *mp)
         } else if (ntohs(sin.sin_port) < 1024 && !ue->ue_priv) {
                 udp_errack(q, mp, T_BIND_REQ, TACCES, 0);
                 return;
-        } else if (udp_inuse(sin.sin_addr.s_addr, sin.sin_port)) {
+        } else if (udp_inuse(sin.sin_addr.s_addr, sin.sin_port,
+            ue->ue_reuse)) {
                 udp_errack(q, mp, T_BIND_REQ, TADDRBUSY, 0);
                 return;
         }
@@ -251,7 +267,7 @@ udp_info(queue_t *q, mblk_t *mp)
         ia.CDATA_size = T_INVALID;
         ia.DDATA_size = T_INVALID;
         ia.ADDR_size = sizeof(struct sockaddr_in);
-        ia.OPT_size = T_INVALID;
+        ia.OPT_size = UDP_REPLYSZ;
         ia.TIDU_size = UDP_MAXDGRAM;
         ia.SERV_type = T_CLTS;
         ia.CURRENT_state = ue->ue_state;
@@ -288,6 +304,10 @@ udp_connect(queue_t *q, mblk_t *mp)
             &sin)) != 0 || sin.sin_port == 0 ||
             sin.sin_addr.s_addr == INADDR_ANY) {
                 udp_errack(q, mp, T_CONN_REQ, TBADADDR, 0);
+                return;
+        }
+        if (sin.sin_addr.s_addr == INADDR_BROADCAST && !ue->ue_broadcast) {
+                udp_errack(q, mp, T_CONN_REQ, TACCES, 0);
                 return;
         }
         ue->ue_faddr = sin.sin_addr.s_addr;
@@ -343,8 +363,10 @@ udp_unitdata(queue_t *q, mblk_t *mp)
                 return;
         }
         memcpy(&ur, mp->b_rptr, sizeof(ur));
+        /* A broadcast only with SO_BROADCAST (the socket says EACCES). */
         if (udp_addr(mp, ur.DEST_length, ur.DEST_offset, &sin) != 0 ||
-            sin.sin_port == 0) {
+            sin.sin_port == 0 || (sin.sin_addr.s_addr == INADDR_BROADCAST &&
+            !ue->ue_broadcast)) {
                 freemsg(mp);
                 return;
         }
@@ -352,6 +374,69 @@ udp_unitdata(queue_t *q, mblk_t *mp)
         mp->b_cont = NULL;
         freeb(mp);
         udp_output(ue, sin.sin_addr.s_addr, sin.sin_port, data);
+}
+
+/* The stream head's high-water mark: what SO_RCVBUF says. */
+static void
+udp_sethiwat(struct udp_ep *ue)
+{
+        struct stroptions *so;
+        mblk_t *mp;
+
+        if ((mp = allocb(sizeof(*so), BPRI_MED)) == NULL)
+                return;
+        mp->b_datap->db_type = M_SETOPTS;
+        so = (struct stroptions *)mp->b_wptr;
+        memset(so, 0, sizeof(*so));
+        so->so_flags = SO_HIWAT;
+        so->so_hiwat = ue->ue_rcvbuf;
+        mp->b_wptr += sizeof(*so);
+        (void)putnext(ue->ue_rq, mp);
+}
+
+/* One option of an endpoint's (tpi_optfn). */
+static int
+udp_optfn(void *arg, int mgmt, int level, int name, const void *val,
+    size_t len, void *out, size_t *outlen)
+{
+        struct udp_ep *ue = arg;
+        int set = mgmt == T_NEGOTIATE, v = 0;
+
+        if (level != SOL_SOCKET)
+                return T_NOTSUPPORT;
+        if (set && tpi_optint(val, len, &v) != 0 && (name == SO_REUSEADDR ||
+            name == SO_BROADCAST || name == SO_SNDBUF || name == SO_RCVBUF))
+                return T_FAILURE;
+        switch (name) {
+        case SO_REUSEADDR:
+                if (set)
+                        ue->ue_reuse = v != 0;
+                v = ue->ue_reuse;
+                break;
+        case SO_BROADCAST:
+                if (set)
+                        ue->ue_broadcast = v != 0;
+                v = ue->ue_broadcast;
+                break;
+        case SO_SNDBUF:
+        case SO_RCVBUF: {
+                uint32_t *p = name == SO_SNDBUF ? &ue->ue_sndbuf :
+                    &ue->ue_rcvbuf;
+
+                if (set) {
+                        *p = v < UDP_MINBUF ? UDP_MINBUF : v > UDP_MAXBUF ?
+                            UDP_MAXBUF : (uint32_t)v;
+                        if (name == SO_RCVBUF)
+                                udp_sethiwat(ue);
+                }
+                v = (int)*p;
+                break;
+        }
+        default:
+                return T_NOTSUPPORT;
+        }
+        tpi_optout(v, out, outlen);
+        return T_SUCCESS;
 }
 
 static void
@@ -394,6 +479,9 @@ udp_tpi(queue_t *q, mblk_t *mp)
                 return;
         case T_UNITDATA_REQ:
                 udp_unitdata(q, mp);
+                return;
+        case T_OPTMGMT_REQ:
+                tpi_optmgmt(q, mp, udp_optfn, ue);
                 return;
         default:
                 udp_errack(q, mp, prim, TNOTSUPPORT, 0);
@@ -524,9 +612,12 @@ udp_open(queue_t *q, dev_t *devp __unused, int flag __unused, int sflag,
         ue->ue_rq = q;
         ue->ue_state = TS_UNBND;
         ue->ue_priv = CRED_ISROOT(cr);
+        ue->ue_sndbuf = UDP_SNDBUF;
+        ue->ue_rcvbuf = UDP_RCVBUF;
         ue->ue_next = udp_eps;
         udp_eps = ue;
         q->q_ptr = WR(q)->q_ptr = ue;
+        udp_sethiwat(ue);
         return 0;
 }
 

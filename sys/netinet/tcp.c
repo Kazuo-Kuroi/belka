@@ -18,11 +18,17 @@
  * Every queue of TCP's and its timer (a tick every 100 ms, on the lower
  * stream) are in one syncq (SQLVL_MODULE), which guards all of it.
  *
+ * Options come by T_OPTMGMT_REQ: a stream's, kept in its tcp_up until
+ * it binds, then in its tcb too; a child takes its listener's, and the
+ * stream that accepts it takes them from the child.
+ *
  * Not yet: window scaling, timestamps, SACK, fast retransmit, the
  * queueing of segments that arrive out of order (they are dropped and
  * acknowledged at rcv_nxt), Nagle's algorithm and delayed ACKs, urgent
- * data, keep-alives, options by T_OPTMGMT_REQ, and ICMP errors. See
- * doc/design/decisions.md, "TCP and stream sockets over TPI".
+ * data, and ICMP errors. TCP_NODELAY is kept and reported, but changes
+ * nothing: without Nagle's algorithm, data goes as the window allows.
+ * See doc/design/decisions.md, "TCP and stream sockets over TPI" and
+ * "Socket options, and connecting without waiting".
  */
 
 #include <stddef.h>
@@ -42,12 +48,15 @@
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_var.h>
+#include <netinet/tcp.h>
 
 #define TCP_HLEN        20
 #define TCP_MSS         1460    /* what we take: an Ethernet's */
 #define TCP_DEFMSS      536     /* what a peer takes without saying */
 #define TCP_SNDBUF      65536
 #define TCP_RCVBUF      65535   /* no window scaling: the largest window */
+#define TCP_MINBUF      2048    /* the least SO_SNDBUF and SO_RCVBUF */
+#define TCP_MAXSNDBUF   262144
 #define TCP_BACKLOG     128
 #define TCP_REPLYSZ     64
 
@@ -60,6 +69,10 @@
 #define TCP_MAXSYNRXT   6
 #define TCP_2MSL        600     /* TIME_WAIT: twice a 30-second MSL */
 #define TCP_FW2ORPHAN   600     /* an orphan's FIN_WAIT_2, at most */
+#define TCP_KEEPIDLE_DEF 7200   /* keep-alives: seconds idle before them */
+#define TCP_KEEPINTVL_DEF 75    /* seconds between them */
+#define TCP_KEEPCNT_DEF 8       /* unanswered before giving up */
+#define TCP_KEEPMAX     32767   /* the most seconds for either */
 
 #define TCP_PORT_FIRST  49152
 #define TCP_PORT_LAST   65535
@@ -88,6 +101,28 @@ enum {
 
 struct tcb;
 
+/* A stream's options. */
+struct tcp_opt {
+        int             to_reuseaddr;
+        int             to_keepalive;
+        int             to_keepidle;    /* seconds */
+        int             to_keepintvl;   /* seconds */
+        int             to_keepcnt;
+        int             to_linger;      /* SO_LINGER's l_onoff */
+        int             to_lingertime;  /* and its l_linger */
+        int             to_nodelay;
+        uint32_t        to_sndbuf;
+        uint32_t        to_rcvbuf;
+};
+
+static const struct tcp_opt tcp_defopt = {
+        .to_keepidle = TCP_KEEPIDLE_DEF,
+        .to_keepintvl = TCP_KEEPINTVL_DEF,
+        .to_keepcnt = TCP_KEEPCNT_DEF,
+        .to_sndbuf = TCP_SNDBUF,
+        .to_rcvbuf = TCP_RCVBUF,
+};
+
 /* An upper stream. */
 struct tcp_up {
         struct tcp_up   *tu_next;
@@ -95,6 +130,7 @@ struct tcp_up {
         uint32_t        tu_id;          /* the ACCEPTOR_id */
         int             tu_priv;
         struct tcb      *tu_tcb;        /* NULL: unbound */
+        struct tcp_opt  tu_opt;
 };
 
 struct tcb {
@@ -147,6 +183,9 @@ struct tcb {
         int             tc_srtt;        /* scaled by 8 */
         int             tc_rttvar;      /* scaled by 4 */
         int             tc_timer2;      /* TIME_WAIT, an orphan's FIN_WAIT_2 */
+        int             tc_idle;        /* ticks since a segment came */
+        int             tc_kprobes;     /* keep-alives unanswered */
+        struct tcp_opt  tc_opt;
 };
 
 /* A segment that has arrived. */
@@ -325,6 +364,7 @@ tcp_newtcb(void)
                 return NULL;
         tc->tc_rto = TCP_RTOINIT;
         tc->tc_mss = TCP_DEFMSS;
+        tc->tc_opt = tcp_defopt;
         tc->tc_next = tcp_tcbs;
         tcp_tcbs = tc;
         return tc;
@@ -409,17 +449,21 @@ tcp_free(struct tcb *tc)
         kmem_free(tc, sizeof(*tc));
 }
 
-/* Whether binding addr:port (network order) would clash. */
+/*
+ * Whether binding addr:port (network order) would clash: with a
+ * listener or a bound socket always, and with a connection, ended or
+ * not (in TIME_WAIT, say), unless the binder has SO_REUSEADDR.
+ */
 static int
-tcp_inuse(in_addr_t addr, in_port_t port)
+tcp_inuse(in_addr_t addr, in_port_t port, int reuse)
 {
         for (struct tcb *tc = tcp_tcbs; tc != NULL; tc = tc->tc_next) {
                 if (tc->tc_lport != port || (tc->tc_laddr != INADDR_ANY &&
                     addr != INADDR_ANY && tc->tc_laddr != addr))
                         continue;
-                /* Connections, ended or not, do not hold a port. */
                 if (tc->tc_state == TCPS_LISTEN ||
-                    (tc->tc_state == TCPS_CLOSED && !tc->tc_wasconn))
+                    (tc->tc_state == TCPS_CLOSED && !tc->tc_wasconn) ||
+                    !reuse)
                         return 1;
         }
         return 0;
@@ -448,8 +492,15 @@ tcp_up_byid(uint32_t id)
 static uint32_t
 tcp_window(const struct tcb *tc)
 {
-        return tc->tc_rcvcc >= TCP_RCVBUF ? 0 :
-            (uint32_t)(TCP_RCVBUF - tc->tc_rcvcc);
+        size_t buf = tc->tc_opt.to_rcvbuf;
+        uint32_t win = tc->tc_rcvcc >= buf ? 0 :
+            (uint32_t)(buf - tc->tc_rcvcc);
+
+        /* A smaller SO_RCVBUF takes back no window already offered. */
+        if (SEQ_GT(tc->tc_rcv_adv, tc->tc_rcv_nxt) &&
+            tc->tc_rcv_adv - tc->tc_rcv_nxt > win)
+                win = tc->tc_rcv_adv - tc->tc_rcv_nxt;
+        return win;
 }
 
 /*
@@ -889,6 +940,7 @@ tcp_listen_input(struct tcb *l, const struct tcp_seg *sg)
         if ((sg->ts_flags & TH_SYN) == 0 || sg->ts_dst == INADDR_BROADCAST ||
             l->tc_nchildren >= l->tc_backlog || (tc = tcp_newtcb()) == NULL)
                 return;                 /* the peer will try again */
+        tc->tc_opt = l->tc_opt;
         tc->tc_laddr = sg->ts_dst;
         tc->tc_lport = sg->ts_dport;
         tc->tc_faddr = sg->ts_src;
@@ -1258,6 +1310,7 @@ tcp_input(mblk_t *mp)
                 tcp_reset_reply(&sg);
                 goto drop;
         }
+        tc->tc_idle = tc->tc_kprobes = 0;      /* the peer is there */
         switch (tc->tc_state) {
         case TCPS_LISTEN:
                 tcp_listen_input(tc, &sg);
@@ -1303,6 +1356,34 @@ tcp_timeout(struct tcb *tc)
         tcp_output(tc);
 }
 
+/*
+ * SO_KEEPALIVE: once a connection with nothing in flight has been idle
+ * for to_keepidle seconds, a probe every to_keepintvl seconds, a
+ * segment just before the window that the peer must answer with an ACK;
+ * to_keepcnt of them unanswered, and it is dropped.
+ */
+static void
+tcp_keepalive(struct tcb *tc)
+{
+        const struct tcp_opt *o = &tc->tc_opt;
+
+        if (!o->to_keepalive || (tc->tc_state != TCPS_ESTABLISHED &&
+            tc->tc_state != TCPS_CLOSE_WAIT) ||
+            tc->tc_snd_una != tc->tc_snd_max)
+                return;
+        if (++tc->tc_idle < (o->to_keepidle + tc->tc_kprobes *
+            o->to_keepintvl) * 10)
+                return;
+        if (tc->tc_kprobes >= o->to_keepcnt) {
+                tcp_drop(tc, ETIMEDOUT, 1);
+                return;
+        }
+        tc->tc_kprobes++;
+        tcp_xmit(tc->tc_laddr, tc->tc_faddr, tc->tc_lport, tc->tc_fport,
+            tc->tc_snd_una - 1, tc->tc_rcv_nxt, TH_ACK, tcp_window(tc),
+            NULL, 0, NULL);
+}
+
 static void
 tcp_tick(void *arg __unused)
 {
@@ -1317,6 +1398,8 @@ tcp_tick(void *arg __unused)
                 } else if (tc->tc_timer2 != 0 && --tc->tc_timer2 == 0) {
                         /* TIME_WAIT is over, or an orphan's patience. */
                         tcp_closed(tc);
+                } else {
+                        tcp_keepalive(tc);
                 }
         }
         tcp_timer = tcp_lower != NULL ?
@@ -1358,7 +1441,7 @@ tcp_infoack(const struct tcp_up *tu, struct T_info_ack *ia)
         ia->CDATA_size = T_INVALID;
         ia->DDATA_size = T_INVALID;
         ia->ADDR_size = sizeof(struct sockaddr_in);
-        ia->OPT_size = T_INVALID;
+        ia->OPT_size = TCP_REPLYSZ;
         ia->TIDU_size = TCP_MSS;
         ia->SERV_type = T_COTS_ORD;
         ia->CURRENT_state = tcp_tpistate(tu);
@@ -1409,7 +1492,8 @@ tcp_bind(queue_t *q, mblk_t *mp)
         } else if (ntohs(sin.sin_port) < 1024 && !tu->tu_priv) {
                 tcp_errack(q, mp, T_BIND_REQ, TACCES, 0);
                 return;
-        } else if (tcp_inuse(sin.sin_addr.s_addr, sin.sin_port)) {
+        } else if (tcp_inuse(sin.sin_addr.s_addr, sin.sin_port,
+            tu->tu_opt.to_reuseaddr)) {
                 tcp_errack(q, mp, T_BIND_REQ, TADDRBUSY, 0);
                 return;
         }
@@ -1420,6 +1504,7 @@ tcp_bind(queue_t *q, mblk_t *mp)
         tc->tc_laddr = sin.sin_addr.s_addr;
         tc->tc_lport = sin.sin_port;
         tc->tc_up = tu;
+        tc->tc_opt = tu->tu_opt;
         tu->tu_tcb = tc;
         if (br.CONIND_number > 0) {
                 tc->tc_state = TCPS_LISTEN;
@@ -1522,6 +1607,7 @@ tcp_accept(queue_t *q, mblk_t *mp)
         tcp_unchild(tc);
         tc->tc_up = acc;
         acc->tu_tcb = tc;
+        acc->tu_opt = tc->tc_opt;       /* the listener's */
         tcp_okack(q, mp, T_CONN_RES);
         qenable(acc->tu_rq);            /* what arrived before, up */
 }
@@ -1603,6 +1689,110 @@ tcp_addrack(queue_t *q, mblk_t *mp)
         qreply(q, mp);
 }
 
+/* One option of a stream's (tpi_optfn). */
+static int
+tcp_optfn(void *arg, int mgmt, int level, int name, const void *val,
+    size_t len, void *out, size_t *outlen)
+{
+        struct tcp_up *tu = arg;
+        struct tcp_opt *o = &tu->tu_opt;
+        int set = mgmt == T_NEGOTIATE, v = 0;
+
+        if (level == SOL_SOCKET && name == SO_LINGER) {
+                struct linger l;
+
+                if (set) {
+                        if (len < sizeof(l))
+                                return T_FAILURE;
+                        memcpy(&l, val, sizeof(l));
+                        if (l.l_linger < 0)
+                                return T_FAILURE;
+                        o->to_linger = l.l_onoff != 0;
+                        o->to_lingertime = l.l_linger;
+                }
+                l.l_onoff = o->to_linger;
+                l.l_linger = o->to_lingertime;
+                memcpy(out, &l, sizeof(l));
+                *outlen = sizeof(l);
+                goto done;
+        }
+        if (set && tpi_optint(val, len, &v) != 0)
+                return T_FAILURE;
+        if (level == SOL_SOCKET) {
+                switch (name) {
+                case SO_REUSEADDR:
+                        if (set)
+                                o->to_reuseaddr = v != 0;
+                        v = o->to_reuseaddr;
+                        break;
+                case SO_KEEPALIVE:
+                        if (set)
+                                o->to_keepalive = v != 0;
+                        v = o->to_keepalive;
+                        break;
+                case SO_SNDBUF:
+                        if (set)
+                                o->to_sndbuf = v < TCP_MINBUF ? TCP_MINBUF :
+                                    v > TCP_MAXSNDBUF ? TCP_MAXSNDBUF :
+                                    (uint32_t)v;
+                        v = (int)o->to_sndbuf;
+                        break;
+                case SO_RCVBUF:
+                        if (set)
+                                o->to_rcvbuf = v < TCP_MINBUF ? TCP_MINBUF :
+                                    v > TCP_RCVBUF ? TCP_RCVBUF : (uint32_t)v;
+                        v = (int)o->to_rcvbuf;
+                        break;
+                default:
+                        return T_NOTSUPPORT;
+                }
+        } else if (level == IPPROTO_TCP) {
+                switch (name) {
+                case TCP_NODELAY:
+                        if (set)
+                                o->to_nodelay = v != 0;
+                        v = o->to_nodelay;
+                        break;
+                case TCP_MAXSEG:
+                        /* The peer's, once it has said; read only. */
+                        if (set)
+                                return T_READONLY;
+                        v = tu->tu_tcb != NULL &&
+                            TCPS_SYNCED(tu->tu_tcb->tc_state) ?
+                            (int)tu->tu_tcb->tc_mss : TCP_DEFMSS;
+                        break;
+                case TCP_KEEPIDLE:
+                case TCP_KEEPINTVL:
+                case TCP_KEEPCNT: {
+                        int *p = name == TCP_KEEPIDLE ? &o->to_keepidle :
+                            name == TCP_KEEPINTVL ? &o->to_keepintvl :
+                            &o->to_keepcnt;
+
+                        if (set) {
+                                if (v < 1 || v > (name == TCP_KEEPCNT ? 127 :
+                                    TCP_KEEPMAX))
+                                        return T_FAILURE;
+                                *p = v;
+                        }
+                        v = *p;
+                        break;
+                }
+                default:
+                        return T_NOTSUPPORT;
+                }
+        } else {
+                return T_NOTSUPPORT;
+        }
+        tpi_optout(v, out, outlen);
+done:
+        if (set && tu->tu_tcb != NULL) {
+                tu->tu_tcb->tc_opt = *o;
+                if (WR(tu->tu_rq)->q_first != NULL)
+                        qenable(WR(tu->tu_rq)); /* a bigger SO_SNDBUF */
+        }
+        return T_SUCCESS;
+}
+
 static void
 tcp_tpi(queue_t *q, mblk_t *mp)
 {
@@ -1669,6 +1859,9 @@ tcp_tpi(queue_t *q, mblk_t *mp)
                 return;
         case T_DISCON_REQ:
                 tcp_discon(q, mp);
+                return;
+        case T_OPTMGMT_REQ:
+                tpi_optmgmt(q, mp, tcp_optfn, tu);
                 return;
         default:
                 tcp_errack(q, mp, prim, TNOTSUPPORT, 0);
@@ -1772,7 +1965,8 @@ tcp_wdo(queue_t *q, mblk_t *mp)
 static int
 tcp_room(const struct tcp_up *tu)
 {
-        return tu->tu_tcb == NULL || tu->tu_tcb->tc_sndcc < TCP_SNDBUF;
+        return tu->tu_tcb == NULL ||
+            tu->tu_tcb->tc_sndcc < tu->tu_tcb->tc_opt.to_sndbuf;
 }
 
 /* --- The streams. --- */
@@ -1788,6 +1982,7 @@ tcp_open(queue_t *q, dev_t *devp __unused, int flag __unused, int sflag,
         tu = kmem_zalloc(sizeof(*tu), KM_SLEEP);
         tu->tu_rq = q;
         tu->tu_priv = CRED_ISROOT(cr);
+        tu->tu_opt = tcp_defopt;
         tu->tu_id = tcp_nextid++;
         if (tcp_nextid == 0)
                 tcp_nextid = 1;
@@ -1815,7 +2010,8 @@ tcp_unread(queue_t *rq)
 /*
  * The stream's last close. What it wrote goes on; a connection ends
  * as a close of a socket ends it, with a FIN, or a reset if data it
- * never read was waiting, and finishes as an orphan.
+ * never read was waiting (or SO_LINGER says to linger 0 seconds), and
+ * finishes as an orphan. A longer linger is not waited for.
  */
 static int
 tcp_close(queue_t *q, int flag __unused, struct cred *cr __unused)
@@ -1834,6 +2030,14 @@ tcp_close(queue_t *q, int flag __unused, struct cred *cr __unused)
         if ((tc = tu->tu_tcb) != NULL) {
                 tc->tc_up = NULL;
                 tu->tu_tcb = NULL;
+                /* SO_LINGER with no time to linger: an abort, a reset. */
+                if (tc->tc_opt.to_linger && tc->tc_opt.to_lingertime == 0 &&
+                    tc->tc_state > TCPS_LISTEN) {
+                        tcp_drop(tc, ECONNRESET, 1);    /* and freed */
+                        tc = NULL;
+                }
+        }
+        if (tc != NULL) {
                 switch (tc->tc_state) {
                 case TCPS_LISTEN:
                         tcp_unlisten(tc);

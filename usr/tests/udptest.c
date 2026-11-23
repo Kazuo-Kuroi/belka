@@ -11,7 +11,8 @@
  * datagram boundaries, truncation, MSG_PEEK, connected sockets and
  * their filtering, ICMP port unreachable (watched on a raw ICMP stream,
  * which also shows IP's UDP checksum is right, since UDP drops bad
- * ones), and the unlinking. Exits with the number of failed checks.
+ * ones), the options (SO_REUSEADDR, SO_BROADCAST, SO_RCVBUF), and the
+ * unlinking. Exits with the number of failed checks.
  */
 
 #define _DEFAULT_SOURCE
@@ -134,6 +135,95 @@ test_tpi(void)
             pr.type == T_ERROR_ACK && pr.error_ack.ERROR_prim == T_UNBIND_REQ &&
             pr.error_ack.TLI_error == TOUTSTATE);
         close(fd);
+}
+
+static int
+getint(int fd, int level, int name, int *v)
+{
+        socklen_t len = sizeof(*v);
+
+        *v = -1;
+        return getsockopt(fd, level, name, v, &len) == 0 &&
+            len == sizeof(*v) ? 0 : -1;
+}
+
+static int
+setint(int fd, int level, int name, int v)
+{
+        return setsockopt(fd, level, name, &v, sizeof(v));
+}
+
+/* Of count 1500-byte datagrams from w to r's port, how many r gets. */
+static int
+through(int w, int r, uint16_t port, int count)
+{
+        static char dg[1500];
+        int got = 0;
+
+        for (int i = 0; i < count; i++)
+                CHECK(send_to(w, dg, sizeof(dg), LOOPBACK, port) ==
+                    (ssize_t)sizeof(dg));
+        while (readable(r, 300) && recv(r, dg, sizeof(dg), 0) ==
+            (ssize_t)sizeof(dg))
+                got++;
+        return got;
+}
+
+/* SO_REUSEADDR, SO_BROADCAST, SO_RCVBUF and SO_SNDBUF; and the socket's. */
+static void
+test_options(void)
+{
+        struct sockaddr_in bc = sin_of(0xffffffffu, 5103);
+        int u1 = udp_socket(), u2 = udp_socket(), r, w, v, got;
+
+        CHECK(getint(u1, SOL_SOCKET, SO_TYPE, &v) == 0 && v == SOCK_DGRAM);
+        CHECK(getint(u1, SOL_SOCKET, SO_ACCEPTCONN, &v) == 0 && v == 0);
+        CHECK(getint(u1, SOL_SOCKET, SO_ERROR, &v) == 0 && v == 0);
+        CHECK(getint(u1, IPPROTO_TCP, 1, &v) == -1 && errno == ENOPROTOOPT);
+        CHECK(setint(u1, SOL_SOCKET, SO_KEEPALIVE, 1) == -1 &&
+            errno == ENOPROTOOPT);
+
+        /* A port is shared only if both have SO_REUSEADDR. */
+        CHECK(setint(u1, SOL_SOCKET, SO_REUSEADDR, 1) == 0 &&
+            bind_to(u1, LOOPBACK, 5100) == 0);
+        CHECK(bind_to(u2, LOOPBACK, 5100) == -1 && errno == EADDRINUSE);
+        CHECK(setint(u2, SOL_SOCKET, SO_REUSEADDR, 1) == 0 &&
+            bind_to(u2, LOOPBACK, 5100) == 0);
+        CHECK(getint(u2, SOL_SOCKET, SO_REUSEADDR, &v) == 0 && v == 1);
+        close(u1);
+        close(u2);
+
+        /* A broadcast only with SO_BROADCAST. */
+        u1 = udp_socket();
+        CHECK(getint(u1, SOL_SOCKET, SO_BROADCAST, &v) == 0 && v == 0);
+        CHECK(sendto(u1, "all", 3, 0, (struct sockaddr *)&bc, sizeof(bc)) ==
+            -1 && errno == EACCES);
+        CHECK(connect(u1, (struct sockaddr *)&bc, sizeof(bc)) == -1 &&
+            errno == EACCES);
+        CHECK(setint(u1, SOL_SOCKET, SO_BROADCAST, 1) == 0);
+        CHECK(getint(u1, SOL_SOCKET, SO_BROADCAST, &v) == 0 && v == 1);
+        CHECK(sendto(u1, "all", 3, 0, (struct sockaddr *)&bc, sizeof(bc)) ==
+            3);
+        CHECK(connect(u1, (struct sockaddr *)&bc, sizeof(bc)) == 0);
+        close(u1);
+
+        /* SO_RCVBUF: what may wait unread; more is dropped. */
+        r = udp_socket();
+        w = udp_socket();
+        CHECK(bind_to(r, LOOPBACK, 5101) == 0);
+        CHECK(getint(r, SOL_SOCKET, SO_RCVBUF, &v) == 0 && v == 65536);
+        CHECK(through(w, r, 5101, 8) == 8);
+        CHECK(setint(r, SOL_SOCKET, SO_RCVBUF, 4096) == 0);
+        CHECK(getint(r, SOL_SOCKET, SO_RCVBUF, &v) == 0 && v == 4096);
+        got = through(w, r, 5101, 8);
+        CHECK(got >= 2 && got < 8);
+        CHECK(setint(r, SOL_SOCKET, SO_RCVBUF, 1) == 0);
+        CHECK(getint(r, SOL_SOCKET, SO_RCVBUF, &v) == 0 && v == 2048);
+        CHECK(getint(w, SOL_SOCKET, SO_SNDBUF, &v) == 0 && v == 65536);
+        CHECK(setint(w, SOL_SOCKET, SO_SNDBUF, 8192) == 0);
+        CHECK(getint(w, SOL_SOCKET, SO_SNDBUF, &v) == 0 && v == 8192);
+        close(r);
+        close(w);
 }
 
 /* Wait on a raw ICMP stream for port unreachable about a datagram to port. */
@@ -295,6 +385,8 @@ main(void)
         CHECK(send_to(c, "anyone?", 7, LOOPBACK, 4999) == 7);
         CHECK(await_unreach(raw, 4999));
         close(raw);
+
+        test_options();
 
         /* Unlinked: datagrams go nowhere. */
         CHECK(ioctl(ctl, I_PUNLINK, MUXID_ALL) == 0);

@@ -579,6 +579,78 @@ sys_shutdown(const uint64_t *args, uint64_t *rv __unused)
         return error;
 }
 
+/*
+ * setsockopt(fd, level, name, value, length) and getsockopt(fd, level,
+ * name, value, &length): a TPI socket's provider has its options. A
+ * local socket reports what it is and its fixed buffer, and takes no
+ * options.
+ */
+int
+sys_setsockopt(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        struct vnode *vp;
+        int error;
+
+        if (fp == NULL)
+                return EBADF;
+        vp = fp->f_vnode;
+        if (tpisock_is(vp))
+                error = tpisock_setsockopt(vp, (int)args[1], (int)args[2],
+                    args[3], args[4]);
+        else if (vp->v_op == &local_ops || vp->v_op == &sock_ops)
+                error = ENOPROTOOPT;
+        else
+                error = ENOTSOCK;
+        frele(fp);
+        return error;
+}
+
+int
+sys_getsockopt(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        int level = (int)args[1], name = (int)args[2], error, v;
+        struct vnode *vp;
+
+        if (fp == NULL)
+                return EBADF;
+        vp = fp->f_vnode;
+        if (tpisock_is(vp)) {
+                error = tpisock_getsockopt(vp, level, name, args[3], args[4]);
+                frele(fp);
+                return error;
+        }
+        if (vp->v_op != &local_ops && vp->v_op != &sock_ops) {
+                frele(fp);
+                return ENOTSOCK;
+        }
+        error = 0;
+        if (level != SOL_SOCKET) {
+                error = ENOPROTOOPT;
+        } else if (name == SO_TYPE) {
+                v = SOCK_STREAM;
+        } else if (name == SO_ERROR) {
+                v = 0;
+        } else if (name == SO_ACCEPTCONN) {
+                v = 0;
+                if (vp->v_op == &local_ops) {
+                        struct localsock *local = vp->v_data;
+
+                        mutex_lock(&local_lock);
+                        v = local->ls_backlog != 0;
+                        mutex_unlock(&local_lock);
+                }
+        } else if (name == SO_SNDBUF || name == SO_RCVBUF) {
+                v = SOCK_BUFSIZE;
+        } else {
+                error = ENOPROTOOPT;
+        }
+        frele(fp);
+        return error != 0 ? error : sockopt_out(&v, sizeof(v), args[3],
+            args[4]);
+}
+
 int
 sys_getsockname(const uint64_t *args, uint64_t *rv __unused)
 {
@@ -900,7 +972,7 @@ sys_connect(const uint64_t *args, uint64_t *rv __unused)
         int error;
 
         if ((fp = tpi_file((int)args[0])) != NULL) {
-                error = tpisock_connect(fp->f_vnode, args[1], args[2]);
+                error = tpisock_connect(fp, args[1], args[2]);
                 frele(fp);
                 return error;
         }

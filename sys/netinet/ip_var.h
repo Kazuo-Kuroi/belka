@@ -118,4 +118,20 @@ void    arp_start(struct ip_if *);
 void    arp_stop(struct ip_if *);
 int     arp_list(struct ip_arpinfo *, int);
 
+/*
+ * T_OPTMGMT_REQ (netinet/tpi_opt.c): a transport's function for one
+ * option, given the request's MGMT_flags, the level, the name and the
+ * value (T_NEGOTIATE's), puts the option's value in out (TPI_OPTVAL
+ * bytes at most) and *outlen, and returns its status: T_SUCCESS,
+ * T_FAILURE (a bad value), T_READONLY or T_NOTSUPPORT.
+ */
+#define TPI_OPTVAL      16
+
+typedef int tpi_optfn(void *, int, int, int, const void *, size_t, void *,
+    size_t *);
+
+void    tpi_optmgmt(queue_t *, mblk_t *, tpi_optfn *, void *);
+int     tpi_optint(const void *, size_t, int *);
+void    tpi_optout(int, void *, size_t *);
+
 #endif /* _NETINET_IP_VAR_H_ */
