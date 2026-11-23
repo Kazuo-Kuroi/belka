@@ -87,7 +87,9 @@ by `strtest`, through the loopback driver `/dev/strloop`, the test
 modules `strpass` and `strup`, and the multiplexing driver `/dev/strmux`.
 The self-test boot also has a virtio-net device (`/dev/vionet0`, a
 DLPI provider) on QEMU's user-mode network; `nettest` talks ARP with
-QEMU's gateway through it.
+QEMU's gateway through it. `iptest` links it under `/dev/ip` (IPv4 and
+ARP, `sys/netinet`), configures it, and pings the gateway, itself and
+127.0.0.1.
 Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU
@@ -121,6 +123,7 @@ downloads a pinned, checksummed Limine release into `build/`.
 | `sys/dev/acpi`, `sys/dev/pci` | ACPI tables, PCI bus support |
 | `sys/dev/virtio` | virtio transport, virtqueues, and drivers |
 | `sys/fs` | file systems: tmpfs and ext2 |
+| `sys/netinet` | IPv4, ICMP and ARP, as the `/dev/ip` STREAMS driver |
 | `sys/arch/amd64/amd64` | amd64 machine-dependent code |
 | `sys/arch/amd64/include/machine` | amd64 headers (`<machine/...>`) |
 | `sys/arch/amd64/conf` | source lists and linker script |

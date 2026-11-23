@@ -2517,3 +2517,44 @@ heap bookkeeping with address-space-owned heap state.
   user-mode network, with a fixed station address. `nettest` binds the
   ARP type, asks QEMU's gateway (10.0.2.2) for its address, and checks
   the reply and the DLPI state machine.
+
+## ARP and IPv4 (2026-11-22)
+
+- **IP is a multiplexing STREAMS driver, `/dev/ip`,** one perimeter for
+  all its streams (`SQLVL_MODULE`), with ARP inside it (`netinet/arp.c`)
+  rather than a module of its own. Its lower streams are DLPI streams:
+  two per interface, one that IP binds to the IPv4 type and one to ARP,
+  both linked with `I_PLINK` and then named with `IP_IFATTACH` (Belka's
+  ioctls, `<sys/ipconf.h>`, through `I_STR`, superuser only). IP asks
+  each for its station address and binds it, and answers the
+  `IP_IFATTACH` when both binds are acknowledged. Unlinking one detaches
+  the interface. `lo0`, 127.0.0.1/8, is always there.
+- **Configuration:** `IP_IFADDR` gives an interface its address and
+  mask (and a route to its subnet), `IP_ROUTEADD` and `IP_ROUTEDEL` add
+  and remove routes (the longest prefix wins), and `IP_IFLIST`,
+  `IP_ROUTELIST` and `IP_ARPLIST` report the tables. The socket ioctls
+  (`SIOCSIFADDR` and the rest) will be built on these.
+- **The upper interface is datagrams:** an upper stream binds a protocol
+  number (`IP_BINDPROTO`) and then writes whole IPv4 datagrams as
+  `M_DATA`; IP fills in the version, length, identification, checksum,
+  TTL if zero, and the source if it is 0.0.0.0, routes the datagram,
+  and resolves the next hop. An upper stream reads in message-discard
+  mode (`M_SETOPTS` at open), one datagram per read. Received datagrams for us are delivered,
+  header and all, to every upper stream bound to their protocol: the
+  transports (UDP, TCP) will be drivers with an IP stream linked below
+  them, and a raw stream is what raw sockets will use. TPI is spoken by
+  the transports, not by IP.
+- **What IP does itself:** checks headers and checksums, answers ICMP
+  echo requests and sends protocol-unreachable for a protocol no stream
+  has bound; local addresses are delivered without the network. It does
+  not forward, fragment or reassemble yet: a datagram larger than the
+  interface's MTU is refused, and fragments are dropped.
+- **ARP** (RFC 826) keeps a cache per interface: an unresolved next hop
+  holds up to three datagrams, and the request is sent again each second
+  up to three times, after which they are dropped. Entries last twenty
+  minutes. Requests for our address are answered, and senders already in
+  the cache or asking for us are recorded. Timers run with `qtimeout` in
+  IP's perimeter.
+- **Testing:** `iptest` links `vionet0` under `/dev/ip`, configures
+  10.0.2.15/24 with QEMU's gateway as the default route, and pings the
+  gateway, its own address and 127.0.0.1 through a raw ICMP stream.

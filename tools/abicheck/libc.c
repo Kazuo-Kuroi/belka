@@ -18,6 +18,7 @@
 #include <stddef.h>
 #include <stropts.h>
 #include <sys/dlpi.h>
+#include <sys/ipconf.h>
 #include <sys/auxv.h>
 #include <sys/file.h>
 #include <sys/mman.h>
