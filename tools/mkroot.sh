@@ -11,6 +11,8 @@
 #   /etc from the tree's etc/, with /etc/mnttab a link to /dev/mnttab
 #   /bin/ps (Belka's), /dev and /proc (devfs and procfs go on them),
 #   /tmp, /root
+#   /usr/sbin/dnscache, /usr/bin/dnsip, dnsname, dnsq, dnsqr (djbdns),
+#   with dnscache's root in /etc/dnscache/root
 #
 # Everything is owned by root, and login is set-user-ID, through
 # fakeroot(1). The password hashes are in /etc/shadow (mode 0400);
@@ -50,7 +52,7 @@ trap 'rm -rf "$src"' EXIT
 mkdir -p "$src/bin" "$src/sbin" "$src/mnt" "$src/usr/bin" "$src/usr/sbin" "$src/usr/libexec" \
     "$src/usr/tests" "$src/usr/lib64" "$src/etc/defaults" "$src/dev" \
     "$src/proc" "$src/tmp" "$src/root" "$src/home" "$src/var/adm" \
-    "$src/var/tmp"
+    "$src/var/tmp" "$src/var/run"
 
 install_prog() {        # program destination
         $STRIP --strip-debug -o "$src/$2" "$sys/$1"
@@ -71,6 +73,13 @@ install_prog login usr/bin/login
 install_prog chsh usr/bin/chsh
 install_prog mksh bin/mksh
 install_prog tcsh bin/tcsh
+# djbdns' caching resolver and its client tools (contrib/djbdns).
+install_prog dnscache usr/sbin/dnscache
+for prog in dnsip dnsname dnsq dnsqr; do
+        install_prog $prog usr/bin/$prog
+done
+mkdir -p "$src/usr/share/licenses/djbdns"
+cp contrib/djbdns/README.belka "$src/usr/share/licenses/djbdns/"
 mkdir -p "$src/usr/share/licenses/tcsh"
 cp contrib/tcsh/Copyright contrib/tcsh/NOTICE "$src/usr/share/licenses/tcsh/"
 ln "$src/bin/mksh" "$src/bin/sh"
@@ -232,7 +241,7 @@ cp contrib/mlibc/LICENSE "$src/usr/share/licenses/mlibc/"
 cp -R contrib/compiler-runtime-licenses/. "$src/usr/share/licenses/compiler-runtime/"
 
 for f in rc rc.conf ttys passwd shadow group shells profile vfstab \
-    defaults/rc.conf; do
+    hosts resolv.conf services defaults/rc.conf; do
         cp "etc/$f" "$src/etc/$f"
 done
 # The mount table is the kernel's (devfs).
@@ -245,6 +254,8 @@ cp contrib/netbsd/etc/rc.d/* etc/rc.d/* "$src/etc/rc.d/"
 # The static routes, for rc.d/staticroute.
 mkdir -p "$src/etc/routed"
 cp etc/routed/static_route.conf "$src/etc/routed/static_route.conf"
+# dnscache's root: the clients it serves, and where it starts from.
+cp -R etc/dnscache "$src/etc/dnscache"
 
 if [ $test -eq 1 ]; then
         install_prog boottest usr/tests/boottest
@@ -283,6 +294,8 @@ if [ $test -eq 1 ]; then
         # A static route, which boottest looks for.
         printf '10.77.0.0/16\t10.0.2.2\t# boottest\n' \
             >> "$src/etc/routed/static_route.conf"
+        # dnscache's root server: boottest's own, on the loopback.
+        echo 127.0.0.53 > "$src/etc/dnscache/root/servers/@"
         cat > "$src/etc/rc.local" <<'EOF'
 # The boot test: in the background, so that init goes on to multi-user.
 /usr/tests/boottest test belka-test 100 /home/test &

@@ -2550,7 +2550,7 @@ heap bookkeeping with address-space-owned heap state.
   not forward, fragment or reassemble yet: a datagram larger than the
   interface's MTU is refused, and fragments are dropped. (Superseded:
   forwarding and fragmenting came after; see "IP forwarding". Fragments
-  for us are still dropped.)
+  for us were still dropped; see "IP reassembly" for after.)
 - **ARP** (RFC 826) keeps a cache per interface: an unresolved next hop
   holds up to three datagrams, and the request is sent again each second
   up to three times, after which they are dropped. Entries last twenty
@@ -2821,14 +2821,15 @@ heap bookkeeping with address-space-owned heap state.
   or multicast address or from 0.0.0.0. One about a datagram for us
   comes from the address it was sent to; one about a forwarded datagram
   from the address IP chooses toward the sender. They are not rate
-  limited yet.
+  limited yet. (Superseded: see "ICMP errors to the transports".)
 - **IP fragments** what is too big for the interface it leaves by, ours
   as well as forwarded (RFC 791): pieces of a multiple of 8 bytes, the
   first with the whole header, the rest with only the options marked to
   be copied; a datagram that may not be fragmented is dropped (a
   forwarded one with the ICMP error above). A fragment is forwarded as
   any datagram is, and fragmented again if need be. Reassembly is still
-  to come: fragments for us are dropped. ARP holds at most three
+  to come: fragments for us are dropped. (Superseded: see "IP
+  reassembly".) ARP holds at most three
   datagrams for a hop it is resolving, so a datagram of more fragments
   than that to a hop not yet resolved loses the rest.
 - **Static routes** are added at boot by `/etc/rc.d/staticroute` (after
@@ -2860,3 +2861,162 @@ heap bookkeeping with address-space-owned heap state.
   tested, the hub's two links having one MTU. `boottest` checks the
   route a test image adds to `static_route.conf`, and that forwarding is
   off.
+
+## IP reassembly (2026-11-23)
+
+- **Fragments for us are reassembled** (RFC 791 3.2, RFC 815) by
+  `netinet/ip_reass.c`, before the datagram goes up as any other does.
+  A datagram's fragments wait in a queue of their own, keyed by source,
+  destination, protocol and identification, kept in order of offset;
+  when the last fragment has set the length and every byte up to it has
+  come, the first fragment's header, with the whole length and no
+  offset or more-fragments flag, heads the data of all of them, and its
+  checksum is made again. Forwarded fragments are not reassembled.
+- **What would make a datagram ambiguous drops all of it:** a fragment
+  that overlaps one held, unless it is the same one again (which is
+  ignored); one past the end the last fragment set, or a last fragment
+  that would end before one held; one but the last whose length is not
+  a multiple of 8, or of none; and one that would make the datagram
+  longer than 65535 bytes. RFC 791 allows overlaps, but no sender makes
+  them, and the overlapping attacks on reassembly need them (RFC 5722
+  forbids them for IPv6 on those grounds).
+- **Bounded:** 32 datagrams at once, 64 fragments to one, and 256 KB
+  held in all; a new datagram, or a fragment that would go over, first
+  makes way by dropping the queue with the least life left.
+- **A queue lives 30 seconds** (`IP_REASSLIFE`), aged by a one-second
+  tick: the ARP tick of the interface its first fragment came by
+  (`ip_reass_tick`), so that IP needs no timer of its own. A queue that
+  dies with its first fragment held sends its sender time exceeded,
+  code 1 (RFC 792); one without, nothing. When an interface goes, its
+  queues go.
+- **Testing:** `fwdtest` sends fragments from the hosts it plays and
+  reads the datagrams on a raw stream: three in order make the whole
+  datagram; out of order, the first twice, too; one overlapping
+  another makes nothing, as does one past 64 KB; and a first fragment
+  alone brings time exceeded, code 1, quoting it, after 30 seconds. The
+  wait makes `make test` take half a minute longer, so its timeout is
+  now 180 seconds.
+
+## ICMP errors to the transports (2026-11-23)
+
+- **ICMP errors IP sends are rate limited** (RFC 1812 4.3.2.8): a bucket
+  of 100, filled at 100 a second (`ICMP_ERRBURST`, `ICMP_ERRRATE`),
+  shared by every kind, redirects too. Echo replies are not limited.
+- **ICMP errors IP receives go up:** destination unreachable, time
+  exceeded and parameter problem, with a good checksum, not to a
+  broadcast, quoting a datagram of ours (its source one of our
+  addresses) with its header and at least the eight bytes after, go to
+  the upper streams bound to the quoted datagram's protocol as an
+  `M_CTL`, `IPCTL_ICMPERR` (`struct ip_ctl`, which grew `ic_info` for the
+  error's second word). Source quench is ignored (RFC 6633), and so,
+  for now, are redirects.
+- **UDP** gives the error to the endpoint connected to where the quoted
+  datagram went, from the port it came from, as a `T_UDERROR_IND`, which
+  the socket reports once, on its next call: port and protocol
+  unreachable as `ECONNREFUSED`, network unreachable as `ENETUNREACH`,
+  the others `EHOSTUNREACH`. An endpoint not connected hears nothing, as
+  in the BSDs (RFC 1122 4.1.3.3 leaves it open). Time exceeded,
+  parameter problems and need-frag are passed over.
+- **TCP** takes an error only if the segment it quotes is still in
+  flight on a connection, its sequence number from SND.UNA up to
+  SND.MAX, which someone off the path cannot know (RFC 5927 4.1). Port
+  or protocol unreachable refuses a connection being made
+  (`ECONNREFUSED`, as a reset would); every other error, and any once
+  the connection is made, is soft (RFC 1122 4.2.3.9, RFC 5927 4.2): it
+  is kept, and given instead of `ETIMEDOUT` if the connection times out
+  before anything more is acknowledged. Need-frag is passed over: TCP
+  does not set DF, so its segments are fragmented instead; path MTU
+  discovery is to come.
+- **Testing:** `fwdtest` links UDP and TCP under IP and sends ICMP port
+  unreachable quoting what they sent: a connected UDP socket's next
+  `recv` fails with `ECONNREFUSED`, once, but not when the quote has
+  another port; a TCP connection being made fails with `ECONNREFUSED`,
+  but not when the quote has a sequence number never sent. 250
+  datagrams with a TTL of 1 draw between 50 and 130 time exceeded.
+
+## Random numbers (2026-11-23)
+
+- **The kernel has a random number generator** (`kern/kern_random.c`):
+  the ChaCha20 block function (RFC 8439, written from its description,
+  with the original 64-bit counter and nonce), keyed by a 256-bit key
+  that is replaced after every request by keystream of its own, so that
+  what was given out cannot be found again from the state afterwards.
+- **What goes into it:** a pool of 16 words, mixed into the key through
+  two ChaCha20 blocks at the next request after anything has been added.
+  At boot, before the scheduler starts (`rnd_init`), RDSEED and RDRAND
+  when CPUID says the processor has them, and the time stamp counter;
+  afterwards, the counter at each device interrupt (`rnd_intr`, which
+  skips rather than waits when another processor holds the lock), and
+  what is written to `/dev/random` or `/dev/urandom`. Nothing waits for
+  more: under QEMU's `max` processor and on any amd64 of the last decade
+  RDRAND seeds it at boot. A virtio-rng driver is a possible further
+  source.
+- **`/dev/random` and `/dev/urandom`** (devfs, the memory devices'
+  major, minors 8 and 9, mode 0666) both read it and both add to it
+  when written. `getentropy` is POSIX 2024's and is not offered yet.
+- **`rnd_lock`** is a spin lock (interrupts add to the pool); keystream
+  is made under it 256 bytes at a time, and copied out without it.
+- **Testing:** the device self-test checks the block function against
+  RFC 8439's test vector (2.3.2) and that draws differ; `boottest` that
+  two reads of `/dev/urandom` differ.
+
+## chroot (2026-11-23)
+
+- **`chroot(path)`**, UnixWare's call 61 (`SYS_chroot`), makes a
+  directory the process's root: `p_rdir`, which the process structure,
+  fork and share groups already carried. Path lookup starts absolute
+  paths there, restarts absolute symbolic links there, and stops `..`
+  there (and at the system root, for a process whose current directory
+  is outside its root). Only the superuser may; the current directory
+  stays where it is. Like `chdir`, it is published to a share group
+  sharing directories (`PR_SDIR`).
+- It is not in POSIX 2001, which dropped it, but it is in the UnixWare
+  ABI, and dnscache needs it.
+
+## Name resolution (2026-11-23)
+
+- **The resolver is djbdns' dnscache** (djbdns 1.05, public domain, in
+  `contrib/djbdns`), with four of djbdns' tools: `dnsip`, `dnsname`,
+  `dnsq` and `dnsqr`. Only those programs and the library sources they
+  need are imported; Belka builds them without djbdns' build, choosing
+  the variant of each system header itself (`contrib/djbdns/README.belka`
+  has the list, and the two changes made: `errno` from `<errno.h>`, and
+  `<grp.h>` for `setgroups`).
+- **`/etc/rc.d/dnscache`** (after `NETWORKING`, before `DAEMON`, when
+  `dnscache` is set, as it is by default) starts dnscache on
+  `dnscache_ip` (127.0.0.1), as the user `dnscache` (uid and gid 53),
+  chrooted to `/etc/dnscache/root`, with a cache of
+  `dnscache_cachesize` bytes, seeded from `/dev/urandom`. Without
+  daemontools, the script sets its environment itself, runs it in the
+  background deaf to hangups, and keeps its process ID in
+  `/var/run/dnscache.pid`. Its log of queries goes to `dnscache_log`
+  (`/dev/null`), a fatal error to the console. The clients it serves are
+  named under `root/ip/` (`127`: this host), and it starts from the
+  servers in `root/servers/@`: the root servers, from IANA's list, or
+  with `dnscache_forwardonly` servers that resolve for it, which DHCP
+  will set later.
+- **`/etc/resolv.conf`** names 127.0.0.1, for the C library and djbdns'
+  tools; `/etc/hosts` has localhost, and `/etc/services` the common
+  services, `domain` among them.
+- **mlibc's DNS client is rewritten** (`options/posix/generic/
+  lookup.cpp`, for `getaddrinfo`, `gethostbyname` and `getnameinfo`):
+  it took a reply's record lengths and compression pointers on trust,
+  copying a record's length into a 16-byte address and following
+  pointers without bound, used the query ID 123 always, and asked for
+  an address's name without reversing it. Now the query's ID comes from
+  `/dev/urandom`; a reply is taken only from the server's address and
+  port, with the query's ID and question; every name, pointer and
+  record is checked against the reply's length, with at most 64
+  pointers and 255 bytes a name; an address record must be 4 or 16
+  bytes; and the reverse name is the address's bytes, or nibbles, last
+  first. It tries twice, 2.5 seconds each. NXDOMAIN is `EAI_NONAME`,
+  SERVFAIL or a truncated reply with no answers `EAI_AGAIN`. It still
+  asks only the first name server and only over UDP.
+- **Testing:** the test image's `servers/@` names 127.0.0.53, where
+  `boottest` runs a server of its own, answering for `test.belka`
+  (10.20.30.40) and its address's name, and NXDOMAIN for anything else;
+  through dnscache, `getaddrinfo`, `getnameinfo`, `dnsip` and `dnsname`
+  find them, `nothere.belka` is `EAI_NONAME`, and `localhost.`, which
+  dnscache answers itself, is 127.0.0.1. `boottest` also checks that a
+  chrooted process sees only its root, and that an ordinary user may
+  not chroot.

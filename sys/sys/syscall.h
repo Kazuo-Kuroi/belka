@@ -63,6 +63,7 @@
 #define SYS_fsync       58
 #define SYS_execve      59
 #define SYS_umask       60
+#define SYS_chroot      61
 #define SYS_fcntl       62
 #define SYS_rmdir       79
 #define SYS_mkdir       80

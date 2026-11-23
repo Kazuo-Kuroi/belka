@@ -13,8 +13,9 @@
  * - "/" alone is the root; asking for its parent is EINVAL, as is a
  *   last component that resolves to the parent itself ("." or ".." at
  *   the root).
- * - ".." at the system root stays there. ".." at the root of a mounted
- *   file system first moves to the directory it is mounted on.
+ * - "/" is the process's root (chroot(2)), or else the system's. ".." at
+ *   either stays there. ".." at the root of a mounted file system first
+ *   moves to the directory it is mounted on.
  * - A component with a file system mounted on it is replaced by that
  *   file system's root.
  * - A symbolic link is followed if more path remains or the caller asked
@@ -97,6 +98,7 @@ lookuppn(const char *path, int follow, struct vnode *startdir,
         char *pn = kmem_alloc(MAXPATHLEN, KM_SLEEP);
         char *link = kmem_alloc(MAXPATHLEN, KM_SLEEP);
         char comp[MAXNAMELEN];
+        struct vnode *root;
         struct vnode *cur, *next;
         size_t len = strlen(path), pos = 0;
         int nlinks = 0, error = 0;
@@ -105,6 +107,15 @@ lookuppn(const char *path, int follow, struct vnode *startdir,
                 *dvpp = NULL;
         if (vpp != NULL)
                 *vpp = NULL;
+        /* The root, read and held under p_lock, as the directory is. */
+        {
+                struct proc *p = curproc;
+
+                mutex_lock(&p->p_lock);
+                root = p->p_rdir != NULL ? p->p_rdir : rootdir;
+                VN_HOLD(root);
+                mutex_unlock(&p->p_lock);
+        }
         if (len == 0) {
                 error = ENOENT;
                 goto out;
@@ -121,7 +132,7 @@ lookuppn(const char *path, int follow, struct vnode *startdir,
          * release the old one as soon as it is replaced.
          */
         if (pn[0] == '/') {
-                cur = rootdir;
+                cur = root;
                 VN_HOLD(cur);
         } else if (startdir != NULL) {
                 cur = startdir;
@@ -174,7 +185,8 @@ lookuppn(const char *path, int follow, struct vnode *startdir,
 
                 if (strcmp(comp, "..") == 0) {
                         /* Up out of mounted file systems first. */
-                        while (cur != rootdir && (cur->v_flag & VROOT) != 0 &&
+                        while (cur != root && cur != rootdir &&
+                            (cur->v_flag & VROOT) != 0 &&
                             cur->v_vfsp->vfs_vnodecovered != NULL) {
                                 struct vnode *covered =
                                     cur->v_vfsp->vfs_vnodecovered;
@@ -183,7 +195,7 @@ lookuppn(const char *path, int follow, struct vnode *startdir,
                                 VN_RELE(cur);
                                 cur = covered;
                         }
-                        if (cur == rootdir) {
+                        if (cur == root || cur == rootdir) {
                                 next = cur;
                                 VN_HOLD(next);
                                 goto found;
@@ -233,7 +245,7 @@ found:
                         pos = 0;
                         if (pn[0] == '/') {
                                 VN_RELE(cur);
-                                cur = rootdir;
+                                cur = root;
                                 VN_HOLD(cur);
                         }
                         continue;
@@ -262,6 +274,7 @@ found:
                 cur = next;
         }
 out:
+        VN_RELE(root);
         kmem_free(link, MAXPATHLEN);
         kmem_free(pn, MAXPATHLEN);
         return error;

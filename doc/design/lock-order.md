@@ -77,6 +77,7 @@ Listed roughly from outermost to innermost.
 | `pci_conf_lock` (`arch/amd64/amd64/pci_machdep.c`) | the legacy 0xcf8/0xcfc pair; ECAM bus mappings | nothing | |
 | `io_lock`, one per I/O APIC (`arch/amd64/amd64/ioapic.c`) | the select/window register pair | nothing | Taken from the hardware interrupt to mask a line. |
 | `callout_lock` (`kern/kern_timeout.c`) | the callout list | nothing | Released while a callout function runs. |
+| `rnd_lock` (`kern/kern_random.c`) | the random number generator's key, counter and pool | nothing | Taken from device interrupts, which only try it (`rnd_intr`) and skip when it is busy. Keystream is made under it 256 bytes at a time and copied out to the user without it. |
 | `zombie_lock`, `allthreads_lock` (`kern/kern_kthread.c`) | exited threads; the list of all threads | nothing | |
 | `kva_lock` (`vm/vm_kva.c`) | the free KVA range list | nothing | Never held across an allocation; range records are allocated before and freed after. |
 | `kz_lock`, one per zone (`kern/kern_kmem.c`) | a zone's slab lists, slabs, and counters | nothing | Never held while calling the page allocator. |

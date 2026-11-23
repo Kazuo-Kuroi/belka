@@ -36,6 +36,7 @@
 #include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/pty.h>
+#include <sys/random.h>
 #include <sys/specvn.h>
 #include <sys/strsubr.h>
 #include <sys/systm.h>
@@ -45,7 +46,7 @@
 #include <sys/vnode.h>
 
 enum { DV_ROOT, DV_PTS, DV_NULL, DV_ZERO, DV_TTY, DV_PTMX, DV_MNTTAB,
-    DV_N };
+    DV_RANDOM, DV_URANDOM, DV_N };
 
 static struct specattr dv_attr[DV_N];
 static struct vnode dv_vn[DV_N];
@@ -71,6 +72,8 @@ static const struct {
         { "console", -1 },
         { "null", DV_NULL },
         { "zero", DV_ZERO },
+        { "random", DV_RANDOM },
+        { "urandom", DV_URANDOM },
         { "tty", DV_TTY },
         { "ptmx", DV_PTMX },
         { "mnttab", DV_MNTTAB },
@@ -93,6 +96,10 @@ devfs_mount(struct vfs *vfsp, const void *data __unused,
                 [DV_NULL] = { VCHR, 0666, makedev(DEV_MEM_MAJOR, 0),
                     &devfs_memops },
                 [DV_ZERO] = { VCHR, 0666, makedev(DEV_MEM_MAJOR, 1),
+                    &devfs_memops },
+                [DV_RANDOM] = { VCHR, 0666, makedev(DEV_MEM_MAJOR, 8),
+                    &devfs_memops },
+                [DV_URANDOM] = { VCHR, 0666, makedev(DEV_MEM_MAJOR, 9),
                     &devfs_memops },
                 [DV_TTY] = { VCHR, 0666, makedev(DEV_TTY_MAJOR, 0),
                     &devfs_cloneops },
@@ -344,7 +351,7 @@ static const struct vnodeops devfs_dirops = {
         spec_putpage, spec_reclaim, spec_getpage, fs_poll, NULL
 };
 
-/* --- null and zero. --- */
+/* --- null, zero, random and urandom (kern/kern_random.c). --- */
 
 static int
 mem_read(struct vnode *vp, struct uio *uio, int ioflag __unused,
@@ -355,6 +362,8 @@ mem_read(struct vnode *vp, struct uio *uio, int ioflag __unused,
 
         if (vp == &dv_vn[DV_NULL])
                 return 0;
+        if (vp == &dv_vn[DV_RANDOM] || vp == &dv_vn[DV_URANDOM])
+                return rnd_read(uio);
         while (uio->uio_resid > 0 && error == 0) {
                 size_t n = uio->uio_resid < (ssize_t)sizeof(zeros) ?
                     (size_t)uio->uio_resid : sizeof(zeros);
@@ -365,9 +374,11 @@ mem_read(struct vnode *vp, struct uio *uio, int ioflag __unused,
 }
 
 static int
-mem_write(struct vnode *vp __unused, struct uio *uio, int ioflag __unused,
+mem_write(struct vnode *vp, struct uio *uio, int ioflag __unused,
     struct cred *cr __unused)
 {
+        if (vp == &dv_vn[DV_RANDOM] || vp == &dv_vn[DV_URANDOM])
+                return rnd_write(uio);
         uio->uio_offset += uio->uio_resid;
         while (uio->uio_iovcnt > 0) {
                 uio->uio_iov->iov_base = (char *)uio->uio_iov->iov_base +

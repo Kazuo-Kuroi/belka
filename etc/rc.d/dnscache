@@ -1,0 +1,50 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-23
+# SPDX-License-Identifier: MIT
+#
+# dnscache(8), djbdns' caching resolver, on dnscache_ip, as the user
+# dnscache, in /etc/dnscache/root: its clients' addresses are under
+# ip/ (127: this host), and the servers it starts from in servers/@
+# (the root servers, or with dnscache_forwardonly, servers that
+# resolve for it). Seeded from /dev/urandom; its log of queries goes
+# to dnscache_log, and a fatal error to the console.
+
+# PROVIDE: dnscache
+# REQUIRE: NETWORKING mountall
+# BEFORE: DAEMON
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="dnscache"
+rcvar=$name
+pidfile="/var/run/dnscache.pid"
+start_cmd="dnscache_start"
+stop_cmd="dnscache_stop"
+
+dnscache_start()
+{
+        _uid=$(id -u dnscache) && _gid=$(id -g dnscache) || return 1
+        _fwd=
+        checkyesno dnscache_forwardonly && _fwd="FORWARDONLY=1"
+        echo "Starting dnscache."
+        # In the background, deaf to the console's hangup, its own stdin
+        # the seed.
+        (trap '' HUP; exec /bin/env -i IP="$dnscache_ip" IPSEND=0.0.0.0 \
+            CACHESIZE="$dnscache_cachesize" ROOT=/etc/dnscache/root \
+            UID="$_uid" GID="$_gid" $_fwd /usr/sbin/dnscache \
+            < /dev/urandom > "$dnscache_log") &
+        echo $! > $pidfile
+}
+
+dnscache_stop()
+{
+        [ -r $pidfile ] || return 0
+        echo "Stopping dnscache."
+        kill $(cat $pidfile) 2>/dev/null
+        rm -f $pidfile
+}
+
+load_rc_config $name
+run_rc_command "$1"

@@ -907,6 +907,51 @@ $(SYS_DIR)/ps: $(SYS_OBJ)/ps.o $(MLIBC_SHARED) $(PROGRAM_BEGIN) $(PROGRAM_END) \
 	$(call LINK_DYNAMIC,$(DYN_INTERP),) $(LIBC_CRT0) $(PROGRAM_BEGIN) $< \
 	    $(SYSLIB)/libc.so $(LIBC_RTLIB) $(PROGRAM_END) $(LIBC_CRTN)
 
+# djbdns 1.05's dnscache, the caching resolver, and four of its client
+# tools (contrib/djbdns), without djbdns' own build: its system choices
+# are made here, by copying the variant of each header that fits Belka
+# (32-bit int, poll, dirent, no short setgroups), and everything but the
+# programs' main files goes in one library. Dynamic, like the utilities.
+DJB             := contrib/djbdns
+DJB_OBJ         := $(SYS_OBJ)/djbdns
+DJB_MAINS       := dnscache dnsip dnsname dnsq dnsqr
+DJB_LIBSRCS     := $(filter-out $(DJB_MAINS),$(basename $(notdir \
+                   $(wildcard $(DJB)/*.c))))
+DJB_GEN         := $(addprefix $(DJB_OBJ)/,uint32.h uint64.h iopause.h \
+                   select.h hasshsgr.h direntry.h)
+DJB_CFLAGS      := $(IMPORT_CFLAGS) -I$(DJB_OBJ) -I$(DJB) \
+                   -Wno-unused-variable -Wno-unused-but-set-variable \
+                   -Wno-parentheses -Wno-misleading-indentation \
+                   -Wno-array-parameter -Wno-pointer-sign \
+                   -Werror=implicit-function-declaration -Werror=int-conversion
+DJB_LIB         := $(DJB_OBJ)/libdjbdns.a
+DJB_PROGS       := $(addprefix $(SYS_DIR)/,$(DJB_MAINS))
+
+$(DJB_OBJ)/uint32.h: $(DJB)/uint32.h1
+$(DJB_OBJ)/uint64.h: $(DJB)/uint64.h1
+$(DJB_OBJ)/iopause.h: $(DJB)/iopause.h2
+$(DJB_OBJ)/select.h: $(DJB)/select.h2
+$(DJB_OBJ)/hasshsgr.h: $(DJB)/hasshsgr.h1
+$(DJB_OBJ)/direntry.h: $(DJB)/direntry.h2
+$(DJB_GEN):
+	@mkdir -p $(dir $@)
+	cp $< $@
+
+$(DJB_OBJ)/%.o: $(DJB)/%.c $(DJB_GEN) $(wildcard $(DJB)/*.h) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(DJB_CFLAGS) -c -o $@ $<
+
+$(DJB_LIB): $(patsubst %,$(DJB_OBJ)/%.o,$(DJB_LIBSRCS))
+	rm -f $@
+	ar rcs $@ $^
+
+$(DJB_PROGS): $(SYS_DIR)/%: $(DJB_OBJ)/%.o $(DJB_LIB) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$< $(DJB_LIB))
+
+dns-progs: $(DJB_PROGS)
+
+.PHONY: dns-progs
+
 # The root images (tools/mkroot.sh): for "run", kept between boots and
 # made again when what goes in changes; for "test-boot", made afresh
 # for each boot.
@@ -914,7 +959,7 @@ ROOT_IMG        := build/root-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    build/native-libc-sdk/*.stamp build/native-object-sdk/*.stamp \
-                   build/native-gcc-source-sdk/*.stamp) $(SYS_PROGS) $(SYS_DIR)/ps \
+                   build/native-gcc-source-sdk/*.stamp) $(SYS_PROGS) $(SYS_DIR)/ps $(DJB_PROGS) \
                    $(TERM_PROGS) $(XN_BINS) \
 	           $(SYS_DIR)/sdk.stamp usr/share/mk/sys.mk usr/bin/ranlib/ranlib.sh \
                    contrib/mlibc/LICENSE \
@@ -943,9 +988,10 @@ ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    contrib/netbsd/usr.bin/patch/patch.1 contrib/netbsd/usr.bin/patch/NOTICE \
                    contrib/netbsd/external/bsd/less/dist/LICENSE \
                    contrib/netbsd/external/bsd/less/dist/less.1 \
+                   contrib/djbdns/README.belka \
                    contrib/zlib/README usr/bin/chsh/chsh.1 usr/sbin/accounts/accounts.8 \
                    usr/sbin/netcfg/netcfg.8) \
-                   $(wildcard etc/* etc/defaults/* etc/rc.d/* etc/routed/* \
+                   $(wildcard etc/* etc/defaults/* etc/rc.d/* etc/routed/* etc/dnscache/root/*/* \
                    contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 
 $(ROOT_IMG): $(ROOT_DEPS)

@@ -19,6 +19,7 @@
 #include <sys/kmem.h>
 #include <sys/kthread.h>
 #include <sys/param.h>
+#include <sys/random.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
 
@@ -222,11 +223,29 @@ test_concurrent_reads(void)
             reads_done, (uintmax_t)(lbolt - start), read_errors);
 }
 
+/* The random numbers: the cipher is right, and no two draws alike. */
+static void
+test_random(void)
+{
+        uint8_t a[64], b[64], z[64];
+
+        memset(z, 0, sizeof(z));
+        CHECK(rnd_selftest());
+        rnd_get(a, sizeof(a));
+        rnd_add("selftest", 8);
+        rnd_get(b, sizeof(b));
+        CHECK(memcmp(a, b, sizeof(a)) != 0 && memcmp(a, z, sizeof(a)) != 0 &&
+            memcmp(b, z, sizeof(b)) != 0);
+        rnd_get(a, sizeof(a));
+        CHECK(memcmp(a, b, sizeof(a)) != 0);
+}
+
 int
 selftest_dev(void)
 {
         failures = 0;
         test_pci();
+        test_random();
         test_block_io();
         test_concurrent_reads();
         return failures;

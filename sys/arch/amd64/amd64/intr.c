@@ -32,6 +32,7 @@
 #include <sys/intr.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
+#include <sys/random.h>
 #include <sys/schedclass.h>
 #include <sys/smp.h>
 #include <sys/spinlock.h>
@@ -138,6 +139,7 @@ static void
 intr_device(struct intrsource *src)
 {
         src->is_count++;
+        rnd_intr(src->is_vector);
         if (src->is_fast) {
                 for (struct intrhand *ih = src->is_handlers; ih != NULL;
                     ih = ih->ih_next) {

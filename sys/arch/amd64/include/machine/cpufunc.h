@@ -125,6 +125,8 @@ void lcr3(uint64_t);
 void lcr4(uint64_t);
 void invlpg(uint64_t);
 void cpuid(uint32_t, uint32_t, uint32_t *);
+int cpu_rdrand(uint64_t *);
+int cpu_rdseed(uint64_t *);
 void breakpoint(void);
 void cpu_ud2(void);
 

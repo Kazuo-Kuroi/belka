@@ -544,7 +544,7 @@ udp_input(mblk_t *mp)
         }
         if (best == NULL) {
                 mblk_t *cp;
-                struct ip_ctl ic = { IPCTL_UNREACH, ICMP_UNREACH_PORT };
+                struct ip_ctl ic = { IPCTL_UNREACH, ICMP_UNREACH_PORT, 0 };
 
                 /* IP sends no answer to a broadcast. */
                 if (bcast || udp_lower == NULL ||
@@ -744,6 +744,87 @@ udp_uwput(queue_t *q, mblk_t *mp)
         }
 }
 
+/*
+ * An ICMP error from IP (IPCTL_ICMPERR) about a datagram of ours: to
+ * the endpoint connected to where it went, as a T_UDERROR_IND, which the
+ * socket's next call reports; an endpoint not connected hears nothing
+ * (RFC 1122 4.1.3.3 leaves it to the application; the sockets of the
+ * BSDs and others tell only a connected one). Port and protocol
+ * unreachable are ECONNREFUSED; the other unreachables, EHOSTUNREACH
+ * (ENETUNREACH for a network). Time exceeded and parameter problems
+ * are passed over, as is a need-frag: UDP leaves fragmenting to IP.
+ * Frees mp.
+ */
+static void
+udp_icmp(mblk_t *mp)
+{
+        struct ip_ctl ic;
+        mblk_t *dp = mp->b_cont;
+        const struct ip *ip;
+        const uint8_t *uh;
+        in_port_t sport, dport;
+        int error;
+
+        if (MBLKL(mp) < sizeof(ic) || dp == NULL ||
+            !pullupmsg(dp, -1) || MBLKL(dp) < IP_MINHLEN)
+                goto drop;
+        memcpy(&ic, mp->b_rptr, sizeof(ic));
+        ip = (const struct ip *)dp->b_rptr;
+        if (ic.ic_cmd != IPCTL_ICMPERR || ip->ip_p != IPPROTO_UDP ||
+            MBLKL(dp) < (size_t)IP_HLEN(ip) + UDP_HLEN ||
+            (ic.ic_arg >> 8) != ICMP_UNREACH)
+                goto drop;
+        switch (ic.ic_arg & 0xff) {
+        case ICMP_UNREACH_PROTOCOL:
+        case ICMP_UNREACH_PORT:
+                error = ECONNREFUSED;
+                break;
+        case ICMP_UNREACH_NEEDFRAG:
+                goto drop;
+        case 0:                         /* the network */
+                error = ENETUNREACH;
+                break;
+        default:
+                error = EHOSTUNREACH;
+                break;
+        }
+        uh = dp->b_rptr + IP_HLEN(ip);
+        memcpy(&sport, uh, 2);
+        memcpy(&dport, uh + 2, 2);
+        for (struct udp_ep *ue = udp_eps; ue != NULL; ue = ue->ue_next) {
+                struct T_uderror_ind ind;
+                struct sockaddr_in sin;
+                mblk_t *ep;
+
+                if (ue->ue_state != TS_IDLE || !ue->ue_conn ||
+                    ue->ue_lport != sport || ue->ue_fport != dport ||
+                    ue->ue_faddr != ip->ip_dst ||
+                    (ue->ue_laddr != INADDR_ANY &&
+                    ue->ue_laddr != ip->ip_src))
+                        continue;
+                if (!canputnext(ue->ue_rq) || (ep = allocb(sizeof(ind) +
+                    sizeof(sin), BPRI_MED)) == NULL)
+                        break;
+                memset(&ind, 0, sizeof(ind));
+                ind.PRIM_type = T_UDERROR_IND;
+                ind.DEST_length = sizeof(sin);
+                ind.DEST_offset = sizeof(ind);
+                ind.ERROR_type = error;
+                memset(&sin, 0, sizeof(sin));
+                sin.sin_family = AF_INET;
+                sin.sin_port = dport;
+                sin.sin_addr.s_addr = ip->ip_dst;
+                ep->b_datap->db_type = M_PROTO;
+                memcpy(ep->b_wptr, &ind, sizeof(ind));
+                memcpy(ep->b_wptr + sizeof(ind), &sin, sizeof(sin));
+                ep->b_wptr += sizeof(ind) + sizeof(sin);
+                (void)putnext(ue->ue_rq, ep);
+                break;
+        }
+drop:
+        freemsg(mp);
+}
+
 /* Up from the IP stream. */
 static int
 udp_lrput(queue_t *q, mblk_t *mp)
@@ -752,6 +833,12 @@ udp_lrput(queue_t *q, mblk_t *mp)
         case M_DATA:
                 if (WR(q) == udp_lower)
                         udp_input(mp);
+                else
+                        freemsg(mp);
+                return 0;
+        case M_CTL:
+                if (WR(q) == udp_lower)
+                        udp_icmp(mp);
                 else
                         freemsg(mp);
                 return 0;

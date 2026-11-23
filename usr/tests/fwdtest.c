@@ -16,7 +16,13 @@
  * exceeded, no route host unreachable; a link broadcast and a martian
  * source go nowhere, and a sender off the subnet gets no redirect. And
  * a datagram of ours too big for the link goes out in fragments, unless
- * it may not be fragmented. Exits with the number of failed checks.
+ * it may not be fragmented. Fragments for us are reassembled, in any
+ * order and once only; overlapping ones and ones past IP's limit are
+ * dropped, and a datagram never finished brings time exceeded. ICMP
+ * port unreachable reaches a connected UDP socket, and a TCP connection
+ * being made, as ECONNREFUSED, but not when it quotes what was never
+ * sent; and a flood draws only so many errors. Exits with the number
+ * of failed checks.
  */
 
 #define _DEFAULT_SOURCE
@@ -28,8 +34,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <stropts.h>
+#include <sys/socket.h>
 #include <sys/dlpi.h>
 #include <sys/ipconf.h>
+#include <netinet/in.h>
 #include <unistd.h>
 
 #define ETHERTYPE_ARP   0x0806
@@ -255,6 +263,104 @@ watch(int ms, uint32_t dst, int *fwd, int icmptype, int *icmp)
         }
 }
 
+/* A fragment of a protocol-253 datagram from the sender to us. */
+static void
+frag_send(uint16_t id, size_t off, int more, size_t len)
+{
+        static uint8_t d[20 + 1480];
+
+        memset(d, 0, 20);
+        d[0] = 0x45;
+        put32(d, 0x45u << 24 | (uint32_t)(20 + len));
+        d[4] = (uint8_t)(id >> 8);
+        d[5] = (uint8_t)id;
+        d[6] = (uint8_t)(((off / 8) >> 8) | (more ? 0x20 : 0));
+        d[7] = (uint8_t)(off / 8);
+        d[8] = 64;
+        d[9] = 253;
+        put32(d + 12, SENDER);
+        put32(d + 16, OURS);
+        for (size_t i = 0; i < len; i++)
+                d[20 + i] = (uint8_t)((off + i) * 7 + id);
+        {
+                uint16_t sum = cksum(d, 20);
+
+                d[10] = (uint8_t)(sum >> 8);
+                d[11] = (uint8_t)sum;
+        }
+        CHECK(dlsendto(hip, ifmac, ETHERTYPE_IP, d, 20 + len) == 0);
+}
+
+/*
+ * The datagram the raw stream rfd reads within ms, reassembled: its
+ * length, or -1 if none came; whether it is id's, len bytes long.
+ */
+static int
+frag_got(int rfd, int ms, uint16_t id, size_t len)
+{
+        static uint8_t d[20 + 4000];
+        struct pollfd p = { rfd, POLLIN, 0 };
+        ssize_t n;
+        int ok;
+
+        if (poll(&p, 1, ms) <= 0 || (n = read(rfd, d, sizeof(d))) < 20)
+                return -1;
+        ok = n == (ssize_t)(20 + len) && get16(d + 2) == 20 + len &&
+            get16(d + 4) == id && (get16(d + 6) & 0x3fff) == 0 &&
+            cksum(d, 20) == 0;
+        for (size_t i = 0; ok && i < len; i++)
+                ok = d[20 + i] == (uint8_t)(i * 7 + id);
+        return ok;
+}
+
+/*
+ * An ICMP error of type and code from the sender to us, quoting the
+ * first qlen bytes of q (a datagram of ours).
+ */
+static void
+icmp_send(uint8_t type, uint8_t code, const uint8_t *q, size_t qlen)
+{
+        uint8_t d[20 + 8 + 68];
+        uint16_t sum;
+
+        if (qlen > 68)
+                qlen = 68;
+        memset(d, 0, sizeof(d));
+        put32(d, 0x45u << 24 | (uint32_t)(28 + qlen));
+        d[8] = 64;
+        d[9] = 1;
+        put32(d + 12, SENDER);
+        put32(d + 16, OURS);
+        sum = cksum(d, 20);
+        d[10] = (uint8_t)(sum >> 8);
+        d[11] = (uint8_t)sum;
+        d[20] = type;
+        d[21] = code;
+        memcpy(d + 28, q, qlen);
+        sum = cksum(d + 20, 8 + qlen);
+        d[22] = (uint8_t)(sum >> 8);
+        d[23] = (uint8_t)sum;
+        CHECK(dlsendto(hip, ifmac, ETHERTYPE_IP, d, 28 + qlen) == 0);
+}
+
+/* The next datagram of ours of proto to port, within ms, into q. */
+static size_t
+catch_ours(int proto, uint16_t port, uint8_t *q, int ms)
+{
+        while (next_ip(ms) == 0) {
+                size_t hl = (size_t)(pkt[0] & 0x0f) * 4;
+
+                if (pkt[9] == proto && get32(pkt + 16) == SENDER &&
+                    pktlen >= (int)hl + 8 && get16(pkt + hl + 2) == port) {
+                        size_t n = (size_t)pktlen < 68 ? (size_t)pktlen : 68;
+
+                        memcpy(q, pkt, n);
+                        return n;
+                }
+        }
+        return 0;
+}
+
 static int
 istr(int fd, int cmd, void *data, int len)
 {
@@ -418,8 +524,134 @@ main(void)
                 while (next_ip(500) == 0)
                         n += pkt[9] == 253;
                 CHECK(n == 0);
+
+                /*
+                 * Fragments for us, reassembled: in order; out of order,
+                 * one twice; one overlapping another, and one past what
+                 * IP can hold, never.
+                 */
+                while (frag_got(raw, 0, 0, 0) != -1)
+                        continue;
+                frag_send(0x101, 0, 1, 1480);
+                frag_send(0x101, 1480, 1, 1480);
+                frag_send(0x101, 2960, 0, 40);
+                CHECK(frag_got(raw, 1000, 0x101, 3000) == 1);
+                frag_send(0x102, 2960, 0, 40);
+                frag_send(0x102, 0, 1, 1480);
+                frag_send(0x102, 0, 1, 1480);
+                frag_send(0x102, 1480, 1, 1480);
+                CHECK(frag_got(raw, 1000, 0x102, 3000) == 1);
+                CHECK(frag_got(raw, 300, 0, 0) == -1);
+                frag_send(0x103, 0, 1, 1480);
+                frag_send(0x103, 1472, 1, 1480);
+                frag_send(0x103, 2952, 0, 48);
+                frag_send(0x103, 1480, 1, 1472);
+                CHECK(frag_got(raw, 500, 0, 0) == -1);
+                frag_send(0x104, 0, 1, 64);
+                frag_send(0x104, 65480, 0, 48);
+                CHECK(frag_got(raw, 300, 0, 0) == -1);
+
+                /* Never finished: time exceeded, once its time is up. */
+                frag_send(0x105, 0, 1, 1480);
+                n = 0;
+                while (n == 0 && next_ip(40000) == 0) {
+                        const uint8_t *ic;
+
+                        hl = (size_t)(pkt[0] & 0x0f) * 4;
+                        ic = pkt + hl;
+                        if (pkt[9] != 1 || pktlen < (int)hl + 8 + 28 ||
+                            ic[0] != 11)
+                                continue;
+                        CHECK(ic[1] == 1 && get32(pkt + 16) == SENDER &&
+                            get16(ic + 8 + 4) == 0x105 &&
+                            cksum(ic, get16(pkt + 2) - hl) == 0);
+                        n++;
+                }
+                CHECK(n == 1);
         }
         close(raw);
+
+        /*
+         * ICMP errors to the sockets: port unreachable to a connected UDP
+         * socket is ECONNREFUSED, once; to a TCP connection being made,
+         * ECONNREFUSED too, but only quoting a segment it has in flight.
+         */
+        {
+                struct sockaddr_in sin;
+                uint8_t q[68], qx[68];
+                size_t qlen;
+                socklen_t sl = sizeof(int);
+                char b;
+                int u, t, err = 0, uctl, tctl, lfd;
+                struct pollfd p;
+
+                /* UDP and TCP over IP, as long as this takes. */
+                uctl = open("/dev/udp", O_RDWR);
+                tctl = open("/dev/tcp", O_RDWR);
+                CHECK(uctl >= 0 && tctl >= 0);
+                lfd = open("/dev/ip", O_RDWR);
+                CHECK(lfd >= 0 && ioctl(uctl, I_PLINK, lfd) > 0);
+                close(lfd);
+                lfd = open("/dev/ip", O_RDWR);
+                CHECK(lfd >= 0 && ioctl(tctl, I_PLINK, lfd) > 0);
+                close(lfd);
+
+                memset(&sin, 0, sizeof(sin));
+                sin.sin_family = AF_INET;
+                sin.sin_addr.s_addr = htonl(SENDER);
+                sin.sin_port = htons(5000);
+                u = socket(AF_INET, SOCK_DGRAM, 0);
+                CHECK(u >= 0 && connect(u, (struct sockaddr *)&sin,
+                    sizeof(sin)) == 0 && send(u, "x", 1, 0) == 1);
+                qlen = catch_ours(17, 5000, q, 1000);
+                CHECK(qlen >= 28);
+                memcpy(qx, q, qlen);
+                qx[20] ^= 1;            /* another source port */
+                icmp_send(3, 3, qx, qlen);
+                (void)poll(NULL, 0, 300);
+                CHECK(recv(u, &b, 1, MSG_DONTWAIT) == -1 && errno == EAGAIN);
+                icmp_send(3, 3, q, qlen);
+                (void)poll(NULL, 0, 300);
+                CHECK(recv(u, &b, 1, MSG_DONTWAIT) == -1 &&
+                    errno == ECONNREFUSED);
+                CHECK(recv(u, &b, 1, MSG_DONTWAIT) == -1 && errno == EAGAIN);
+                close(u);
+
+                sin.sin_port = htons(5001);
+                t = socket(AF_INET, SOCK_STREAM, 0);
+                CHECK(t >= 0 && fcntl(t, F_SETFL, O_NONBLOCK) == 0 &&
+                    connect(t, (struct sockaddr *)&sin, sizeof(sin)) == -1 &&
+                    errno == EINPROGRESS);
+                qlen = catch_ours(6, 5001, q, 1000);
+                CHECK(qlen >= 28);
+                memcpy(qx, q, qlen);
+                qx[24] ^= 0x80;         /* a sequence number not sent */
+                icmp_send(3, 3, qx, qlen);
+                p.fd = t;
+                p.events = POLLOUT;
+                p.revents = 0;
+                CHECK(poll(&p, 1, 300) == 0);
+                icmp_send(3, 3, q, qlen);
+                CHECK(poll(&p, 1, 1000) == 1 &&
+                    getsockopt(t, SOL_SOCKET, SO_ERROR, &err, &sl) == 0 &&
+                    err == ECONNREFUSED);
+                close(t);
+                CHECK(ioctl(uctl, I_PUNLINK, MUXID_ALL) == 0 &&
+                    ioctl(tctl, I_PUNLINK, MUXID_ALL) == 0);
+                close(uctl);
+                close(tctl);
+        }
+
+        /* A flood of TTL 1: time exceeded for only so many (100 at once). */
+        {
+                int n11 = 0;
+
+                (void)poll(NULL, 0, 1100);      /* a full bucket */
+                for (int i = 0; i < 250; i++)
+                        host_send(ifmac, SENDER, FAR, 1);
+                watch(1500, FAR, &fwd, 11, &n11);
+                CHECK(fwd == 0 && n11 >= 50 && n11 <= 130);
+        }
 
         /* Off again, and vionet1 gone. */
         on = 0;

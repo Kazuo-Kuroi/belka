@@ -16,6 +16,7 @@
 #include <sys/kthread.h>
 #include <sys/param.h>
 #include <sys/proc.h>
+#include <sys/random.h>
 #include <sys/smp.h>
 #include <sys/strsubr.h>
 #include <sys/systm.h>
@@ -106,6 +107,7 @@ main(void)
         kva_init();
         md_stacks_init();
         intr_init();
+        rnd_init();
         sched_init();
         cpu_boot_secondary_processors();
         bootloader_reclaim();

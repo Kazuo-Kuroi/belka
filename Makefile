@@ -459,11 +459,12 @@ run-selftest: $(TEST_ISO) $(DISK) $(LIBC_BINS)
 # expects a clean run; "test-fault" makes the kernel touch an unmapped
 # address and expects the resulting panic; "test-apfault" does the same
 # on a secondary processor; "test-stack" and "test-uaf" check that stack
-# overflow and use after free are caught. "test" may take 120 seconds
-# (QEMU_TIMEOUT): on one processor it takes about a minute.
+# overflow and use after free are caught. "test" may take 180 seconds
+# (QEMU_TIMEOUT): on one processor it takes about a minute and a half,
+# half a minute of it fwdtest waiting out a reassembly.
 test: $(TEST_ISO) $(LIBC_BINS)
 	$(MKEXT2)
-	QEMU_TIMEOUT="$(if $(QEMU_TIMEOUT),$(QEMU_TIMEOUT),120)" \
+	QEMU_TIMEOUT="$(if $(QEMU_TIMEOUT),$(QEMU_TIMEOUT),180)" \
 	    sh tools/qemu-test.sh pass $(BUILD)/test-serial.log \
 	    $(QEMU) $(QEMU_FLAGS) -cdrom $(TEST_ISO)
 	@# The kernel unmounted both file systems; they must be clean and

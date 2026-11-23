@@ -185,6 +185,7 @@ struct tcb {
         int             tc_timer2;      /* TIME_WAIT, an orphan's FIN_WAIT_2 */
         int             tc_idle;        /* ticks since a segment came */
         int             tc_kprobes;     /* keep-alives unanswered */
+        int             tc_softerr;     /* an ICMP error's, if it times out */
         struct tcp_opt  tc_opt;
 };
 
@@ -897,6 +898,7 @@ tcp_sndtrim(struct tcb *tc, size_t n)
 static void
 tcp_newack(struct tcb *tc, uint32_t ack)
 {
+        tc->tc_softerr = 0;             /* the way is open after all */
         if (tc->tc_rtt != 0 && SEQ_GT(ack, tc->tc_rtseq))
                 tcp_rttupdate(tc);
         if (SEQ_GT(ack, tc->tc_sndbase)) {
@@ -1340,7 +1342,8 @@ tcp_timeout(struct tcb *tc)
         uint32_t flight = tc->tc_snd_max - tc->tc_snd_una;
 
         if (++tc->tc_rxtshift > limit) {
-                tcp_drop(tc, ETIMEDOUT, 1);
+                tcp_drop(tc, tc->tc_softerr != 0 ? tc->tc_softerr :
+                    ETIMEDOUT, 1);
                 return;
         }
         tc->tc_rto *= 2;
@@ -2233,6 +2236,74 @@ tcp_ursrv(queue_t *q)
         return 0;
 }
 
+/*
+ * An ICMP error from IP (IPCTL_ICMPERR) about a segment of ours: taken
+ * only if the segment is one of a connection's still unacknowledged, its
+ * sequence number from SND.UNA up to SND.MAX, which someone off the path
+ * cannot know (RFC 5927 4.1). Port or protocol unreachable while the
+ * connection is being made refuses it, as a reset would; every other
+ * error, and those once it is made, is soft (RFC 1122 4.2.3.9, RFC 5927
+ * 4.2): kept, and reported instead of ETIMEDOUT if the connection times
+ * out before anything is acknowledged. A need-frag is passed over: TCP's
+ * segments may be fragmented. Frees mp.
+ */
+static void
+tcp_icmp(mblk_t *mp)
+{
+        struct ip_ctl ic;
+        mblk_t *dp = mp->b_cont;
+        const struct ip *ip;
+        const uint8_t *th;
+        in_port_t sport, dport;
+        uint32_t seq;
+        unsigned type, code;
+
+        if (MBLKL(mp) < sizeof(ic) || dp == NULL ||
+            !pullupmsg(dp, -1) || MBLKL(dp) < IP_MINHLEN)
+                goto drop;
+        memcpy(&ic, mp->b_rptr, sizeof(ic));
+        ip = (const struct ip *)dp->b_rptr;
+        if (ic.ic_cmd != IPCTL_ICMPERR || ip->ip_p != IPPROTO_TCP ||
+            MBLKL(dp) < (size_t)IP_HLEN(ip) + 8)
+                goto drop;
+        type = ic.ic_arg >> 8;
+        code = ic.ic_arg & 0xff;
+        if (type == ICMP_UNREACH && code == ICMP_UNREACH_NEEDFRAG)
+                goto drop;
+        th = dp->b_rptr + IP_HLEN(ip);
+        memcpy(&sport, th, 2);
+        memcpy(&dport, th + 2, 2);
+        seq = (uint32_t)th[4] << 24 | (uint32_t)th[5] << 16 |
+            (uint32_t)th[6] << 8 | th[7];
+        for (struct tcb *tc = tcp_tcbs; tc != NULL; tc = tc->tc_next) {
+                if (tc->tc_state <= TCPS_LISTEN ||
+                    tc->tc_lport != sport || tc->tc_fport != dport ||
+                    tc->tc_faddr != ip->ip_dst ||
+                    (tc->tc_laddr != INADDR_ANY &&
+                    tc->tc_laddr != ip->ip_src))
+                        continue;
+                if (SEQ_LT(seq, tc->tc_snd_una) ||
+                    SEQ_GEQ(seq, tc->tc_snd_max))
+                        break;          /* not one in flight: forged */
+                if (type == ICMP_UNREACH &&
+                    (code == ICMP_UNREACH_PORT ||
+                    code == ICMP_UNREACH_PROTOCOL)) {
+                        if (tc->tc_state == TCPS_SYN_SENT) {
+                                tcp_drop(tc, ECONNREFUSED, 0);
+                                break;
+                        }
+                        tc->tc_softerr = ECONNREFUSED;
+                } else if (type == ICMP_UNREACH && code == 0) {
+                        tc->tc_softerr = ENETUNREACH;
+                } else {
+                        tc->tc_softerr = EHOSTUNREACH;
+                }
+                break;
+        }
+drop:
+        freemsg(mp);
+}
+
 static int
 tcp_lrput(queue_t *q, mblk_t *mp)
 {
@@ -2240,6 +2311,12 @@ tcp_lrput(queue_t *q, mblk_t *mp)
         case M_DATA:
                 if (WR(q) == tcp_lower)
                         tcp_input(mp);
+                else
+                        freemsg(mp);
+                return 0;
+        case M_CTL:
+                if (WR(q) == tcp_lower)
+                        tcp_icmp(mp);
                 else
                         freemsg(mp);
                 return 0;

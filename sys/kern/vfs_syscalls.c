@@ -598,6 +598,39 @@ sys_fchdir(const uint64_t *args, uint64_t *rv __unused)
         return set_cdir(vp);
 }
 
+/*
+ * chroot(path): the directory becomes the process's root, where every
+ * absolute path starts and ".." stops; the superuser's alone. The
+ * current directory stays where it is.
+ */
+int
+sys_chroot(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct proc *p = curproc;
+        struct vnode *vp, *old;
+        int error;
+
+        if (!CRED_ISROOT(CRED()))
+                return EPERM;
+        if ((error = upath_lookup(AT_FDCWD, args[0], FOLLOW, &vp)) != 0)
+                return error;
+        if (vp->v_type != VDIR) {
+                VN_RELE(vp);
+                return ENOTDIR;
+        }
+        if ((error = VOP_ACCESS(vp, VEXEC, CRED())) != 0) {
+                VN_RELE(vp);
+                return error;
+        }
+        mutex_lock(&p->p_lock);
+        old = p->p_rdir;
+        p->p_rdir = vp;
+        mutex_unlock(&p->p_lock);
+        if (old != NULL)
+                VN_RELE(old);
+        return 0;
+}
+
 /* --- File system statistics and file times. --- */
 
 static int

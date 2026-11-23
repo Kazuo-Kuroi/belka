@@ -187,6 +187,26 @@ ENTRY(cpuid)
         ret
 END(cpuid)
 
+/*
+ * int cpu_rdrand(uint64_t *v), int cpu_rdseed(uint64_t *v): 1, with the
+ * processor's next random word in *v, or 0 if it had none ready.
+ */
+ENTRY(cpu_rdrand)
+        xorl    %eax, %eax
+        rdrand  %rdx
+        setc    %al
+        movq    %rdx, (%rdi)
+        ret
+END(cpu_rdrand)
+
+ENTRY(cpu_rdseed)
+        xorl    %eax, %eax
+        rdseed  %rdx
+        setc    %al
+        movq    %rdx, (%rdi)
+        ret
+END(cpu_rdseed)
+
 /* uint64_t cpu_read_probe(const volatile uint64_t *p) */
 ENTRY(cpu_read_probe)
         .globl  cpu_read_insn

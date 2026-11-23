@@ -80,17 +80,24 @@ struct ip_rt {
 };
 
 /*
- * M_CTL from a transport linked above IP (UDP), down to it: ic_cmd, and
- * the datagram it is about in b_cont. IPCTL_UNREACH: answer that
+ * M_CTL between IP and a transport linked above it: ic_cmd, and the
+ * datagram it is about in b_cont. Down, IPCTL_UNREACH: answer that
  * datagram, one for us, with ICMP destination unreachable of code
- * ic_arg (unless it was a broadcast).
+ * ic_arg (unless it was a broadcast). Up, IPCTL_ICMPERR: an ICMP error
+ * (destination unreachable, time exceeded, parameter problem) about a
+ * datagram of ours, to the transport of its protocol: ic_arg is the
+ * error's type << 8 | its code, ic_info its second word (network order;
+ * a need-frag's next-hop MTU), and b_cont the datagram it quotes, its
+ * header and at least the eight bytes after.
  */
 struct ip_ctl {
         uint32_t        ic_cmd;
         uint32_t        ic_arg;
+        uint32_t        ic_info;
 };
 
 #define IPCTL_UNREACH   1
+#define IPCTL_ICMPERR   2
 
 /* An upper stream. */
 struct ip_upper {
@@ -110,6 +117,12 @@ uint16_t in_fold(uint32_t);
 void    ip_output(mblk_t *);
 void    ip_xmit(struct ip_if *, const uint8_t *, mblk_t *);
 void    ip_dlpi(struct ip_lower *, mblk_t *);
+void    icmp_error(mblk_t *, uint8_t, uint8_t, uint32_t);
+
+/* ip_reass.c */
+mblk_t  *ip_reass(struct ip_if *, mblk_t *, int *);
+void    ip_reass_tick(struct ip_if *);
+void    ip_reass_flush(struct ip_if *);
 
 /* arp.c */
 void    arp_input(struct ip_if *, mblk_t *);

@@ -1,0 +1,33 @@
+djbdns
+======
+
+djbdns 1.05, by D. J. Bernstein, from https://cr.yp.to/djbdns.html
+(djbdns-1.05.tar.gz, SHA-256
+3ccd826a02f3cde39be088e1fc6aed9fd57756b8f970de5dc99fcd2d92536b48). Its
+author placed it in the public domain on 2007-12-28
+(https://cr.yp.to/distributors.html).
+
+Only what Belka builds is here: dnscache, the caching resolver, and four
+of the client tools, dnsip, dnsname, dnsq and dnsqr, with the library
+sources they are linked from. tinydns and the other servers, the -conf
+programs, and djbdns' own build and install are not. Belka builds the
+programs without djbdns' Makefile (see mk/userland.mk): its system
+choices are made there, by copying the variant of each header that fits
+Belka to the name the sources include:
+
+    uint32.h1 -> uint32.h       uint32 is an unsigned int
+    uint64.h1 -> uint64.h       uint64 is an unsigned long long
+    iopause.h2 -> iopause.h     iopause by poll(2)
+    select.h2 -> select.h
+    hasshsgr.h1 -> hasshsgr.h   setgroups(2) takes gid_t, not short
+    direntry.h2 -> direntry.h   <dirent.h>
+
+Changed for Belka:
+
+    error.h     <errno.h> for errno, not "extern int errno" (errno is
+                thread-local in mlibc)
+    prot.c      <grp.h> and <unistd.h>, for setgroups and setgid
+
+dnscache runs from /etc/rc.d/dnscache, chrooted to /etc/dnscache/root
+as the user dnscache; there is no daemontools, so the script sets its
+environment and seeds it from /dev/urandom itself.

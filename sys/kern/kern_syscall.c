@@ -237,6 +237,7 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_mprotect] = sys_mprotect,
         [SYS_munmap] = sys_munmap,
         [SYS_fchdir] = sys_fchdir,
+        [SYS_chroot] = sys_chroot,
         [SYS_rename] = sys_rename,
         [SYS_uname] = sys_uname,
         [SYS_systeminfo] = sys_systeminfo,
@@ -347,6 +348,7 @@ syscall_dispatch(uint64_t code, const uint64_t *args, uint64_t *rv)
                 switch (code) {
                 case SYS_chdir:
                 case SYS_fchdir:
+                case SYS_chroot:
                         changed = PR_SDIR;
                         break;
                 case SYS_umask:

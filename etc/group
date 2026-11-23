@@ -4,3 +4,4 @@ tty:*:4:
 users:*:100:
 nogroup:*:32766:
 nobody:*:32767:
+dnscache:*:53:

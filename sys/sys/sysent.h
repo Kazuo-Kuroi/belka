@@ -28,7 +28,8 @@ sy_call_t sys_flock;
 sy_call_t sys_readv, sys_writev, sys_fsync, sys_fchmod, sys_fchown;
 sy_call_t sys_fstat;
 /* vfs_syscalls.c */
-sy_call_t sys_open, sys_creat, sys_link, sys_unlink, sys_chdir, sys_fchdir;
+sy_call_t sys_open, sys_creat, sys_link, sys_unlink, sys_chdir, sys_fchdir,
+    sys_chroot;
 sy_call_t sys_chmod, sys_stat, sys_lstat, sys_access, sys_rmdir, sys_mkdir;
 sy_call_t sys_symlink, sys_readlink, sys_rename;
 sy_call_t sys_openat, sys_mknodat, sys_mkdirat, sys_unlinkat, sys_renameat;

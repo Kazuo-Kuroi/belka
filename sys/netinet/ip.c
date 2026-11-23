@@ -24,6 +24,7 @@
 #include <sys/errno.h>
 #include <sys/ipconf.h>
 #include <sys/kmem.h>
+#include <sys/param.h>
 #include <sys/stream.h>
 #include <sys/stropts.h>
 #include <sys/systm.h>
@@ -37,6 +38,8 @@
 #define IP_ETHERMTU     1500
 #define IP_LOMTU        65535
 #define IP_MAXPACKET    65535
+#define ICMP_ERRRATE    100     /* errors a second, after */
+#define ICMP_ERRBURST   100     /* errors at once */
 
 struct ip_if *ip_ifs;
 static struct ip_lower *ip_lowers;
@@ -588,14 +591,38 @@ icmp_iserror(mblk_t *mp)
 }
 
 /*
+ * Whether an ICMP error may go now: a bucket of ICMP_ERRBURST tokens,
+ * one an error, filled at ICMP_ERRRATE a second.
+ */
+static int
+icmp_ratelimit(void)
+{
+        static uint64_t last;
+        static unsigned tokens = ICMP_ERRBURST;
+        uint64_t now = lbolt, add = (now - last) * ICMP_ERRRATE / HZ;
+
+        if (add > 0) {
+                tokens = add >= ICMP_ERRBURST - tokens ? ICMP_ERRBURST :
+                    tokens + (unsigned)add;
+                last = now;
+        }
+        if (tokens == 0)
+                return 0;
+        tokens--;
+        return 1;
+}
+
+/*
  * An ICMP error about mp (its header contiguous) to its sender, info
  * (network order) as the message's second word: a redirect's gateway,
  * the next hop's MTU. None about an ICMP error, a fragment but the
  * first, or a datagram not from one host to one host (RFC 1122 3.2.2,
  * RFC 1812 4.3.2.7). It comes from where the datagram went if that was
- * us, else from the address IP chooses toward the sender. Frees mp.
+ * us, else from the address IP chooses toward the sender. And none
+ * beyond ICMP_ERRBURST at once, ICMP_ERRRATE a second after (RFC 1812
+ * 4.3.2.8), so that a flood brings no flood back. Frees mp.
  */
-static void
+void
 icmp_error(mblk_t *mp, uint8_t type, uint8_t code, uint32_t info)
 {
         struct ip *ip = (struct ip *)mp->b_rptr;
@@ -609,8 +636,9 @@ icmp_error(mblk_t *mp, uint8_t type, uint8_t code, uint32_t info)
         if (src == INADDR_ANY || ip_classde(src) || ip_ours(src) == 2 ||
             ip_classde(dst) || ip_ours(dst) == 2 ||
             (ntohs(ip->ip_off) & IP_OFFMASK) != 0 || icmp_iserror(mp) ||
-            (ep = ip_newdgram(ip_ours(dst) == 1 ? dst : INADDR_ANY, src,
-            IPPROTO_ICMP, ICMP_MINLEN + quote)) == NULL) {
+            !icmp_ratelimit() || (ep = ip_newdgram(ip_ours(dst) == 1 ?
+            dst : INADDR_ANY, src, IPPROTO_ICMP, ICMP_MINLEN + quote)) ==
+            NULL) {
                 freemsg(mp);
                 return;
         }
@@ -638,7 +666,53 @@ icmp_error(mblk_t *mp, uint8_t type, uint8_t code, uint32_t info)
         ip_send(ep);
 }
 
-/* ICMP for us: answer an echo request. Frees mp. */
+/*
+ * An ICMP error for us, ic (len bytes, checksum checked), to the
+ * transports above of the protocol of the datagram it quotes, as
+ * IPCTL_ICMPERR: if that was one of ours, from us, with its header and
+ * eight bytes more all there. Source quench (RFC 6633) and redirects
+ * are not passed on.
+ */
+static void
+icmp_toupper(const struct icmp *ic, size_t len)
+{
+        const uint8_t *q = (const uint8_t *)ic + ICMP_MINLEN;
+        const struct ip *qip = (const struct ip *)q;
+        size_t qlen = len - ICMP_MINLEN, qhlen;
+        struct ip_ctl ctl;
+
+        if (ic->icmp_type != ICMP_UNREACH && ic->icmp_type != ICMP_TIMXCEED &&
+            ic->icmp_type != ICMP_PARAMPROB)
+                return;
+        if (qlen < IP_MINHLEN || IP_VERSION(qip) != 4 ||
+            (qhlen = IP_HLEN(qip)) < IP_MINHLEN || qlen < qhlen + 8 ||
+            ip_ours(qip->ip_src) != 1)
+                return;
+        ctl.ic_cmd = IPCTL_ICMPERR;
+        ctl.ic_arg = (uint32_t)ic->icmp_type << 8 | ic->icmp_code;
+        memcpy(&ctl.ic_info, (const uint8_t *)ic + 4, sizeof(ctl.ic_info));
+        for (struct ip_upper *iu = ip_uppers; iu != NULL; iu = iu->iu_next) {
+                mblk_t *cp, *dp;
+
+                if (iu->iu_proto != qip->ip_p || !canputnext(iu->iu_rq))
+                        continue;
+                if ((cp = allocb(sizeof(ctl), BPRI_MED)) == NULL)
+                        continue;
+                if ((dp = allocb(qlen, BPRI_MED)) == NULL) {
+                        freeb(cp);
+                        continue;
+                }
+                cp->b_datap->db_type = M_CTL;
+                memcpy(cp->b_wptr, &ctl, sizeof(ctl));
+                cp->b_wptr += sizeof(ctl);
+                memcpy(dp->b_wptr, q, qlen);
+                dp->b_wptr += qlen;
+                cp->b_cont = dp;
+                (void)putnext(iu->iu_rq, cp);
+        }
+}
+
+/* ICMP for us: answer an echo request, pass errors on. Frees mp. */
 static void
 icmp_input(mblk_t *mp, int bcast)
 {
@@ -654,6 +728,10 @@ icmp_input(mblk_t *mp, int bcast)
         hlen = IP_HLEN(ip);
         len = MBLKL(nmp) - hlen;
         ic = (struct icmp *)(nmp->b_rptr + hlen);
+        if (len >= ICMP_MINLEN && !bcast &&
+            in_cksum_buf((uint8_t *)ic, len) == 0 &&
+            ic->icmp_type != ICMP_ECHO)
+                icmp_toupper(ic, len);
         if (len < ICMP_MINLEN || in_cksum_buf((uint8_t *)ic, len) != 0 ||
             ic->icmp_type != ICMP_ECHO || bcast) {
                 freemsg(nmp);
@@ -764,7 +842,7 @@ ip_input(struct ip_if *ifp, mblk_t *mp, int group)
 {
         struct ip *ip;
         size_t hlen, len, have = msgdsize(mp);
-        int ours;
+        int ours, bcast;
 
         ifp->if_ipackets++;
         if (!pullupmsg(mp, IP_MINHLEN))
@@ -791,12 +869,11 @@ ip_input(struct ip_if *ifp, mblk_t *mp, int group)
                         freemsg(mp);    /* not a router */
                 return;
         }
-        if ((ntohs(ip->ip_off) & (IP_MF | IP_OFFMASK)) != 0) {
-                ifp->if_drops++;        /* no reassembly yet */
-                freemsg(mp);
-                return;
-        }
-        ip_local(mp, ours == 2);
+        bcast = ours == 2;
+        if ((ntohs(ip->ip_off) & (IP_MF | IP_OFFMASK)) != 0 &&
+            (mp = ip_reass(ifp, mp, &bcast)) == NULL)
+                return;         /* held, or dropped */
+        ip_local(mp, bcast);
         return;
 bad:
         ifp->if_ierrors++;
@@ -838,6 +915,7 @@ ip_if_detach(struct ip_if *ifp, struct ip_lower *gone)
 
         if (ifp->if_attaching == 0)
                 arp_stop(ifp);
+        ip_reass_flush(ifp);
         ip_route_purge(ifp, 0);
         if (ifp->if_ioc != NULL) {
                 miocnak(ifp->if_iocq, ifp->if_ioc, 0, EIO);

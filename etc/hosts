@@ -1,0 +1,4 @@
+#
+# /etc/hosts: names known without asking a name server.
+#
+127.0.0.1	localhost

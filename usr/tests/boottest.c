@@ -20,7 +20,9 @@
  * wtmpx have the records; and that /etc/rc.d/network has plumbed the
  * network: vionet0 configured as /etc/rc.conf says, the default route,
  * TCP and UDP sockets over the loopback, the gateway answering a ping,
- * and netcfg show.
+ * and netcfg show; and that /etc/rc.d/dnscache has started dnscache,
+ * which resolves names, from a fake root server of the test's, for the
+ * C library and djbdns' tools; and that chroot(2) confines a process.
  * Then it halts the system with /sbin/halt, after giving init time to
  * start the console's getty.
  *
@@ -34,6 +36,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pwd.h>
@@ -42,6 +45,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stropts.h>
 #include <sys/ioctl.h>
 #include <sys/ipconf.h>
@@ -799,6 +803,204 @@ test_network(void)
             WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
+/*
+ * The name server dnscache asks, as the test image's servers/@ says: on
+ * 127.0.0.53, for ms, it answers for test.belka (10.20.30.40) and its
+ * address's name, and that nothing else is there, authoritatively.
+ */
+static void
+fake_root(int fd, int ms)
+{
+        static const unsigned char name[] = "\4test\5belka";
+        static const unsigned char rev[] = "\00240\00230\00220\00210"
+            "\7in-addr\4arpa";
+        long end = now_ms() + ms;
+        unsigned char q[512], r[512];
+
+        while (now_ms() < end) {
+                struct pollfd pf = { fd, POLLIN, 0 };
+                struct sockaddr_in from;
+                socklen_t fl = sizeof(from);
+                ssize_t n;
+                size_t qend, rl;
+                int type, found = 0;
+
+                if (poll(&pf, 1, (int)(end - now_ms())) != 1)
+                        continue;
+                n = recvfrom(fd, q, sizeof(q), 0, (struct sockaddr *)&from,
+                    &fl);
+                if (n < 12 + 5)
+                        continue;
+                for (qend = 12; qend < (size_t)n && q[qend] != 0;
+                    qend += q[qend] + 1)
+                        continue;
+                if (qend + 5 > (size_t)n)
+                        continue;
+                type = q[qend + 1] << 8 | q[qend + 2];
+                qend += 5;
+                memcpy(r, q, qend);
+                r[2] = 0x84;            /* a reply, authoritative */
+                r[3] = 0;
+                r[6] = r[7] = r[8] = r[9] = r[10] = r[11] = 0;
+                rl = qend;
+                if (type == 1 && qend - 12 - 4 == sizeof(name) &&
+                    strncasecmp((char *)q + 12, (char *)name,
+                    sizeof(name)) == 0) {
+                        static const unsigned char a[] = { 0xc0, 12, 0, 1,
+                            0, 1, 0, 0, 0, 60, 0, 4, 10, 20, 30, 40 };
+
+                        memcpy(r + rl, a, sizeof(a));
+                        rl += sizeof(a);
+                        found = 1;
+                } else if (type == 12 && qend - 12 - 4 == sizeof(rev) &&
+                    strncasecmp((char *)q + 12, (char *)rev,
+                    sizeof(rev)) == 0) {
+                        static const unsigned char p[] = { 0xc0, 12, 0, 12,
+                            0, 1, 0, 0, 0, 60, 0, sizeof(name) };
+
+                        memcpy(r + rl, p, sizeof(p));
+                        memcpy(r + rl + sizeof(p), name, sizeof(name));
+                        rl += sizeof(p) + sizeof(name);
+                        found = 1;
+                }
+                if (found)
+                        r[7] = 1;
+                else
+                        r[3] = 3;       /* NXDOMAIN */
+                (void)sendto(fd, r, rl, 0, (struct sockaddr *)&from, fl);
+        }
+}
+
+/*
+ * The output of prog with arg into out (size bytes, terminated), and
+ * whether it exited 0.
+ */
+static int
+run_out(const char *prog, const char *arg, char *out, size_t size)
+{
+        int p[2], status = -1;
+        ssize_t n, got = 0;
+        pid_t pid;
+
+        if (pipe(p) != 0)
+                return 0;
+        if ((pid = fork()) == 0) {
+                dup2(p[1], 1);
+                close(p[0]);
+                close(p[1]);
+                execl(prog, prog, arg, (char *)NULL);
+                _exit(127);
+        }
+        close(p[1]);
+        while (got < (ssize_t)size - 1 &&
+            (n = read(p[0], out + got, size - 1 - (size_t)got)) > 0)
+                got += n;
+        out[got] = '\0';
+        close(p[0]);
+        return pid > 0 && waitpid(pid, &status, 0) == pid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+/*
+ * Names, through dnscache (/etc/rc.d/dnscache) on 127.0.0.1: the C
+ * library's getaddrinfo and getnameinfo, and djbdns' dnsip and dnsname,
+ * for a name and an address the fake root server knows, a name it does
+ * not, and localhost, which dnscache knows itself; and /dev/urandom,
+ * which seeds it.
+ */
+static void
+test_dns(void)
+{
+        struct sockaddr_in sin;
+        struct addrinfo hints, *ai = NULL;
+        unsigned char a[32], b[32];
+        char host[64], out[128];
+        int fd, rfd, ok = 0;
+        pid_t pid;
+
+        rfd = open("/dev/urandom", O_RDONLY);
+        CHECK(rfd >= 0 && read(rfd, a, sizeof(a)) == sizeof(a) &&
+            read(rfd, b, sizeof(b)) == sizeof(b) &&
+            memcmp(a, b, sizeof(a)) != 0);
+        if (rfd >= 0)
+                close(rfd);
+
+        memset(&sin, 0, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_port = htons(53);
+        sin.sin_addr.s_addr = inet4(127, 0, 0, 53);
+        fd = socket(AF_INET, SOCK_DGRAM, 0);
+        CHECK(fd >= 0 && bind(fd, (struct sockaddr *)&sin,
+            sizeof(sin)) == 0);
+        if ((pid = fork()) == 0) {
+                fake_root(fd, 20000);
+                _exit(0);
+        }
+        close(fd);
+
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        /* dnscache may still be starting: a few tries. */
+        for (int i = 0; i < 10 && !ok; i++) {
+                int e = getaddrinfo("test.belka", NULL, &hints, &ai);
+
+                ok = e == 0 && ai != NULL && ai->ai_family == AF_INET &&
+                    ((struct sockaddr_in *)ai->ai_addr)->sin_addr.s_addr ==
+                    inet4(10, 20, 30, 40);
+                if (e == 0)
+                        freeaddrinfo(ai);
+                if (!ok)
+                        sleep(1);
+        }
+        CHECK(ok);
+        CHECK(getaddrinfo("nothere.belka", NULL, &hints, &ai) == EAI_NONAME);
+        CHECK(getaddrinfo("localhost.", NULL, &hints, &ai) == 0 &&
+            ((struct sockaddr_in *)ai->ai_addr)->sin_addr.s_addr ==
+            inet4(127, 0, 0, 1));
+        sin.sin_port = 0;
+        sin.sin_addr.s_addr = inet4(10, 20, 30, 40);
+        CHECK(getnameinfo((struct sockaddr *)&sin, sizeof(sin), host,
+            sizeof(host), NULL, 0, NI_NAMEREQD) == 0 &&
+            strcmp(host, "test.belka") == 0);
+        CHECK(run_out("/usr/bin/dnsip", "test.belka", out, sizeof(out)) &&
+            strcmp(out, "10.20.30.40 \n") == 0);
+        CHECK(run_out("/usr/bin/dnsname", "10.20.30.40", out,
+            sizeof(out)) && strcmp(out, "test.belka\n") == 0);
+        if (pid > 0) {
+                kill(pid, SIGKILL);
+                (void)reap(pid, 5000);
+        }
+}
+
+/*
+ * chroot(2), in a child: refused to an ordinary user; for root, "/" is
+ * then the new root, ".." stops there, and what is outside is gone.
+ */
+static void
+test_chroot(void)
+{
+        int status = -1;
+        pid_t pid;
+
+        if ((pid = fork()) == 0) {
+                struct stat st;
+                int bad = 0;
+
+                if (chdir("/etc/dnscache/root") != 0 || chroot(".") != 0)
+                        _exit(1);
+                bad |= stat("/servers/@", &st) != 0;
+                bad |= stat("/../../servers/@", &st) != 0;
+                bad |= stat("/etc/passwd", &st) == 0 || errno != ENOENT;
+                bad |= chdir("..") != 0 || stat("ip/127", &st) != 0;
+                if (setuid(100) != 0 || chroot("/ip") == 0 || errno != EPERM)
+                        bad = 1;
+                _exit(bad ? 2 : 0);
+        }
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -813,6 +1015,8 @@ main(int argc, char **argv)
         test_utilities();
         test_xn_suite();
         test_network();
+        test_dns();
+        test_chroot();
         test_login(argv[1], argv[2], argv[3], argv[4]);
         test_utmpx(argv[1]);
         test_ageing(argv[2]);

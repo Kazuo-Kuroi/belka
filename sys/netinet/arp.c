@@ -242,6 +242,7 @@ arp_tick(void *arg)
                         link = &ae->ae_next;
                 }
         }
+        ip_reass_tick(ifp);
         ifp->if_timer = qtimeout(RD(ifp->if_arp->il_wq), arp_tick, ifp, HZ);
 }
 
