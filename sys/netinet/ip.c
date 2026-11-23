@@ -89,17 +89,26 @@ in_cksum_buf(const uint8_t *p, size_t len)
         return (uint16_t)~sum;
 }
 
-/* The Internet checksum of len bytes of a message, in host order. */
-uint16_t
-in_cksum(const mblk_t *mp, size_t len)
+/*
+ * The ones' complement sum, unfolded, of len bytes of a message from
+ * byte off (an even offset), added to sum.
+ */
+uint32_t
+in_sum(const mblk_t *mp, size_t off, size_t len, uint32_t sum)
 {
-        uint32_t sum = 0;
         int odd = 0;
 
         for (; mp != NULL && len > 0; mp = mp->b_cont) {
                 const uint8_t *p = mp->b_rptr;
                 size_t n = MBLKL(mp);
 
+                if (off >= n) {
+                        off -= n;
+                        continue;
+                }
+                p += off;
+                n -= off;
+                off = 0;
                 if (n > len)
                         n = len;
                 len -= n;
@@ -108,10 +117,36 @@ in_cksum(const mblk_t *mp, size_t len)
                         p++;
                         odd = !odd;
                 }
+                while ((sum >> 16) != 0)
+                        sum = (sum & 0xffff) + (sum >> 16);
         }
+        return sum;
+}
+
+/* The sum of the pseudo-header UDP and TCP checksums cover. */
+uint32_t
+in_pseudo(in_addr_t src, in_addr_t dst, uint8_t proto, size_t len)
+{
+        uint32_t s = ntohl(src), d = ntohl(dst);
+
+        return (s >> 16) + (s & 0xffff) + (d >> 16) + (d & 0xffff) +
+            proto + (uint32_t)len;
+}
+
+/* A sum folded and complemented: the checksum, in host order. */
+uint16_t
+in_fold(uint32_t sum)
+{
         while ((sum >> 16) != 0)
                 sum = (sum & 0xffff) + (sum >> 16);
         return (uint16_t)~sum;
+}
+
+/* The Internet checksum of len bytes of a message, in host order. */
+uint16_t
+in_cksum(const mblk_t *mp, size_t len)
+{
+        return in_fold(in_sum(mp, 0, len, 0));
 }
 
 static int
@@ -351,6 +386,23 @@ ip_send(mblk_t *mp)
                 ip->ip_ttl = IP_DEFTTL;
         ip->ip_sum = 0;
         ip->ip_sum = htons(in_cksum(mp, hlen));
+        /* UDP's checksum covers the source, so it is finished here. */
+        if (ip->ip_p == IPPROTO_UDP && len >= hlen + 8 &&
+            pullupmsg(mp, (ssize_t)(hlen + 8))) {
+                uint8_t *uh;
+                uint16_t sum;
+
+                ip = (struct ip *)mp->b_rptr;
+                uh = mp->b_rptr + hlen;
+                uh[6] = uh[7] = 0;
+                sum = in_fold(in_sum(mp, hlen, len - hlen,
+                    in_pseudo(ip->ip_src, ip->ip_dst, IPPROTO_UDP,
+                    len - hlen)));
+                if (sum == 0)
+                        sum = 0xffff;   /* 0 is no checksum at all */
+                uh[6] = (uint8_t)(sum >> 8);
+                uh[7] = (uint8_t)sum;
+        }
         ip_output(mp);
 }
 
@@ -1082,12 +1134,38 @@ ip_usend(queue_t *q, mblk_t *mp)
         ip_send(mp);
 }
 
+/* An M_CTL from a transport above (struct ip_ctl). */
+static void
+ip_uctl(mblk_t *mp)
+{
+        struct ip_ctl ic;
+        mblk_t *dp = mp->b_cont;
+
+        if (MBLKL(mp) < sizeof(ic) || dp == NULL) {
+                freemsg(mp);
+                return;
+        }
+        memcpy(&ic, mp->b_rptr, sizeof(ic));
+        mp->b_cont = NULL;
+        freeb(mp);
+        if (ic.ic_cmd == IPCTL_UNREACH && pullupmsg(dp, IP_MINHLEN) &&
+            IP_HLEN((struct ip *)dp->b_rptr) >= IP_MINHLEN &&
+            pullupmsg(dp, (ssize_t)IP_HLEN((struct ip *)dp->b_rptr)) &&
+            ip_ours(((struct ip *)dp->b_rptr)->ip_dst) == 1)
+                icmp_error(dp, ICMP_UNREACH, (uint8_t)ic.ic_arg);
+        else
+                freemsg(dp);
+}
+
 static int
 ip_uwput(queue_t *q, mblk_t *mp)
 {
         switch (DB_TYPE(mp)) {
         case M_DATA:
                 ip_usend(q, mp);
+                return 0;
+        case M_CTL:
+                ip_uctl(mp);
                 return 0;
         case M_IOCTL:
                 ip_ioctl(q, mp);

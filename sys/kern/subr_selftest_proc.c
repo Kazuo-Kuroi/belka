@@ -274,6 +274,7 @@ selftest_proc(void)
         char *strtest[] = { "strtest", NULL };
         char *nettest[] = { "nettest", NULL };
         char *iptest[] = { "iptest", NULL };
+        char *udptest[] = { "udptest", NULL };
         size_t used1, used2, zone0[NPROCZONES];
         int zones_ok = 1;
 
@@ -309,6 +310,7 @@ selftest_proc(void)
         CHECK(run("/p/bin/strtest", strtest, CLD_EXITED, 0));
         CHECK(run("/p/bin/nettest", nettest, CLD_EXITED, 0));
         CHECK(run("/p/bin/iptest", iptest, CLD_EXITED, 0));
+        CHECK(run("/p/bin/udptest", udptest, CLD_EXITED, 0));
         CHECK(run("/p/bin/sproctest", sproctest, CLD_EXITED, 0));
         CHECK(run("/p/bin/sproctest-static", sproctest, CLD_EXITED, 0));
         test_kernel_signal();

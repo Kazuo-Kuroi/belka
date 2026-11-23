@@ -2558,3 +2558,56 @@ heap bookkeeping with address-space-owned heap state.
 - **Testing:** `iptest` links `vionet0` under `/dev/ip`, configures
   10.0.2.15/24 with QEMU's gateway as the default route, and pings the
   gateway, its own address and 127.0.0.1 through a raw ICMP stream.
+
+## UDP and sockets over TPI (2026-11-23)
+
+- **UDP is a multiplexing STREAMS driver, `/dev/udp`** (`netinet/udp.c`),
+  one perimeter for all its streams, like IP. Its one lower stream is an
+  IP stream, linked with `I_PLINK` by the superuser (a second is
+  `EBUSY`); UDP then binds it to protocol 17 with an `IP_BINDPROTO` of
+  its own, under `kcred`. Nothing plumbs it at boot yet: `udptest` does,
+  and takes it apart again, until there is a start-up program for the
+  network.
+- **The upper side is TPI, connectionless** (`<sys/tihdr.h>`, the
+  messages and numbers of the System V interface, fields 32 bits wide):
+  `T_INFO_REQ`, `T_BIND_REQ` (no address, or port 0, picks a free port
+  from 49152 up; below 1024 needs a superuser opener), `T_UNBIND_REQ`,
+  `T_UNITDATA_REQ` out and `T_UNITDATA_IND` in, with `sockaddr_in`
+  addresses. `T_CONN_REQ` and `T_DISCON_REQ` name and forget a peer, as
+  connected UDP sockets need: the peer is where `M_DATA` (a `write`)
+  goes, and the only source heard from. They are answered by `T_OK_ACK`
+  alone; there is no `T_CONN_CON`. Options (`T_OPTMGMT_REQ`) are not
+  supported yet.
+- **The division of work with IP:** UDP sends its datagrams with an IP
+  header whose source may be 0.0.0.0, and IP, once it has chosen the
+  source, computes the UDP checksum, which covers it (for every UDP
+  datagram an upper stream sends, so a raw stream's own is replaced).
+  UDP checks the checksums of what arrives, delivers each datagram to
+  the most specific endpoint (connected, then bound to the address, then
+  to any), a broadcast to all that match, and hands a datagram nobody
+  takes back to IP in an `M_CTL` (`struct ip_ctl`, `IPCTL_UNREACH`), for
+  IP to answer with ICMP port unreachable unless it was a broadcast.
+  Binding a specific address is not checked against the interfaces yet.
+- **Sockets are the socket layer's own vnodes over a stream**
+  (`kern/sock_tpi.c`): `socket(AF_INET, SOCK_DGRAM)` opens a `/dev/udp`
+  stream inside the kernel (`str_kopen`), and `bind`, `connect`,
+  `sendto` and `recvfrom` become TPI messages on it. Requests are one at
+  a time per socket, and each waits for its acknowledgement, the one
+  high priority message at the head (one left behind by a signal is
+  discarded before the next request). Data is the head's ordinary
+  messages, which the socket layer takes whole (`str_kgetmsg`), without
+  the head's reader lock, so a thread waiting for data does not hold up
+  another's `bind`. A datagram is read once: what does not fit is
+  discarded (`MSG_TRUNC` gives its whole length), and `MSG_PEEK` copies
+  without taking it. An unbound socket is bound to a free port by its
+  first `sendto` or `connect`; `connect` to `AF_UNSPEC` disconnects; the
+  address 0.0.0.0 to send or connect to means this host (127.0.0.1).
+  `read`, `write` and `poll` work on the socket as on the stream.
+- **New system calls** (Belka's numbers): `sendto` 248, `recvfrom` 249,
+  `getsockname` 250 and `getpeername` 251. `send` and `recv` remain, and
+  for a local stream socket the address is refused (`EISCONN`) or empty.
+  `getsockname` gives a bound local socket its path.
+- **Testing:** `udptest` plumbs UDP over IP, speaks TPI to a `/dev/udp`
+  stream directly, and exercises the sockets over the loopback,
+  including port unreachable as seen on a raw ICMP stream (which also
+  shows the checksums IP computes are the ones UDP accepts).

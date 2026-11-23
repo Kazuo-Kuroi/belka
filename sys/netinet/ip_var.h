@@ -79,6 +79,19 @@ struct ip_rt {
         struct ip_if    *rt_if;
 };
 
+/*
+ * M_CTL from a transport linked above IP (UDP), down to it: ic_cmd, and
+ * the datagram it is about in b_cont. IPCTL_UNREACH: answer that
+ * datagram, one for us, with ICMP destination unreachable of code
+ * ic_arg (unless it was a broadcast).
+ */
+struct ip_ctl {
+        uint32_t        ic_cmd;
+        uint32_t        ic_arg;
+};
+
+#define IPCTL_UNREACH   1
+
 /* An upper stream. */
 struct ip_upper {
         struct ip_upper *iu_next;
@@ -91,6 +104,9 @@ extern struct ip_if *ip_ifs;
 /* ip.c */
 uint16_t in_cksum(const mblk_t *, size_t);
 uint16_t in_cksum_buf(const uint8_t *, size_t);
+uint32_t in_sum(const mblk_t *, size_t, size_t, uint32_t);
+uint32_t in_pseudo(in_addr_t, in_addr_t, uint8_t, size_t);
+uint16_t in_fold(uint32_t);
 void    ip_output(mblk_t *);
 void    ip_xmit(struct ip_if *, const uint8_t *, mblk_t *);
 void    ip_dlpi(struct ip_lower *, mblk_t *);

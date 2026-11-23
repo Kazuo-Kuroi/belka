@@ -167,7 +167,11 @@
 #define SYS_procblk     245
 #define SYS_getpmsg     246
 #define SYS_putpmsg     247
+#define SYS_sendto      248
+#define SYS_recvfrom    249
+#define SYS_getsockname 250
+#define SYS_getpeername 251
 
-#define NSYSCALL        248     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        252     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

@@ -83,6 +83,19 @@ sock_init(void)
         mutex_init(&local_lock, "socknames");
 }
 
+/* The file of fd if it is a TPI socket, held; else NULL. */
+static struct file *
+tpi_file(int fd)
+{
+        struct file *fp = fd_get(curproc, fd);
+
+        if (fp != NULL && !tpisock_is(fp->f_vnode)) {
+                frele(fp);
+                fp = NULL;
+        }
+        return fp;
+}
+
 /* Once connected, the front file holds the data endpoint until close. */
 static struct vnode *
 sock_resolve(struct vnode *vp)
@@ -453,16 +466,108 @@ sock_sys_rw(const uint64_t *args, uint64_t *rv, enum uio_rw rw)
         return error;
 }
 
+/*
+ * send, recv, and sendto and recvfrom (args[4] and [5]: the address and
+ * its length, or where to put them). A local stream socket has one peer
+ * and no address to give.
+ */
+static int
+sock_sys_xfer(const uint64_t *args, uint64_t *rv, enum uio_rw rw, int named)
+{
+        uint64_t a[6] = { args[0], args[1], args[2], args[3],
+            named ? args[4] : 0, named ? args[5] : 0 };
+        struct file *fp;
+        uint32_t none = 0;
+        int error;
+
+        if ((fp = tpi_file((int)args[0])) != NULL) {
+                error = rw == UIO_WRITE ? tpisock_sendto(fp, a, rv) :
+                    tpisock_recvfrom(fp, a, rv);
+                frele(fp);
+                return error;
+        }
+        if (rw == UIO_WRITE && a[4] != 0)
+                return EISCONN;
+        if ((error = sock_sys_rw(a, rv, rw)) == 0 && rw == UIO_READ &&
+            a[4] != 0 && a[5] != 0)
+                error = copyout(&none, (void *)(uintptr_t)a[5], sizeof(none));
+        return error;
+}
+
 int
 sys_send(const uint64_t *args, uint64_t *rv)
 {
-        return sock_sys_rw(args, rv, UIO_WRITE);
+        return sock_sys_xfer(args, rv, UIO_WRITE, 0);
 }
 
 int
 sys_recv(const uint64_t *args, uint64_t *rv)
 {
-        return sock_sys_rw(args, rv, UIO_READ);
+        return sock_sys_xfer(args, rv, UIO_READ, 0);
+}
+
+int
+sys_sendto(const uint64_t *args, uint64_t *rv)
+{
+        return sock_sys_xfer(args, rv, UIO_WRITE, 1);
+}
+
+int
+sys_recvfrom(const uint64_t *args, uint64_t *rv)
+{
+        return sock_sys_xfer(args, rv, UIO_READ, 1);
+}
+
+/* getsockname and getpeername: (fd, addr, &len). */
+static int
+sock_sys_name(const uint64_t *args, int peer)
+{
+        struct file *fp = fd_get(curproc, (int)args[0]);
+        struct vnode *vp;
+        int error;
+
+        if (fp == NULL)
+                return EBADF;
+        vp = fp->f_vnode;
+        if (tpisock_is(vp)) {
+                error = tpisock_name(vp, peer, args[1], args[2]);
+        } else if (vp->v_op == &local_ops || vp->v_op == &sock_ops) {
+                struct sockaddr_un addr = { .sun_family = AF_UNIX };
+                uint32_t len = offsetof(struct sockaddr_un, sun_path);
+
+                /* A local socket's own name, if bound; a peer's: none. */
+                if (vp->v_op == &local_ops && !peer) {
+                        struct localsock *local = vp->v_data;
+
+                        mutex_lock(&local_lock);
+                        if (local->ls_name != NULL) {
+                                addr = local->ls_addr;
+                                len += (uint32_t)strlen(addr.sun_path) + 1;
+                        }
+                        mutex_unlock(&local_lock);
+                } else if (peer && vp->v_op == &local_ops &&
+                    sock_resolve(vp) == NULL) {
+                        frele(fp);
+                        return ENOTCONN;
+                }
+                error = sockaddr_out(&addr, len, args[1], args[2]);
+        } else {
+                error = ENOTSOCK;
+        }
+        frele(fp);
+        return error;
+}
+
+int
+sys_getsockname(const uint64_t *args, uint64_t *rv __unused)
+{
+        return sock_sys_name(args, 0);
+}
+
+int
+sys_getpeername(const uint64_t *args, uint64_t *rv __unused)
+{
+        return sock_sys_name(args, 1);
 }
 
 int
@@ -587,6 +692,16 @@ sys_socket(const uint64_t *args, uint64_t *rv)
         struct file *fp;
         int type = (int)args[1], fd, error;
 
+        if ((int)args[0] != AF_UNIX) {
+                /* The other families' sockets are TPI providers' streams. */
+                int base = type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
+
+                error = tpisock_socket((int)args[0], base, (int)args[2],
+                    (type & SOCK_NONBLOCK) != 0 ? FNONBLOCK : 0, &fp);
+                if (error != 0)
+                        return error;
+                goto install;
+        }
         if ((error = sock_type(args)) != 0)
                 return error;
         local = kmem_zalloc(sizeof(*local), KM_NOSLEEP);
@@ -600,6 +715,7 @@ sys_socket(const uint64_t *args, uint64_t *rv)
         VN_HOLD(&local->ls_vnode);
         fp = falloc(&local->ls_vnode, FREAD | FWRITE |
             ((type & SOCK_NONBLOCK) != 0 ? FNONBLOCK : 0));
+install:
         error = fd_alloc_flags(curproc, fp, 0,
             (type & SOCK_CLOEXEC) != 0 ? FD_CLOEXEC : 0, &fd);
         if (error != 0) {
@@ -623,7 +739,8 @@ local_get(int fd, struct file **fpp, struct localsock **out)
                 *out = fp->f_vnode->v_data;
                 return 0;
         }
-        error = fp->f_vnode->v_op == &sock_ops ? EISCONN : ENOTSOCK;
+        error = fp->f_vnode->v_op == &sock_ops ? EISCONN :
+            tpisock_is(fp->f_vnode) ? EOPNOTSUPP : ENOTSOCK;
         frele(fp);
         return error;
 }
@@ -658,6 +775,11 @@ sys_bind(const uint64_t *args, uint64_t *rv __unused)
         struct file *fp;
         int error;
 
+        if ((fp = tpi_file((int)args[0])) != NULL) {
+                error = tpisock_bind(fp->f_vnode, args[1], args[2]);
+                frele(fp);
+                return error;
+        }
         if ((error = local_get((int)args[0], &fp, &local)) != 0)
                 return error;
         if ((error = local_address(args[1], args[2], &addr)) == 0) {
@@ -751,6 +873,11 @@ sys_connect(const uint64_t *args, uint64_t *rv __unused)
         struct file *fp;
         int error;
 
+        if ((fp = tpi_file((int)args[0])) != NULL) {
+                error = tpisock_connect(fp->f_vnode, args[1], args[2]);
+                frele(fp);
+                return error;
+        }
         if ((error = local_get((int)args[0], &fp, &client)) != 0)
                 return error;
         if ((error = local_address(args[1], args[2], &addr)) == 0 &&

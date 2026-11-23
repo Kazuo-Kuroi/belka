@@ -18,7 +18,7 @@
 #include <sys/systm.h>
 
 extern struct streamtab ipinfo, strloopinfo, strmuxinfo, strpassinfo,
-    strupinfo;
+    strupinfo, udpinfo;
 
 static struct fmodsw fmodsw[] = {
         { "strpass", &strpassinfo, SQLVL_QPAIR, NULL },
@@ -31,8 +31,10 @@ struct strdev strdevsw[STRDEV_MAX] = {
         { "strmux", &strmuxinfo, SQLVL_MODULE, DEV_STRMUX_MAJOR, 0666,
             NULL, 0, 0, NULL },
         { "ip", &ipinfo, SQLVL_MODULE, DEV_IP_MAJOR, 0666, NULL, 0, 0, NULL },
+        { "udp", &udpinfo, SQLVL_MODULE, DEV_UDP_MAJOR, 0666, NULL, 0, 0,
+            NULL },
 };
-int nstrdev = 3;
+int nstrdev = 4;
 
 struct fmodsw *
 fmod_find(const char *name)

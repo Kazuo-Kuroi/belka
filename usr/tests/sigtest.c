@@ -432,7 +432,7 @@ test_defaults(void)
 
         /* An unassigned system call raises SIGSYS. */
         if ((pid = fork()) == 0) {
-                (void)RAWSYS1(250, 0);
+                (void)RAWSYS1(1000, 0);
                 _exit(0);
         }
         CHECK(waitpid(pid, &status, 0) == pid && WIFSIGNALED(status) &&

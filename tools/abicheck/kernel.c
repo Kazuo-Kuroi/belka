@@ -25,12 +25,15 @@
 #include <sys/dlpi.h>
 #include <sys/ipconf.h>
 #include <sys/stropts.h>
+#include <sys/tihdr.h>
 #include <sys/termios.h>
 #include <sys/time.h>
 #include <sys/times.h>
 #include <sys/ucontext.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+
+#include <netinet/in.h>
 
 #define CONST(n)        printf("#define K_%s (%lldLL)\n", #n, (long long)(n));
 #define SIZE(k, l)      printf("#define K_SIZE_%d %zu\n", __LINE__, sizeof(k));

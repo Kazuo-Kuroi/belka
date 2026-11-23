@@ -46,6 +46,7 @@ struct icmp {
 #define ICMP_ECHOREPLY          0
 #define ICMP_UNREACH            3
 #define ICMP_UNREACH_PROTOCOL   2
+#define ICMP_UNREACH_PORT       3
 #define ICMP_ECHO               8
 
 #endif /* _NETINET_IP_H_ */

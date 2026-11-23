@@ -89,7 +89,7 @@ test_basics(void)
          * unassigned number also raises SIGSYS, ignored here.
          */
         CHECK(signal(SIGSYS, SIG_IGN) != SIG_ERR);
-        r = RAWSYS1(250, 0);
+        r = RAWSYS1(1000, 0);
         CHECK(r.error == EINVAL);
         CHECK(signal(SIGSYS, SIG_DFL) == SIG_IGN);
         r = RAWSYS1(SYS_close, 99);

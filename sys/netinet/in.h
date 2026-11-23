@@ -18,9 +18,18 @@
 #include <machine/endian.h>
 
 typedef uint32_t        in_addr_t;
+typedef uint16_t        in_port_t;
 
 struct in_addr {
         in_addr_t       s_addr;
+};
+
+/* An IPv4 socket address; the port and address in network order. */
+struct sockaddr_in {
+        uint16_t        sin_family;     /* AF_INET */
+        in_port_t       sin_port;
+        struct in_addr  sin_addr;
+        uint8_t         sin_zero[8];
 };
 
 #define IPPROTO_IP      0

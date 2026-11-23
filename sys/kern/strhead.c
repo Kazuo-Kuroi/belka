@@ -665,7 +665,7 @@ str_pop(struct stdata *sd, int flag, struct cred *cr)
 
 /*
  * Open the STREAMS device dev: a new stream, whose vnode replaces the
- * device's node in *vpp.
+ * device's node in *vpp (or a NULL there, for the kernel's own opens).
  */
 int
 str_clone(struct strdev *dev, struct vnode **vpp, int flags, struct cred *cr)
@@ -709,8 +709,8 @@ str_clone(struct strdev *dev, struct vnode **vpp, int flags, struct cred *cr)
             (atomic_inc_32_nv(&dev->d_nextminor) & 0xffffff));
         specattr_init(&sd->sd_attr, dev->d_mode, cr->cr_uid, cr->cr_gid,
             devno);
-        vn_init(&sd->sd_vnode, (*vpp)->v_vfsp, VCHR, &str_vnops,
-            &sd->sd_attr);
+        vn_init(&sd->sd_vnode, *vpp != NULL ? (*vpp)->v_vfsp : NULL, VCHR,
+            &str_vnops, &sd->sd_attr);
 
         set[0] = hsq;
         set[1] = dsq;
@@ -741,7 +741,8 @@ str_clone(struct strdev *dev, struct vnode **vpp, int flags, struct cred *cr)
         }
         sd->sd_vnode.v_stream = sd;
         VN_HOLD(&sd->sd_vnode);
-        VN_RELE(*vpp);
+        if (*vpp != NULL)
+                VN_RELE(*vpp);
         *vpp = &sd->sd_vnode;
         return 0;
 }
@@ -2116,6 +2117,93 @@ strioctl(struct vnode *vp, unsigned long cmd, uint64_t arg, int flag,
         default:
                 return EINVAL;
         }
+}
+
+/*
+ * --- For the kernel's own users of a stream (sockets over TPI). ---
+ * They exchange whole messages with the stream and take them from the
+ * head without sd_rdlock, so that one thread waiting for data does not
+ * keep another from its acknowledgement.
+ */
+
+/* A new stream on the STREAMS device name; its vnode, held, in *vpp. */
+int
+str_kopen(const char *name, int flags, struct cred *cr, struct vnode **vpp)
+{
+        struct strdev *dev = strdev_find(name);
+
+        *vpp = NULL;
+        if (dev == NULL)
+                return ENXIO;
+        return str_clone(dev, vpp, flags, cr);
+}
+
+/*
+ * Send mp down the stream, waiting (unless ioflag says not to) while
+ * an ordinary message would not fit. mp is the stream's, or freed.
+ */
+int
+str_kputmsg(struct stdata *sd, mblk_t *mp, int ioflag)
+{
+        int error;
+
+        if (DB_TYPE(mp) < QPCTL) {
+                error = str_waitwrite(sd, mp->b_band, ioflag);
+        } else {
+                mutex_lock(&sd->sd_lock);
+                error = str_werror(sd);
+                mutex_unlock(&sd->sd_lock);
+        }
+        if (error != 0) {
+                freemsg(mp);
+                return error;
+        }
+        str_down(sd, mp);
+        return 0;
+}
+
+/*
+ * Take the next message from the head: the high priority one first in
+ * line if hipri, else the first ordinary one (which may wait behind
+ * it). peek leaves it there and gives a copy. *mpp is NULL at hang-up
+ * once nothing is left. 0, or EAGAIN (if ioflag says not to wait), a
+ * read error, or a signal's.
+ */
+int
+str_kgetmsg(struct stdata *sd, int hipri, int ioflag, int peek, mblk_t **mpp)
+{
+        queue_t *rq = sd->sd_rq;
+        mblk_t *mp;
+        int error;
+
+        *mpp = NULL;
+        mutex_lock(&sd->sd_lock);
+        for (;;) {
+                if ((error = str_rerror(sd)) != 0) {
+                        mutex_unlock(&sd->sd_lock);
+                        return error;
+                }
+                mp = rq->q_first;
+                if (mp != NULL && DB_TYPE(mp) >= QPCTL && !hipri)
+                        mp = mp->b_next;
+                if (mp != NULL && (!hipri || DB_TYPE(mp) >= QPCTL))
+                        break;
+                if ((sd->sd_flag & STRHUP) != 0) {
+                        mutex_unlock(&sd->sd_lock);
+                        return 0;
+                }
+                if ((error = str_waitread(sd, ioflag)) != 0)
+                        return error;
+        }
+        if (peek) {
+                *mpp = dupmsg(mp);
+                mutex_unlock(&sd->sd_lock);
+                return *mpp != NULL ? 0 : ENOSR;
+        }
+        rmvq(rq, mp);
+        mutex_unlock(&sd->sd_lock);
+        *mpp = mp;
+        return 0;
 }
 
 /* --- The stream's vnode. --- */

@@ -43,6 +43,7 @@ sy_call_t sys_kill, sys_sigaction, sys_sigprocmask, sys_sigsuspend;
 sy_call_t sys_sigqueue;
 sy_call_t sys_socketpair, sys_send, sys_recv, sys_sockatmark;
 sy_call_t sys_pipe2, sys_socket, sys_bind, sys_listen, sys_connect, sys_accept;
+sy_call_t sys_sendto, sys_recvfrom, sys_getsockname, sys_getpeername;
 sy_call_t sys_aio_notify, sys_aio_dup;
 sy_call_t sys_sigpending, sys_sigaltstack, sys_signal, sys_pause;
 sy_call_t sys_context, sys_pgrpsys, sys_sigwait;

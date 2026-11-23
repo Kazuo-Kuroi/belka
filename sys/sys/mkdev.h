@@ -30,5 +30,6 @@
 #define DEV_STRMUX_MAJOR        8       /* STREAMS multiplexor clone (tests) */
 #define DEV_VIONET_MAJOR        9       /* virtio-net DLPI; unit in the minor */
 #define DEV_IP_MAJOR            10      /* IPv4 (/dev/ip) clone */
+#define DEV_UDP_MAJOR           11      /* UDP (/dev/udp) clone */
 
 #endif /* _SYS_MKDEV_H_ */

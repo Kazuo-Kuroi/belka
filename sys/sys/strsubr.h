@@ -126,6 +126,9 @@ struct stdata {
 /* Stream heads (kern/strhead.c). */
 void    strhead_init(void);
 int     str_clone(struct strdev *, struct vnode **, int, struct cred *);
+int     str_kopen(const char *, int, struct cred *, struct vnode **);
+int     str_kputmsg(struct stdata *, mblk_t *, int);
+int     str_kgetmsg(struct stdata *, int, int, int, mblk_t **);
 int     strsig_ioctl(struct proc *, int, unsigned long, uint64_t);
 void    strsig_close(struct stdata *, struct proc *);
 int     sys_getmsg(const uint64_t *, uint64_t *);

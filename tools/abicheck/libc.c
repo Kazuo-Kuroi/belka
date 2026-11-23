@@ -19,6 +19,7 @@
 #include <stropts.h>
 #include <sys/dlpi.h>
 #include <sys/ipconf.h>
+#include <sys/tihdr.h>
 #include <sys/auxv.h>
 #include <sys/file.h>
 #include <sys/mman.h>
@@ -35,6 +36,7 @@
 #include <time.h>
 #include <termios.h>
 #include <ucontext.h>
+#include <netinet/in.h>
 
 #include "kernel-abi.h"
 

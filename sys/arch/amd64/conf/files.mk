@@ -55,6 +55,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/str_msg.c \
                    sys/kern/str_queue.c \
                    sys/kern/sockfs.c \
+                   sys/kern/sock_tpi.c \
                    sys/kern/spec_vnops.c \
                    sys/kern/vfs_bio.c \
                    sys/kern/vfs_dnlc.c \
@@ -100,6 +101,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/dev/virtio/vionet.c \
                    sys/netinet/arp.c \
                    sys/netinet/ip.c \
+                   sys/netinet/udp.c \
                    sys/dev/ic/ns16550.c
 
 MD_SRCS         := sys/arch/amd64/amd64/locore.S \
