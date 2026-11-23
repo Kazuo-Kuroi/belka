@@ -97,6 +97,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/dev/virtio/virtio.c \
                    sys/dev/virtio/virtio_pci.c \
                    sys/dev/virtio/vioblk.c \
+                   sys/dev/virtio/vionet.c \
                    sys/dev/ic/ns16550.c
 
 MD_SRCS         := sys/arch/amd64/amd64/locore.S \

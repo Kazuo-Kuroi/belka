@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 
+#include <sys/mkdev.h>
 #include <sys/poll.h>
 #include <sys/specvn.h>
 #include <sys/spinlock.h>
@@ -58,14 +59,19 @@ struct fmodsw {
 };
 
 struct strdev {
-        const char      *d_name;        /* under /dev */
+        char            d_name[16];     /* under /dev */
         struct streamtab *d_str;
         int             d_sqlvl;
         unsigned int    d_major;
         mode_t          d_mode;
         struct syncq    *d_syncq;
         volatile uint32_t d_nextminor;
+        unsigned int    d_unit;         /* in the top 8 bits of each minor */
+        void            *d_private;     /* the driver's, for its open */
 };
+
+#define STRDEV_MAX      32
+#define STR_UNIT(dev)   (minor(dev) >> 24)
 
 #define NSTRPUSH        9       /* modules on one stream */
 
@@ -149,6 +155,8 @@ void    str_backenable(queue_t *);
 struct fmodsw *fmod_find(const char *);
 struct strdev *strdev_find(const char *);
 extern struct strdev strdevsw[];
-extern const int nstrdev;
+extern int nstrdev;
+struct strdev *strdev_register(const char *, struct streamtab *, int,
+            unsigned int, unsigned int, mode_t, void *);
 
 #endif /* _SYS_STRSUBR_H_ */

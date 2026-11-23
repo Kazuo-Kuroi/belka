@@ -173,6 +173,10 @@ virtio_pci_attach(struct pci_dev *pd)
                 if (vioblk_attach(sc) == 0)
                         return 0;
                 break;
+        case VIRTIO_ID_NET:
+                if (vionet_attach(sc) == 0)
+                        return 0;
+                break;
         default:
                 printf("virtio %u:%02u.%u: device type %d has no driver\n",
                     pd->pd_bus, pd->pd_dev, pd->pd_fn, type);

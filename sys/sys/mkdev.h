@@ -28,5 +28,6 @@
 #define DEV_BLK_MAJOR           6       /* disks; minor: the blkdev index */
 #define DEV_STRLOOP_MAJOR       7       /* STREAMS loopback clone */
 #define DEV_STRMUX_MAJOR        8       /* STREAMS multiplexor clone (tests) */
+#define DEV_VIONET_MAJOR        9       /* virtio-net DLPI; unit in the minor */
 
 #endif /* _SYS_MKDEV_H_ */

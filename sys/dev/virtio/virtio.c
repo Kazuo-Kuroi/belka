@@ -84,13 +84,14 @@ vq_descriptors_needed(const struct vq_seg *segs, int nsegs)
 
 /*
  * Queue a request of nout device-readable segments followed by nin
- * device-writable ones, waiting for free descriptors if necessary, and
- * notify the device. cookie is passed to the completion callback.
- * Returns 0, or -1 if the request can never fit. Thread context only.
+ * device-writable ones, waiting for free descriptors if wait (else
+ * returning 1 if there are too few now), and notify the device. cookie
+ * is passed to the completion callback. Returns 0, or -1 if the
+ * request can never fit.
  */
-int
-vq_submit(struct virtqueue *vq, const struct vq_seg *segs, int nout,
-    int nin, void *cookie)
+static int
+vq_submit1(struct virtqueue *vq, const struct vq_seg *segs, int nout,
+    int nin, void *cookie, int wait)
 {
         int need = vq_descriptors_needed(segs, nout + nin);
         uint16_t head, idx, prev = 0;
@@ -100,6 +101,10 @@ vq_submit(struct virtqueue *vq, const struct vq_seg *segs, int nout,
                 return -1;
         s = spin_lock(&vq->vq_lock);
         while (vq->vq_nfree < need) {
+                if (!wait) {
+                        spin_unlock(&vq->vq_lock, s);
+                        return 1;
+                }
                 sv_wait(&vq->vq_space, &vq->vq_lock, s);
                 s = spin_lock(&vq->vq_lock);
         }
@@ -141,6 +146,22 @@ vq_submit(struct virtqueue *vq, const struct vq_seg *segs, int nout,
         *vq->vq_notify = vq->vq_index;
         spin_unlock(&vq->vq_lock, s);
         return 0;
+}
+
+/* Thread context only: may wait for descriptors. */
+int
+vq_submit(struct virtqueue *vq, const struct vq_seg *segs, int nout,
+    int nin, void *cookie)
+{
+        return vq_submit1(vq, segs, nout, nin, cookie, 1);
+}
+
+/* Never waits (for STREAMS procedures): 1 if the ring is full now. */
+int
+vq_trysubmit(struct virtqueue *vq, const struct vq_seg *segs, int nout,
+    int nin, void *cookie)
+{
+        return vq_submit1(vq, segs, nout, nin, cookie, 0);
 }
 
 /*

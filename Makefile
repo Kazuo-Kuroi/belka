@@ -183,7 +183,10 @@ QEMU_CPU        ?= max,+invtsc
 QEMU_BASE       := -machine q35,accel=kvm:tcg -cpu $(QEMU_CPU) -smp $(SMP) -m $(MEM) \
                    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
                    -device isa-debug-exit,iobase=0xf4,iosize=0x04
-# The self-test boots: the raw test disk and the two ext2 images.
+# The self-test boots: the raw test disk and the two ext2 images, and a
+# virtio-net device on QEMU's user-mode network (no host privilege), at a
+# station address usr/tests/nettest.c expects.
+TEST_MAC        := 52:54:00:12:34:56
 QEMU_FLAGS      := $(QEMU_BASE) \
                    -drive file=$(DISK),if=none,id=vd0,format=raw \
                    -device virtio-blk-pci,drive=vd0,disable-legacy=on \
@@ -191,6 +194,8 @@ QEMU_FLAGS      := $(QEMU_BASE) \
                    -device virtio-blk-pci,drive=vd1,disable-legacy=on \
                    -drive file=$(EXT2_4K),if=none,id=vd2,format=raw \
                    -device virtio-blk-pci,drive=vd2,disable-legacy=on \
+                   -nic none -netdev user,id=n0 \
+                   -device virtio-net-pci,netdev=n0,mac=$(TEST_MAC),disable-legacy=on \
                    -display none -no-reboot
 # A normal boot: the root image (tools/mkroot.sh) as vd0.
 QEMU_ROOT_FLAGS = $(QEMU_BASE) \
@@ -319,7 +324,7 @@ LIBC_DIR        := build/user-libc-$(TOOLCHAIN)$(LDSUFFIX)
 LIBC_DBGDIR     := $(LIBC_DIR)-debug
 LIBC_PROGS      := hello segv argtest utest sigtest lwptest libctest \
                    threadtest dyntest credtest ttytest ptytest sproctest \
-                   strtest
+                   strtest nettest
 LIBC_SPROGS     := libctest-static sproctest-static
 LIBC_PIEPROGS   := dyntest-pie
 LIBC_DBGBINS    := $(addprefix $(LIBC_DBGDIR)/,$(LIBC_PROGS))

@@ -2481,3 +2481,39 @@ heap bookkeeping with address-space-owned heap state.
 - **Testing:** `strmux` (`/dev/strmux`) is a small multiplexing driver
   for `strtest`: links of loopback streams (with modules), selection,
   persistent links, `MUXID_ALL`, and two levels of multiplexing.
+
+## virtio-net and DLPI (2026-11-22)
+
+- **DLPI version 2, style 1, connectionless:** each virtio-net device
+  is a STREAMS device, `/dev/vionetN` (N from 0, in attach order); every
+  open is a clone stream already attached to that device. The
+  primitives are `DL_INFO_REQ`, `DL_BIND_REQ`/`DL_UNBIND_REQ` (the SAP
+  is the Ethernet type), `DL_UNITDATA_REQ`/`DL_UNITDATA_IND`,
+  `DL_PHYS_ADDR_REQ`, and `DL_PROMISCON_REQ`/`DL_PROMISCOFF_REQ` at the
+  `DL_PROMISC_SAP` and `DL_PROMISC_PHYS` levels; others get
+  `DL_ERROR_ACK` (`DL_ATTACH_REQ` with `DL_OUTSTATE`, the rest
+  `DL_BADPRIM` or `DL_UNSUPPORTED`). The structures, values and
+  `<sys/dlpi.h>` are the DLPI ABI's, with 32-bit fields.
+- **Addresses** are the six-byte station address followed by the
+  two-byte SAP in host order (`dl_sap_length` -2). A `DL_UNITDATA_REQ`
+  may give six bytes, for the stream's own SAP. Frames for another
+  station reach only `DL_PROMISC_PHYS` streams; broadcast and multicast
+  frames reach every bound stream of their type. Frames of 802.3 length
+  type are not delivered yet.
+- **The device:** `VIRTIO_F_VERSION_1` with `VIRTIO_NET_F_MAC` and
+  `VIRTIO_NET_F_STATUS`; no offloads, no mergeable buffers, no control
+  queue. Receive buffers are 2 KB, posted at attach. Completions run in
+  the queues' interrupt threads: received frames are handed to a
+  kernel thread per device (`vionetN`), which copies each into a
+  message for every stream that wants it (`put` into the stream's
+  driver read queue), and reposts the buffer. A frame that finds the
+  stream full is dropped. Transmission copies the frame into one
+  buffer and queues it without waiting (`vq_trysubmit`); a full ring
+  drops it.
+- **STREAMS devices are registered at attach** (`strdev_register`), and
+  devfs makes a clone node for each. The device's unit is in the top
+  eight bits of a stream's minor number.
+- **Tests:** the self-test boot has a virtio-net device on QEMU's
+  user-mode network, with a fixed station address. `nettest` binds the
+  ARP type, asks QEMU's gateway (10.0.2.2) for its address, and checks
+  the reply and the DLPI state machine.

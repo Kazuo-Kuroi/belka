@@ -705,7 +705,8 @@ str_clone(struct strdev *dev, struct vnode **vpp, int flags, struct cred *cr)
         setq(dq, st->st_rdinit, st->st_wrinit, dsq, sd);
         sq_rele(dsq);
 
-        devno = makedev(dev->d_major, atomic_inc_32_nv(&dev->d_nextminor));
+        devno = makedev(dev->d_major, (dev->d_unit << 24) |
+            (atomic_inc_32_nv(&dev->d_nextminor) & 0xffffff));
         specattr_init(&sd->sd_attr, dev->d_mode, cr->cr_uid, cr->cr_gid,
             devno);
         vn_init(&sd->sd_vnode, (*vpp)->v_vfsp, VCHR, &str_vnops,

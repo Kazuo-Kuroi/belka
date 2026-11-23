@@ -45,7 +45,7 @@
 #include <sys/vnode.h>
 
 enum { DV_ROOT, DV_PTS, DV_NULL, DV_ZERO, DV_TTY, DV_PTMX, DV_MNTTAB,
-    DV_STRLOOP, DV_STRMUX, DV_N };
+    DV_N };
 
 static struct specattr dv_attr[DV_N];
 static struct vnode dv_vn[DV_N];
@@ -53,6 +53,11 @@ static struct vnode dv_vn[DV_N];
 static struct specattr dv_blkattr[BLKDEV_MAX];
 static struct vnode dv_blkvn[BLKDEV_MAX];
 static int dv_nblk;
+
+/* A clone node for each STREAMS device (strdevsw), made at mount. */
+static struct specattr dv_strattr[STRDEV_MAX];
+static struct vnode dv_strvn[STRDEV_MAX];
+static int dv_nstr;
 static struct vfs *devfs_vfs;
 
 static const struct vnodeops devfs_dirops, devfs_memops, devfs_cloneops,
@@ -70,8 +75,6 @@ static const struct {
         { "ptmx", DV_PTMX },
         { "mnttab", DV_MNTTAB },
         { "pts", DV_PTS },
-        { "strloop", DV_STRLOOP },
-        { "strmux", DV_STRMUX },
 };
 #define NNAMES  (sizeof(devfs_names) / sizeof(devfs_names[0]))
 
@@ -96,10 +99,6 @@ devfs_mount(struct vfs *vfsp, const void *data __unused,
                 [DV_PTMX] = { VCHR, 0666, makedev(DEV_PTM_MAJOR, 0xffff),
                     &devfs_cloneops },
                 [DV_MNTTAB] = { VREG, 0444, 0, &devfs_mntops },
-                [DV_STRLOOP] = { VCHR, 0666, makedev(DEV_STRLOOP_MAJOR, 0),
-                    &devfs_cloneops },
-                [DV_STRMUX] = { VCHR, 0666, makedev(DEV_STRMUX_MAJOR, 0),
-                    &devfs_cloneops },
         };
 
         if (devfs_vfs != NULL)
@@ -122,6 +121,15 @@ devfs_mount(struct vfs *vfsp, const void *data __unused,
                 vn_init(&dv_blkvn[dv_nblk], vfsp, VBLK, &devfs_blkops,
                     &dv_blkattr[dv_nblk]);
                 VN_HOLD(&dv_blkvn[dv_nblk]);   /* never released */
+        }
+        for (dv_nstr = 0; dv_nstr < nstrdev; dv_nstr++) {
+                struct strdev *sd = &strdevsw[dv_nstr];
+
+                specattr_init(&dv_strattr[dv_nstr], sd->d_mode, 0, 0,
+                    makedev(sd->d_major, sd->d_unit << 24));
+                vn_init(&dv_strvn[dv_nstr], vfsp, VCHR, &devfs_cloneops,
+                    &dv_strattr[dv_nstr]);
+                VN_HOLD(&dv_strvn[dv_nstr]);   /* never released */
         }
         dv_vn[DV_ROOT].v_flag |= VROOT;
         pty_setvfs(vfsp);
@@ -228,6 +236,13 @@ devfs_lookup(struct vnode *dvp, const char *nm, struct vnode **vpp,
                         return 0;
                 }
         }
+        for (int i = 0; i < dv_nstr; i++) {
+                if (strcmp(nm, strdevsw[i].d_name) == 0) {
+                        *vpp = &dv_strvn[i];
+                        VN_HOLD(*vpp);
+                        return 0;
+                }
+        }
         return ENOENT;
 }
 
@@ -279,11 +294,16 @@ devfs_readdir(struct vnode *vp, struct uio *uio, int *eofp,
                 } else if (vp == &dv_vn[DV_ROOT]) {
                         size_t k = (size_t)(idx - 2);
 
-                        if (k >= NNAMES + (size_t)dv_nblk) {
+                        if (k >= NNAMES + (size_t)dv_nblk + (size_t)dv_nstr) {
                                 *eofp = 1;
                                 break;
                         }
-                        if (k >= NNAMES) {
+                        if (k >= NNAMES + (size_t)dv_nblk) {
+                                k -= NNAMES + (size_t)dv_nblk;
+                                snprintf(name, sizeof(name), "%s",
+                                    strdevsw[k].d_name);
+                                ino = dv_strattr[k].sa_ino;
+                        } else if (k >= NNAMES) {
                                 k -= NNAMES;
                                 snprintf(name, sizeof(name), "%s",
                                     blkdev_index((int)k)->bd_name);
@@ -377,10 +397,9 @@ clone_open(struct vnode **vpp, int flags, struct cred *cr)
 
         if (*vpp == &dv_vn[DV_PTMX])
                 return ptm_clone(vpp, flags, cr);
-        if (*vpp == &dv_vn[DV_STRLOOP])
-                return str_clone(strdev_find("strloop"), vpp, flags, cr);
-        if (*vpp == &dv_vn[DV_STRMUX])
-                return str_clone(strdev_find("strmux"), vpp, flags, cr);
+        if (*vpp >= &dv_strvn[0] && *vpp < &dv_strvn[dv_nstr])
+                return str_clone(&strdevsw[*vpp - &dv_strvn[0]], vpp, flags,
+                    cr);
         /* /dev/tty: the session's terminal, opened in its own right. */
         if ((vp = tty_ctty_vnode(curproc->p_sid)) == NULL)
                 return ENXIO;

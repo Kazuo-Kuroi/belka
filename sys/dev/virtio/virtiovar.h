@@ -90,10 +90,12 @@ uint64_t virtio_cfg_read64(struct virtio_softc *, int);
 /* Virtqueues (virtio.c). */
 int vq_init(struct virtqueue *, int);
 int vq_submit(struct virtqueue *, const struct vq_seg *, int, int, void *);
+int vq_trysubmit(struct virtqueue *, const struct vq_seg *, int, int, void *);
 int vq_intr(void *);
 int vq_descriptors_needed(const struct vq_seg *, int);
 
 /* Device drivers, by type. */
 int vioblk_attach(struct virtio_softc *);
+int vionet_attach(struct virtio_softc *);
 
 #endif /* _DEV_VIRTIO_VIRTIOVAR_H_ */

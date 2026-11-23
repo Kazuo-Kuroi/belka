@@ -22,6 +22,7 @@
 #include <sys/signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/dlpi.h>
 #include <sys/stropts.h>
 #include <sys/termios.h>
 #include <sys/time.h>

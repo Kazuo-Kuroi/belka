@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stropts.h>
+#include <sys/dlpi.h>
 #include <sys/auxv.h>
 #include <sys/file.h>
 #include <sys/mman.h>

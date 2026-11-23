@@ -85,6 +85,9 @@ the tests' own `libdt.so.1` in `/lib`, and the kernel runs them during
 network stack is being built, is tested by the kernel's self-tests and
 by `strtest`, through the loopback driver `/dev/strloop`, the test
 modules `strpass` and `strup`, and the multiplexing driver `/dev/strmux`.
+The self-test boot also has a virtio-net device (`/dev/vionet0`, a
+DLPI provider) on QEMU's user-mode network; `nettest` talks ARP with
+QEMU's gateway through it.
 Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU
