@@ -13,7 +13,7 @@
 #include <sys/strsubr.h>
 #include <sys/systm.h>
 
-extern struct streamtab strloopinfo, strpassinfo, strupinfo;
+extern struct streamtab strloopinfo, strmuxinfo, strpassinfo, strupinfo;
 
 static struct fmodsw fmodsw[] = {
         { "strpass", &strpassinfo, SQLVL_QPAIR, NULL },
@@ -22,6 +22,8 @@ static struct fmodsw fmodsw[] = {
 
 struct strdev strdevsw[] = {
         { "strloop", &strloopinfo, SQLVL_QPAIR, DEV_STRLOOP_MAJOR, 0666,
+            NULL, 0 },
+        { "strmux", &strmuxinfo, SQLVL_MODULE, DEV_STRMUX_MAJOR, 0666,
             NULL, 0 },
 };
 const int nstrdev = sizeof(strdevsw) / sizeof(strdevsw[0]);

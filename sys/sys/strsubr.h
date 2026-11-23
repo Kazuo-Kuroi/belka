@@ -115,8 +115,10 @@ struct stdata {
 #define STRMREAD        0x0010  /* send M_READ before waiting */
 #define STRDELIM        0x0020  /* mark messages delimited */
 #define STRTOSTOP       0x0040
+#define STPLEX          0x0080  /* linked under a multiplexor */
 
 /* Stream heads (kern/strhead.c). */
+void    strhead_init(void);
 int     str_clone(struct strdev *, struct vnode **, int, struct cred *);
 int     strsig_ioctl(struct proc *, int, unsigned long, uint64_t);
 void    strsig_close(struct stdata *, struct proc *);

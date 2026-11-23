@@ -45,7 +45,7 @@
 #include <sys/vnode.h>
 
 enum { DV_ROOT, DV_PTS, DV_NULL, DV_ZERO, DV_TTY, DV_PTMX, DV_MNTTAB,
-    DV_STRLOOP, DV_N };
+    DV_STRLOOP, DV_STRMUX, DV_N };
 
 static struct specattr dv_attr[DV_N];
 static struct vnode dv_vn[DV_N];
@@ -71,6 +71,7 @@ static const struct {
         { "mnttab", DV_MNTTAB },
         { "pts", DV_PTS },
         { "strloop", DV_STRLOOP },
+        { "strmux", DV_STRMUX },
 };
 #define NNAMES  (sizeof(devfs_names) / sizeof(devfs_names[0]))
 
@@ -96,6 +97,8 @@ devfs_mount(struct vfs *vfsp, const void *data __unused,
                     &devfs_cloneops },
                 [DV_MNTTAB] = { VREG, 0444, 0, &devfs_mntops },
                 [DV_STRLOOP] = { VCHR, 0666, makedev(DEV_STRLOOP_MAJOR, 0),
+                    &devfs_cloneops },
+                [DV_STRMUX] = { VCHR, 0666, makedev(DEV_STRMUX_MAJOR, 0),
                     &devfs_cloneops },
         };
 
@@ -376,6 +379,8 @@ clone_open(struct vnode **vpp, int flags, struct cred *cr)
                 return ptm_clone(vpp, flags, cr);
         if (*vpp == &dv_vn[DV_STRLOOP])
                 return str_clone(strdev_find("strloop"), vpp, flags, cr);
+        if (*vpp == &dv_vn[DV_STRMUX])
+                return str_clone(strdev_find("strmux"), vpp, flags, cr);
         /* /dev/tty: the session's terminal, opened in its own right. */
         if ((vp = tty_ctty_vnode(curproc->p_sid)) == NULL)
                 return ENXIO;

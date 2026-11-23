@@ -27,5 +27,6 @@
 #define DEV_PTS_MAJOR           5       /* and slaves; minor: the index */
 #define DEV_BLK_MAJOR           6       /* disks; minor: the blkdev index */
 #define DEV_STRLOOP_MAJOR       7       /* STREAMS loopback clone */
+#define DEV_STRMUX_MAJOR        8       /* STREAMS multiplexor clone (tests) */
 
 #endif /* _SYS_MKDEV_H_ */

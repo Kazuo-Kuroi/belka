@@ -51,6 +51,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/str_conf.c \
                    sys/kern/str_loop.c \
                    sys/kern/str_mods.c \
+                   sys/kern/str_mux.c \
                    sys/kern/str_msg.c \
                    sys/kern/str_queue.c \
                    sys/kern/sockfs.c \

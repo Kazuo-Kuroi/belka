@@ -129,6 +129,13 @@ struct iocblk {
 
 #define TRANSPARENT     ((size_t)-1)
 
+/* I_LINK, I_PLINK, I_UNLINK, I_PUNLINK: the M_IOCTL's data. */
+struct linkblk {
+        struct queue    *l_qtop;        /* driver's upper write queue, or NULL */
+        struct queue    *l_qbot;        /* its write queue atop the lower */
+        int             l_index;        /* the link's multiplexor id */
+};
+
 /* M_COPYIN and M_COPYOUT. */
 struct copyreq {
         int             cq_cmd;

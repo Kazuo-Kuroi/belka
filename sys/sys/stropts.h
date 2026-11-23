@@ -98,6 +98,7 @@
 #define MOREDATA        2
 
 #define INFTIM          (-1)    /* I_STR waits as long as it takes */
+#define MUXID_ALL       (-1)    /* I_UNLINK, I_PUNLINK: every link */
 
 struct strbuf {
         int             maxlen;

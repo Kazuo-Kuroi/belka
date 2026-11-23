@@ -2451,3 +2451,33 @@ heap bookkeeping with address-space-owned heap state.
   protocol messages alike. `strpass`, a module that passes everything
   on, and `strup`, which upper-cases data going up, exist to test
   pushing and popping.
+
+## STREAMS multiplexors (2026-11-22)
+
+- **Links:** `I_LINK` and `I_PLINK` take a stream's descriptor and put
+  that (lower) stream under the controlling stream's driver, which must
+  have `st_muxrinit` and `st_muxwinit`. The lower stream's head is set
+  aside, not freed: a queue pair of the driver's lower `qinit`s takes
+  its place at the top, in the syncq of the driver's upper pair (a
+  driver whose instances share links, as IP will, uses `SQLVL_MODULE`).
+  The driver learns of the link from an `M_IOCTL` whose data is a
+  `linkblk` (`l_qtop`, its upper write queue or NULL for a persistent
+  link; `l_qbot`, its lower write queue; `l_index`, the multiplexor
+  id). The id is what the ioctl returns. If the driver refuses, the
+  lower stream gets its head back.
+- **The lower stream** is held by the link (its file), so its descriptors
+  may be closed. While linked it cannot be read, written, plumbed or
+  given ioctls (`EINVAL`), and `poll` reports `POLLNVAL`. Only the
+  controlling stream itself would make a cycle, since a linked stream
+  cannot link.
+- **Unlinking:** `I_UNLINK` takes an id, or `MUXID_ALL`, of the
+  controlling stream's links; `I_PUNLINK`, on any stream of the same
+  driver, undoes persistent ones. The driver is told with an `M_IOCTL`
+  of the same command and `linkblk`; a refusal keeps the link. A
+  controlling stream's last close unlinks its ordinary links first,
+  whatever the driver answers, and persistent ones stay until
+  `I_PUNLINK`. The waits for these answers are not interrupted by
+  signals, since a link the driver may have taken cannot be abandoned.
+- **Testing:** `strmux` (`/dev/strmux`) is a small multiplexing driver
+  for `strtest`: links of loopback streams (with modules), selection,
+  persistent links, `MUXID_ALL`, and two levels of multiplexing.

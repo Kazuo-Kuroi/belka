@@ -83,8 +83,8 @@ the tests' own `libdt.so.1` in `/lib`, and the kernel runs them during
 `make test`. `make user-progs` builds them alone. The STREAMS framework
 (`sys/kern/str_*.c` and the stream head, `strhead.c`), on which the
 network stack is being built, is tested by the kernel's self-tests and
-by `strtest`, through the loopback driver `/dev/strloop` and the test
-modules `strpass` and `strup`.
+by `strtest`, through the loopback driver `/dev/strloop`, the test
+modules `strpass` and `strup`, and the multiplexing driver `/dev/strmux`.
 Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU

@@ -56,6 +56,9 @@
 #define STRTIMOUT       15      /* I_STR's default wait, seconds */
 #define STRCLTIME       15000   /* close's wait for output, ms */
 
+#define STRIOC_FORCE    0x01    /* str_doioctl: ignore the stream's errors */
+#define STRIOC_NOSIG    0x02    /* and signals */
+
 struct strsig {
         struct strsig   *ss_next;
         struct proc     *ss_proc;       /* detached on descriptor close */
@@ -67,6 +70,7 @@ static const struct vnodeops str_vnops;
 static int strrput(queue_t *, mblk_t *);
 static int strwsrv(queue_t *);
 static void str_ioctimeout(void *);
+static int str_mux_unlink(struct stdata *, int, int, int, struct cred *, int);
 
 static struct module_info strh_info = {
         0, "strhead", 0, INFPSZ, STRHIGH, STRLOW
@@ -469,31 +473,32 @@ str_canput(struct stdata *sd, int band)
 
 /* --- Opening and plumbing. --- */
 
+static struct mutex strdev_lock, fmod_lock, str_linklock;
+
+/* At boot, from str_init. */
+void
+strhead_init(void)
+{
+        mutex_init(&strdev_lock, "strdevsq");
+        mutex_init(&fmod_lock, "fmodsw");
+        mutex_init(&str_linklock, "strlink");
+}
+
 static struct syncq *
 strdev_syncq(struct strdev *dev)
 {
-        static struct mutex lock;
-        static int ready;
         struct syncq *sq;
 
         if (dev->d_sqlvl != SQLVL_MODULE)
                 return sq_alloc();
-        if (!ready) {
-                /* First call is from a single opener before any race. */
-                mutex_init(&lock, "strdevsq");
-                ready = 1;
-        }
-        mutex_lock(&lock);
+        mutex_lock(&strdev_lock);
         if (dev->d_syncq == NULL)
                 dev->d_syncq = sq_alloc();      /* the table's reference */
         sq = dev->d_syncq;
         sq_hold(sq);
-        mutex_unlock(&lock);
+        mutex_unlock(&strdev_lock);
         return sq;
 }
-
-static struct mutex fmod_lock;
-static int fmod_ready;
 
 static struct syncq *
 fmod_syncq(struct fmodsw *f)
@@ -607,10 +612,6 @@ str_push(struct stdata *sd, const char *name, int flag, struct cred *cr)
         dev_t dev = sd->sd_attr.sa_rdev;
         int n, error;
 
-        if (!fmod_ready) {
-                mutex_init(&fmod_lock, "fmodsw");
-                fmod_ready = 1;
-        }
         if ((f = fmod_find(name)) == NULL)
                 return EINVAL;
         mutex_lock(&sd->sd_plumb);
@@ -769,6 +770,8 @@ str_close(struct stdata *sd, int flag, struct cred *cr)
                 while (ticks-- > 0 && str_output_pending(sd))
                         delay(1);
         }
+        /* Its links go first, while the driver can still be asked. */
+        (void)str_mux_unlink(sd, MUXID_ALL, 0, 0, cr, STRIOC_FORCE);
         mutex_lock(&sd->sd_plumb);
         sd->sd_flag |= STRCLOSE;
         while (sd->sd_wq->q_next != NULL)
@@ -798,12 +801,16 @@ str_close(struct stdata *sd, int flag, struct cred *cr)
 static int
 str_rerror(struct stdata *sd)
 {
+        if ((sd->sd_flag & STPLEX) != 0)
+                return EINVAL;
         return (sd->sd_flag & STRDERR) != 0 ? sd->sd_rerror : 0;
 }
 
 static int
 str_werror(struct stdata *sd)
 {
+        if ((sd->sd_flag & STPLEX) != 0)
+                return EINVAL;
         if ((sd->sd_flag & STWRERR) != 0)
                 return sd->sd_werror;
         if ((sd->sd_flag & STRHUP) != 0)
@@ -1447,52 +1454,43 @@ sys_putpmsg(const uint64_t *args, uint64_t *rv __unused)
 
 /* --- ioctl. --- */
 
-/* I_STR: send an M_IOCTL down and wait for its answer. */
+/*
+ * Send an M_IOCTL (cmd, with data as its b_cont, of len bytes) down the
+ * stream and wait up to secs (INFTIM: for ever) for its answer. On an
+ * M_IOCACK, 0 and the reply in *replyp; on M_IOCNAK, its error. how:
+ * STRIOC_FORCE sends it even on a stream with an error (unlinking at
+ * close); STRIOC_NOSIG waits through signals (linking, which cannot be
+ * abandoned once the driver may have taken the link).
+ */
 static int
-str_istr(struct stdata *sd, uint64_t arg, int flag, struct cred *cr,
-    uint64_t *rv)
+str_doioctl(struct stdata *sd, int cmd, mblk_t *data, size_t len, int secs,
+    int flag, struct cred *cr, int how, mblk_t **replyp)
 {
         static volatile uint32_t nextid;
-        struct strioctl sio;
         struct iocblk *ioc;
         mblk_t *mp, *reply;
         toid_t tid = 0;
-        int error, s, secs, expired = 0;
+        int error = 0, s, expired;
 
-        if ((error = copyin((const void *)(uintptr_t)arg, &sio,
-            sizeof(sio))) != 0)
-                return error;
-        if (sio.ic_len < 0 || sio.ic_len > STRIOCSZ ||
-            sio.ic_timout < INFTIM)
-                return EINVAL;
-        secs = sio.ic_timout == 0 ? STRTIMOUT : sio.ic_timout;
+        *replyp = NULL;
         mp = allocb_wait(sizeof(*ioc));
         mp->b_datap->db_type = M_IOCTL;
         mp->b_wptr += sizeof(*ioc);
         ioc = (struct iocblk *)mp->b_rptr;
         memset(ioc, 0, sizeof(*ioc));
-        ioc->ioc_cmd = sio.ic_cmd;
+        ioc->ioc_cmd = cmd;
         ioc->ioc_cr = cr;
-        ioc->ioc_count = (size_t)sio.ic_len;
+        ioc->ioc_count = len;
         ioc->ioc_flag = flag;
-        if (sio.ic_len > 0) {
-                mblk_t *dp = allocb_wait((size_t)sio.ic_len);
-
-                if ((error = copyin(sio.ic_dp, dp->b_wptr,
-                    (size_t)sio.ic_len)) != 0) {
-                        freemsg(mp);
-                        freemsg(dp);
-                        return error;
-                }
-                dp->b_wptr += sio.ic_len;
-                mp->b_cont = dp;
-        }
+        mp->b_cont = data;
 
         /* One ioctl at a time on a stream. */
         mutex_lock(&sd->sd_iocwait);
-        mutex_lock(&sd->sd_lock);
-        error = str_werror(sd) != 0 ? str_werror(sd) : str_rerror(sd);
-        mutex_unlock(&sd->sd_lock);
+        if ((how & STRIOC_FORCE) == 0) {
+                mutex_lock(&sd->sd_lock);
+                error = str_werror(sd) != 0 ? str_werror(sd) : str_rerror(sd);
+                mutex_unlock(&sd->sd_lock);
+        }
         if (error != 0) {
                 mutex_unlock(&sd->sd_iocwait);
                 freemsg(mp);
@@ -1510,8 +1508,14 @@ str_istr(struct stdata *sd, uint64_t arg, int flag, struct cred *cr,
 
         s = spin_lock(&sd->sd_iocspin);
         while (sd->sd_iocblk == NULL && !sd->sd_ioctimeout) {
-                int r = sv_wait_sig(&sd->sd_iocsv, &sd->sd_iocspin, s);
+                int r;
 
+                if ((how & STRIOC_NOSIG) != 0) {
+                        sv_wait(&sd->sd_iocsv, &sd->sd_iocspin, s);
+                        s = spin_lock(&sd->sd_iocspin);
+                        continue;
+                }
+                r = sv_wait_sig(&sd->sd_iocsv, &sd->sd_iocspin, s);
                 s = spin_lock(&sd->sd_iocspin);
                 if (r != 0) {
                         error = sig_error();
@@ -1536,29 +1540,65 @@ str_istr(struct stdata *sd, uint64_t arg, int flag, struct cred *cr,
         ioc = (struct iocblk *)reply->b_rptr;
         if (DB_TYPE(reply) == M_IOCNAK) {
                 error = ioc->ioc_error != 0 ? ioc->ioc_error : EINVAL;
-        } else if (DB_TYPE(reply) != M_IOCACK) {
-                error = EINVAL;         /* transparent replies: not yet */
-        } else {
-                size_t n = ioc->ioc_count, done = 0;
-
-                if (n > STRIOCSZ)
-                        n = STRIOCSZ;
-                for (mblk_t *bp = reply->b_cont; bp != NULL && done < n &&
-                    error == 0; bp = bp->b_cont) {
-                        size_t k = MBLKL(bp);
-
-                        if (k > n - done)
-                                k = n - done;
-                        error = copyout(bp->b_rptr, sio.ic_dp + done, k);
-                        done += k;
-                }
-                sio.ic_len = (int)done;
-                if (error == 0)
-                        error = copyout(&sio.ic_len, (char *)(uintptr_t)arg +
-                            offsetof(struct strioctl, ic_len),
-                            sizeof(sio.ic_len));
-                *rv = (uint64_t)(int64_t)ioc->ioc_rval;
+                freemsg(reply);
+                return error;
         }
+        if (DB_TYPE(reply) != M_IOCACK) {
+                freemsg(reply);
+                return EINVAL;          /* transparent replies: not yet */
+        }
+        *replyp = reply;
+        return 0;
+}
+
+/* I_STR: the user's M_IOCTL, and its answer copied back. */
+static int
+str_istr(struct stdata *sd, uint64_t arg, int flag, struct cred *cr,
+    uint64_t *rv)
+{
+        struct strioctl sio;
+        struct iocblk *ioc;
+        mblk_t *dp = NULL, *reply;
+        size_t n, done = 0;
+        int error;
+
+        if ((error = copyin((const void *)(uintptr_t)arg, &sio,
+            sizeof(sio))) != 0)
+                return error;
+        if (sio.ic_len < 0 || sio.ic_len > STRIOCSZ ||
+            sio.ic_timout < INFTIM)
+                return EINVAL;
+        if (sio.ic_len > 0) {
+                dp = allocb_wait((size_t)sio.ic_len);
+                if ((error = copyin(sio.ic_dp, dp->b_wptr,
+                    (size_t)sio.ic_len)) != 0) {
+                        freemsg(dp);
+                        return error;
+                }
+                dp->b_wptr += sio.ic_len;
+        }
+        if ((error = str_doioctl(sd, sio.ic_cmd, dp, (size_t)sio.ic_len,
+            sio.ic_timout == 0 ? STRTIMOUT : sio.ic_timout, flag, cr, 0,
+            &reply)) != 0)
+                return error;
+        ioc = (struct iocblk *)reply->b_rptr;
+        n = ioc->ioc_count;
+        if (n > STRIOCSZ)
+                n = STRIOCSZ;
+        for (mblk_t *bp = reply->b_cont; bp != NULL && done < n &&
+            error == 0; bp = bp->b_cont) {
+                size_t k = MBLKL(bp);
+
+                if (k > n - done)
+                        k = n - done;
+                error = copyout(bp->b_rptr, sio.ic_dp + done, k);
+                done += k;
+        }
+        sio.ic_len = (int)done;
+        if (error == 0)
+                error = copyout(&sio.ic_len, (char *)(uintptr_t)arg +
+                    offsetof(struct strioctl, ic_len), sizeof(sio.ic_len));
+        *rv = (uint64_t)(int64_t)ioc->ioc_rval;
         freemsg(reply);
         return error;
 }
@@ -1572,6 +1612,265 @@ str_ioctimeout(void *arg)
         sd->sd_ioctimeout = 1;
         sv_broadcast(&sd->sd_iocsv);
         spin_unlock(&sd->sd_iocspin, s);
+}
+
+/* --- Multiplexors: I_LINK, I_PLINK, I_UNLINK, I_PUNLINK. --- */
+
+/*
+ * A link puts the lower stream under the multiplexing driver of the
+ * controlling (upper) stream: the lower stream's head is set aside and
+ * a queue pair of the driver's (its st_muxrinit and st_muxwinit, in the
+ * syncq of the driver's upper pair) takes its place at the top. The
+ * link holds the lower stream's file, so closing its descriptor does
+ * not close it, and the lower stream cannot be read, written or
+ * plumbed while it is linked. A persistent link (I_PLINK) outlives its
+ * controlling stream and is undone by I_PUNLINK on any stream of the
+ * same driver; the others go when their controlling stream closes.
+ * str_linklock covers the list of links; it is never held across the
+ * ioctl to the driver.
+ */
+struct strlink {
+        struct strlink  *sl_next;
+        struct strdev   *sl_dev;        /* the multiplexing driver */
+        struct stdata   *sl_upper;      /* NULL: persistent */
+        struct stdata   *sl_lower;
+        struct file     *sl_file;       /* holds the lower stream */
+        queue_t         *sl_muxq;       /* the driver's pair atop it */
+        int             sl_id;
+};
+
+static struct strlink *str_links;
+static volatile uint32_t str_nextmuxid;
+
+/* sd_plumb held: the write queue at the bottom (the driver's). */
+static queue_t *
+str_bottom(struct stdata *sd)
+{
+        queue_t *q = sd->sd_wq;
+
+        while (q->q_next != NULL)
+                q = q->q_next;
+        return q;
+}
+
+/* Put the driver's pair (from st, in syncq sq) atop the lower stream. */
+static int
+str_mux_plumb(struct stdata *lsd, struct streamtab *st, struct syncq *sq,
+    queue_t **mqp)
+{
+        struct syncq *set[3];
+        queue_t *mq, *mw, *tw;
+        int n = 0, s;
+
+        mutex_lock(&lsd->sd_plumb);
+        mutex_lock(&lsd->sd_lock);
+        if ((lsd->sd_flag & (STPLEX | STRHUP | STRDERR | STWRERR)) != 0 ||
+            lsd->sd_wq->q_next == NULL) {
+                mutex_unlock(&lsd->sd_lock);
+                mutex_unlock(&lsd->sd_plumb);
+                return EINVAL;
+        }
+        lsd->sd_flag |= STPLEX;
+        str_wakeall(lsd);
+        mutex_unlock(&lsd->sd_lock);
+
+        tw = lsd->sd_wq->q_next;
+        mq = allocq();
+        setq(mq, st->st_muxrinit, st->st_muxwinit, sq, lsd);
+        mw = WR(mq);
+        set[n++] = lsd->sd_wq->q_syncq;
+        set[n++] = sq;
+        set[n++] = tw->q_syncq;
+        sq_claim_set(set, n);
+        s = spin_lock(&lsd->sd_qlock);
+        mw->q_next = tw;
+        mw->q_back = NULL;
+        tw->q_back = mw;
+        RD(tw)->q_next = mq;
+        mq->q_back = RD(tw);
+        mq->q_next = NULL;
+        lsd->sd_wq->q_next = NULL;
+        lsd->sd_rq->q_back = NULL;
+        spin_unlock(&lsd->sd_qlock, s);
+        qprocson(mq);
+        sq_exit_set(set, n);
+        /* What had reached the head stays unread. */
+        mutex_lock(&lsd->sd_lock);
+        flushq(lsd->sd_rq, FLUSHALL);
+        mutex_unlock(&lsd->sd_lock);
+        mutex_unlock(&lsd->sd_plumb);
+        *mqp = mq;
+        return 0;
+}
+
+/* Take the driver's pair off the lower stream and give it its head back. */
+static void
+str_mux_unplumb(struct stdata *lsd, queue_t *mq)
+{
+        struct syncq *set[3];
+        queue_t *mw = WR(mq), *tw;
+        int n = 0, s;
+
+        mutex_lock(&lsd->sd_plumb);
+        tw = mw->q_next;
+        set[n++] = lsd->sd_wq->q_syncq;
+        set[n++] = mq->q_syncq;
+        if (tw != NULL)
+                set[n++] = tw->q_syncq;
+        sq_claim_set(set, n);
+        qprocsoff(mq);
+        s = spin_lock(&lsd->sd_qlock);
+        lsd->sd_wq->q_next = tw;
+        if (tw != NULL) {
+                tw->q_back = lsd->sd_wq;
+                RD(tw)->q_next = lsd->sd_rq;
+                lsd->sd_rq->q_back = RD(tw);
+        }
+        mw->q_next = mw->q_back = NULL;
+        mq->q_next = mq->q_back = NULL;
+        spin_unlock(&lsd->sd_qlock, s);
+        sq_purge(mq->q_syncq, mq);
+        sq_exit_set(set, n);
+        freeq(mq);
+        mutex_lock(&lsd->sd_lock);
+        lsd->sd_flag &= ~STPLEX;
+        str_wakeall(lsd);
+        mutex_unlock(&lsd->sd_lock);
+        mutex_unlock(&lsd->sd_plumb);
+}
+
+static mblk_t *
+str_linkblk(queue_t *top, queue_t *muxq, int id)
+{
+        mblk_t *dp = allocb_wait(sizeof(struct linkblk));
+        struct linkblk *lb = (struct linkblk *)dp->b_wptr;
+
+        lb->l_qtop = top;
+        lb->l_qbot = WR(muxq);
+        lb->l_index = id;
+        dp->b_wptr += sizeof(*lb);
+        return dp;
+}
+
+/* I_LINK and I_PLINK: link the stream open on fd under this one's driver. */
+static int
+str_mux_link(struct stdata *sd, int fd, int persistent, int flag,
+    struct cred *cr, uint64_t *rv)
+{
+        struct streamtab *st = sd->sd_dev->d_str;
+        struct stdata *lsd;
+        struct strlink *sl;
+        struct syncq *sq;
+        struct file *fp;
+        queue_t *dw, *mq;
+        mblk_t *reply;
+        int error, id;
+
+        if (st->st_muxrinit == NULL || st->st_muxwinit == NULL)
+                return EINVAL;
+        if ((fp = fd_get(curproc, fd)) == NULL)
+                return EBADF;
+        /*
+         * The controlling stream is not linked (its ioctls would fail),
+         * so it cannot be below the lower one: only itself makes a cycle.
+         */
+        lsd = fp->f_vnode->v_stream;
+        if (lsd == NULL || lsd == sd) {
+                frele(fp);
+                return EINVAL;
+        }
+        mutex_lock(&sd->sd_plumb);
+        dw = str_bottom(sd);
+        sq = dw->q_syncq;
+        sq_hold(sq);
+        mutex_unlock(&sd->sd_plumb);
+        error = str_mux_plumb(lsd, st, sq, &mq);
+        sq_rele(sq);
+        if (error != 0) {
+                frele(fp);
+                return error;
+        }
+        id = (int)atomic_inc_32_nv(&str_nextmuxid);
+        error = str_doioctl(sd, persistent ? I_PLINK : I_LINK,
+            str_linkblk(persistent ? NULL : dw, mq, id),
+            sizeof(struct linkblk), INFTIM, flag, cr, STRIOC_NOSIG, &reply);
+        if (error != 0) {
+                str_mux_unplumb(lsd, mq);
+                frele(fp);
+                return error;
+        }
+        freemsg(reply);
+        sl = kmem_zalloc(sizeof(*sl), KM_SLEEP);
+        sl->sl_dev = sd->sd_dev;
+        sl->sl_upper = persistent ? NULL : sd;
+        sl->sl_lower = lsd;
+        sl->sl_file = fp;
+        sl->sl_muxq = mq;
+        sl->sl_id = id;
+        mutex_lock(&str_linklock);
+        sl->sl_next = str_links;
+        str_links = sl;
+        mutex_unlock(&str_linklock);
+        *rv = (uint64_t)id;
+        return 0;
+}
+
+/*
+ * I_UNLINK and I_PUNLINK: undo link id (or every one, MUXID_ALL) of this
+ * stream (or, persistent, of its driver). how is str_doioctl's: the
+ * last close forces the unlinking whatever the driver answers.
+ */
+static int
+str_mux_unlink(struct stdata *sd, int id, int persistent, int flag,
+    struct cred *cr, int how)
+{
+        int found = 0, error;
+
+        for (;;) {
+                struct strlink *sl, **link;
+                mblk_t *reply;
+                queue_t *top = NULL;
+
+                mutex_lock(&str_linklock);
+                for (link = &str_links; (sl = *link) != NULL;
+                    link = &sl->sl_next) {
+                        if (persistent ? sl->sl_upper != NULL ||
+                            sl->sl_dev != sd->sd_dev : sl->sl_upper != sd)
+                                continue;
+                        if (id == MUXID_ALL || sl->sl_id == id)
+                                break;
+                }
+                if (sl != NULL)
+                        *link = sl->sl_next;
+                mutex_unlock(&str_linklock);
+                if (sl == NULL)
+                        return found || id == MUXID_ALL ? 0 : EINVAL;
+
+                if (!persistent) {
+                        mutex_lock(&sd->sd_plumb);
+                        top = str_bottom(sd);
+                        mutex_unlock(&sd->sd_plumb);
+                }
+                error = str_doioctl(sd, persistent ? I_PUNLINK : I_UNLINK,
+                    str_linkblk(top, sl->sl_muxq, sl->sl_id),
+                    sizeof(struct linkblk), INFTIM, flag, cr,
+                    how | STRIOC_NOSIG, &reply);
+                if (error != 0 && (how & STRIOC_FORCE) == 0) {
+                        mutex_lock(&str_linklock);
+                        sl->sl_next = str_links;
+                        str_links = sl;
+                        mutex_unlock(&str_linklock);
+                        return error;
+                }
+                if (reply != NULL)
+                        freemsg(reply);
+                str_mux_unplumb(sl->sl_lower, sl->sl_muxq);
+                frele(sl->sl_file);     /* may be the lower's last close */
+                kmem_free(sl, sizeof(*sl));
+                found = 1;
+                if (id != MUXID_ALL)
+                        return 0;
+        }
 }
 
 /* The name of the module of the pair whose write queue is wq. */
@@ -1660,6 +1959,8 @@ strioctl(struct vnode *vp, unsigned long cmd, uint64_t arg, int flag,
         size_t len;
 
         *rv = 0;
+        if ((sd->sd_flag & STPLEX) != 0)
+                return EINVAL;          /* linked: the driver's now */
         switch (cmd) {
         case I_NREAD: {
                 mblk_t *mp;
@@ -1801,9 +2102,12 @@ strioctl(struct vnode *vp, unsigned long cmd, uint64_t arg, int flag,
                 n = sd->sd_closetime;
                 return copyout(&n, (void *)(uintptr_t)arg, sizeof(n));
         case I_LINK:
-        case I_UNLINK:
         case I_PLINK:
+                return str_mux_link(sd, (int)arg, cmd == I_PLINK, flag, cr, rv);
+        case I_UNLINK:
         case I_PUNLINK:
+                return str_mux_unlink(sd, (int)arg, cmd == I_PUNLINK, flag, cr,
+                    0);
         case I_LIST:
         case I_SENDFD:
         case I_RECVFD:
@@ -1852,6 +2156,11 @@ str_poll(struct vnode *vp, short events, short *revents,
         short ready = 0;
         int s;
 
+        if ((sd->sd_flag & STPLEX) != 0) {
+                *revents = POLLNVAL;    /* linked: not to be used */
+                *ph = &sd->sd_poll;
+                return 0;
+        }
         if ((events & POLLOUT) != 0 && str_canput(sd, 0))
                 ready |= POLLOUT;
         if ((events & POLLWRBAND) != 0 && str_canput(sd, 1))

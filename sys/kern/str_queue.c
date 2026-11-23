@@ -372,6 +372,7 @@ str_init(void)
         char name[KT_NAMELEN];
 
         str_msginit();
+        strhead_init();
         sv_init(&str_runsv, "strrun");
         for (unsigned int i = 0; i < ncpus; i++) {
                 snprintf(name, sizeof(name), "strsvc%u", i);

@@ -146,7 +146,7 @@ poll_scan(struct pollfd *fds, struct file **fps, struct polldat *pds,
                                 rev &= ~(POLL_READ | POLLHUP);
                         if ((fps[i]->f_flag & FWRITE) == 0)
                                 rev &= ~(POLL_WRITE | POLLERR);
-                        rev &= fds[i].events | POLLERR | POLLHUP;
+                        rev &= fds[i].events | POLLERR | POLLHUP | POLLNVAL;
                 }
                 if (rev != 0) {
                         fds[i].revents = rev;

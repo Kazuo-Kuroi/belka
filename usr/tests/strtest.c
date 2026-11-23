@@ -9,7 +9,8 @@
  * driver) and the test modules strpass and strup: getmsg and putmsg,
  * getpmsg and putpmsg with bands, the read modes and options, I_PEEK,
  * I_NREAD, I_FLUSH, I_STR and its timeout, pushing and popping, and
- * what a driver's M_HANGUP, M_ERROR and M_PCSIG do at the head.
+ * what a driver's M_HANGUP, M_ERROR and M_PCSIG do at the head, and
+ * multiplexors (/dev/strmux): I_LINK, I_UNLINK, I_PLINK and I_PUNLINK.
  * (I_SETSIG and flow control are libctest's.) Exits with the number of
  * failed checks.
  */
@@ -406,6 +407,142 @@ test_driver_messages(void)
         close(fd);
 }
 
+/* strmux's ioctls (sys/kern/str_mux.c). */
+#define MUX_SELECT      (('M' << 8) | 1)
+#define MUX_COUNT       (('M' << 8) | 2)
+
+static int
+muxcount(int fd)
+{
+        int n = -1;
+
+        return istr(fd, MUX_COUNT, &n, sizeof(n), 0) == 0 ? n : -1;
+}
+
+static int
+muxsel(int fd, int id)
+{
+        return istr(fd, MUX_SELECT, &id, sizeof(id), 0);
+}
+
+/* Write s down fd and read back what comes up: want. */
+static int
+echo(int fd, const char *s, const char *want)
+{
+        char buf[32];
+        size_t n = strlen(s);
+
+        return write(fd, s, n) == (ssize_t)n && ready(fd) &&
+            read(fd, buf, sizeof(buf)) == (ssize_t)n &&
+            memcmp(buf, want, n) == 0;
+}
+
+static void
+test_mux(void)
+{
+        char name[FMNAMESZ + 1], buf[4];
+        struct pollfd p;
+        int m = open("/dev/strmux", O_RDWR), m2, l1 = loop(0), l2 = loop(0);
+        int l3, id1, id2, id3, idm, base, nul;
+
+        CHECK(m >= 0);
+        if (m < 0 || l1 < 0 || l2 < 0)
+                return;
+        base = muxcount(m);
+        CHECK(base >= 0);
+
+        /* What cannot be linked. */
+        CHECK(ioctl(l1, I_LINK, l2) == -1 && errno == EINVAL);
+        CHECK(ioctl(m, I_LINK, m) == -1 && errno == EINVAL);
+        CHECK(ioctl(m, I_LINK, 99) == -1 && errno == EBADF);
+        nul = open("/dev/null", O_RDWR);
+        CHECK(ioctl(m, I_LINK, nul) == -1 && errno == EINVAL);
+        close(nul);
+
+        /* A link: the lower stream, module and all, is the driver's. */
+        CHECK(ioctl(l1, I_PUSH, "strup") == 0);
+        id1 = ioctl(m, I_LINK, l1);
+        CHECK(id1 > 0);
+        CHECK(ioctl(m, I_LINK, l1) == -1 && errno == EINVAL);
+        CHECK(write(l1, "x", 1) == -1 && errno == EINVAL);
+        CHECK(read(l1, buf, 1) == -1 && errno == EINVAL);
+        CHECK(ioctl(l1, I_POP, 0) == -1 && errno == EINVAL);
+        p = (struct pollfd){ l1, POLLIN, 0 };
+        CHECK(poll(&p, 1, 0) == 1 && p.revents == POLLNVAL);
+        CHECK(echo(m, "down", "DOWN"));
+
+        /* Two links: the newest is used, or the one selected. */
+        id2 = ioctl(m, I_LINK, l2);
+        CHECK(id2 > 0 && id2 != id1);
+        CHECK(muxcount(m) == base + 2);
+        CHECK(echo(m, "two", "two"));
+        CHECK(muxsel(m, id1) == 0);
+        CHECK(echo(m, "one", "ONE"));
+        CHECK(muxsel(m, 0) == 0);
+        CHECK(ioctl(m, I_UNLINK, id2) == 0);
+        CHECK(ioctl(m, I_UNLINK, id2) == -1 && errno == EINVAL);
+        CHECK(echo(l2, "back", "back"));
+
+        /* The link holds the lower stream after its descriptor closes. */
+        l3 = loop(0);
+        id3 = l3 >= 0 ? ioctl(m, I_LINK, l3) : -1;
+        CHECK(id3 > 0);
+        if (l3 >= 0)
+                close(l3);
+        CHECK(muxsel(m, id3) == 0);
+        CHECK(echo(m, "kept", "kept"));
+
+        /* Closing the controlling stream undoes its links. */
+        close(m);
+        CHECK(ioctl(l1, I_LOOK, name) == 0 && strcmp(name, "strup") == 0);
+        CHECK(echo(l1, "free", "FREE"));
+
+        /* A persistent link outlives it, until I_PUNLINK. */
+        m = open("/dev/strmux", O_RDWR);
+        CHECK(m >= 0);
+        if (m < 0)
+                return;
+        id1 = ioctl(m, I_PLINK, l1);
+        CHECK(id1 > 0);
+        close(m);
+        CHECK(write(l1, "x", 1) == -1 && errno == EINVAL);
+        m = open("/dev/strmux", O_RDWR);
+        CHECK(m >= 0);
+        if (m < 0)
+                return;
+        CHECK(muxcount(m) == base + 1);
+        CHECK(ioctl(m, I_UNLINK, id1) == -1 && errno == EINVAL);
+        CHECK(ioctl(m, I_PUNLINK, id1) == 0);
+        CHECK(muxcount(m) == base);
+        CHECK(echo(l1, "y", "Y"));
+
+        /* MUXID_ALL. */
+        CHECK(ioctl(m, I_LINK, l1) > 0 && ioctl(m, I_LINK, l2) > 0);
+        CHECK(muxcount(m) == base + 2);
+        CHECK(ioctl(m, I_UNLINK, MUXID_ALL) == 0);
+        CHECK(ioctl(m, I_UNLINK, MUXID_ALL) == 0);
+        CHECK(muxcount(m) == base);
+        CHECK(echo(l2, "all", "all"));
+
+        /* Two levels: m, with l2 below it, linked under m2. */
+        m2 = open("/dev/strmux", O_RDWR);
+        CHECK(m2 >= 0);
+        if (m2 >= 0) {
+                /* m must pick l2: the newest link will be m's own. */
+                id2 = ioctl(m, I_LINK, l2);
+                CHECK(id2 > 0 && muxsel(m, id2) == 0);
+                idm = ioctl(m2, I_LINK, m);
+                CHECK(idm > 0);
+                CHECK(echo(m2, "lvl", "lvl"));
+                close(m2);              /* m is back, l2 still under it */
+                CHECK(echo(m, "mid", "mid"));
+        }
+        close(m);
+        CHECK(echo(l2, "end", "end"));
+        close(l1);
+        close(l2);
+}
+
 /* A blocked reader is woken by a writer on another descriptor. */
 static void
 test_blocking(void)
@@ -435,6 +572,7 @@ main(void)
         test_ioctl();
         test_push();
         test_driver_messages();
+        test_mux();
         test_blocking();
         printf("strtest: %d failures\n", failures);
         return failures;
