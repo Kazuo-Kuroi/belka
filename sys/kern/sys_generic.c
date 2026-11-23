@@ -31,7 +31,7 @@
 #include <sys/kmem.h>
 #include <sys/proc.h>
 #include <sys/socket.h>
-#include <sys/stream.h>
+#include <sys/strsubr.h>
 #include <sys/stropts.h>
 #include <sys/resource.h>
 #include <sys/signal.h>
@@ -459,7 +459,7 @@ sys_fcntl(const uint64_t *args, uint64_t *rv)
  * requests pass to the vnode with the argument and caller's credentials.
  */
 int
-sys_ioctl(const uint64_t *args, uint64_t *rv __unused)
+sys_ioctl(const uint64_t *args, uint64_t *rv)
 {
         struct file *fp;
         unsigned long cmd = (unsigned long)args[1];
@@ -482,6 +482,11 @@ sys_ioctl(const uint64_t *args, uint64_t *rv __unused)
                         else
                                 fp->f_flag &= ~FNONBLOCK;
                 }
+        } else if (fp->f_vnode->v_stream == NULL && (cmd & ~0xffUL) == STR) {
+                error = ENOSTR;         /* a stream ioctl, not on a stream */
+        } else if (fp->f_vnode->v_stream != NULL) {
+                error = strioctl(fp->f_vnode, cmd, args[2], fp->f_flag,
+                    CRED(), rv);
         } else {
                 error = VOP_IOCTL(fp->f_vnode, cmd, args[2], fp->f_flag,
                     CRED());

@@ -2368,3 +2368,86 @@ heap bookkeeping with address-space-owned heap state.
   initialized TLS from an illumos-linked static executable's file-backed
   LOAD range. Link installed static tests again with the link-editor's -s
   option, preserving TLS and keeping the test images small.
+
+## The network stack plan (2026-11-22)
+
+- **Whose code:** Belka's own. IP, ARP, ICMP, UDP and TCP are written
+  from the RFCs as STREAMS modules and drivers, under MIT, in the
+  architecture fixed above (TCP/IP over DLPI, sockfs over TPI). Neither
+  NetBSD's netinet nor lwIP is imported: both are built around their
+  own buffers, interfaces and threading, and adapting them to queues
+  and messages would rewrite most of them.
+- **IPv4 first, IPv6-ready:** the first stack is IPv4 with ARP and
+  ICMP. Transport modules, TPI addresses and sockfs take their address
+  family from the message, not from fixed `sockaddr_in` layouts, so
+  IPv6 (with neighbour discovery and ICMPv6) is added beside IPv4
+  rather than through it.
+- **Order:** (1) the STREAMS framework (messages, queues, put and
+  service procedures, multiprocessor synchronisation, the stream head,
+  `getmsg`/`putmsg`, module push and pop); (2) multiplexors (`I_LINK`,
+  `I_PLINK`); (3) virtio-net as a DLPI style 1 driver; (4) ARP and IPv4
+  with ICMP, linked over the DLPI streams, and interface configuration;
+  (5) UDP and the sockfs translation to TPI for `AF_INET`
+  `SOCK_DGRAM`; (6) TCP; (7) the userland (`ifconfig`, `route`,
+  `ping`, `netstat`, a resolver configuration). QEMU's user-mode
+  network is the test peer, so the tests need no host privilege.
+- **Deferred:** IPv6, congestion control beyond the RFC 5681 basics,
+  SACK, multicast routing, IPsec, and NetBSD drivers through an `ifnet`
+  shim (the open question above).
+
+## The STREAMS framework (2026-11-22)
+
+- **Messages** are `mblk_t` and `dblk_t` with the DDI names and
+  behaviour: `allocb`, `freeb`, `freemsg`, `dupb`, `dupmsg`, `copyb`,
+  `copymsg`, `msgdsize`, `pullupmsg`, `adjmsg`, `linkb`, `unlinkb`,
+  `esballoc`. A data block and its buffer are one allocation for small
+  sizes. Reference counts are atomic, so a duplicate may be freed on
+  any processor.
+- **Queues** are `queue_t` pairs with `qinit`, `module_info` and
+  `streamtab`, and the DDI queue routines: `putq`, `getq`, `putbq`,
+  `insq`, `rmvq`, `flushq`, `flushband`, `qenable`, `noenable`,
+  `enableok`, `canput`, `canputnext`, `bcanput`, `bcanputnext`,
+  `put`, `putnext`, `qreply`, `putctl`, `putctl1`, `qsize`. Messages are
+  ordered high priority first, then by band, then by arrival. Band
+  flow control has a `qband` per band in use.
+- **Synchronisation** is by synchronisation queues, Belka's own design
+  in the manner of Solaris perimeters. A module or driver declares a
+  level when it is registered: one per queue pair (the default) or one
+  per module (shared by every instance). Its put and service
+  procedures, its open and close, and its timeout and buffer callbacks
+  run only while their syncq is claimed, one thread at a time. A put
+  to a claimed syncq is not a wait: the message is left on the syncq
+  and run by the thread that holds it before it lets go, so no lock is
+  held across a call into another module and calls in a loop (a
+  `qreply` into the caller's own pair) cannot recurse. A procedure
+  without a syncq (Solaris's "MT-hot") is not offered until a module
+  needs one.
+- **Context:** put and service procedures run in thread context.
+  Interrupt handlers and callouts do not call `put`; they use `putq`
+  and `qenable` (queue state is under an interrupt-safe spin lock), and
+  `qtimeout` and `qbufcall` callbacks are moved into thread context.
+  STREAMS service threads, one per processor, run the syncqs that have
+  work.
+- **Topology:** `q_next`, and Belka's private back links for
+  back-enabling, change only while the stream's plumbing lock and the
+  syncqs of every queue pair whose links change are held (claimed in
+  address order, so two plumbing operations cannot deadlock over a
+  shared per-module syncq). Walks of more than one hop (`canputnext`
+  and back-enabling) take the stream's spin lock.
+- **Stream head:** read modes (`RNORM`, `RMSGD`, `RMSGN`, with
+  `RPROTNORM`, `RPROTDAT`, `RPROTDIS`), `getmsg`, `putmsg`, `getpmsg`,
+  `putpmsg`, `I_PUSH`, `I_POP`, `I_LOOK`, `I_FIND`, `I_FLUSH`,
+  `I_FLUSHBAND`, `I_NREAD`, `I_STR`, `I_SRDOPT`, `I_GRDOPT`, `I_PEEK`,
+  `I_CANPUT`, `I_ATMARK`, `I_SWROPT`, `I_GWROPT`, `I_SETCLTIME` and
+  `I_GETCLTIME`, with `M_ERROR`, `M_HANGUP`, `M_FLUSH`, `M_SETOPTS`,
+  `M_SIG` and `M_PCSIG` handled at the head. `I_SETSIG` keeps its
+  registrations. Transparent ioctls (`M_COPYIN`, `M_COPYOUT`), file
+  descriptor passing, `I_LIST` and multiplexors come next.
+- **Numbers:** `getmsg` and `putmsg` are system calls 85 and 86, as in
+  System V. `getpmsg` and `putpmsg` are Belka's 246 and 247. The ioctl
+  numbers, message types and flags are System V's.
+- **The loopback driver** `/dev/strloop` becomes a STREAMS driver: each
+  open is a clone, and what is written comes back up, data and
+  protocol messages alike. `strpass`, a module that passes everything
+  on, and `strup`, which upper-cases data going up, exist to test
+  pushing and popping.

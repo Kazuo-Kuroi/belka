@@ -67,6 +67,8 @@
 #define SYS_rmdir       79
 #define SYS_mkdir       80
 #define SYS_getdents    81
+#define SYS_getmsg      85
+#define SYS_putmsg      86
 #define SYS_poll        87
 #define SYS_lstat       88
 #define SYS_symlink     89
@@ -163,7 +165,9 @@
 #define SYS_sprocsp     243
 #define SYS_prctl       244
 #define SYS_procblk     245
+#define SYS_getpmsg     246
+#define SYS_putpmsg     247
 
-#define NSYSCALL        246     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        248     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

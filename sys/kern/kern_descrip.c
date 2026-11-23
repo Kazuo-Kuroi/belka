@@ -24,7 +24,7 @@
 #include <sys/file.h>
 #include <sys/kmem.h>
 #include <sys/proc.h>
-#include <sys/stream.h>
+#include <sys/strsubr.h>
 #include <sys/sysent.h>
 #include <sys/synch.h>
 #include <sys/systm.h>

@@ -17,6 +17,7 @@
 #include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/smp.h>
+#include <sys/strsubr.h>
 #include <sys/systm.h>
 #include <sys/uadmin.h>
 #include <sys/vfs.h>
@@ -109,6 +110,7 @@ main(void)
         cpu_boot_secondary_processors();
         bootloader_reclaim();
         spl0();
+        str_init();
         configure();
 
         pvn_sysinit();

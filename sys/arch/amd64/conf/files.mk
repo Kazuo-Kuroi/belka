@@ -48,6 +48,11 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/tty.c \
                    sys/kern/tty_pty.c \
                    sys/kern/strhead.c \
+                   sys/kern/str_conf.c \
+                   sys/kern/str_loop.c \
+                   sys/kern/str_mods.c \
+                   sys/kern/str_msg.c \
+                   sys/kern/str_queue.c \
                    sys/kern/sockfs.c \
                    sys/kern/spec_vnops.c \
                    sys/kern/vfs_bio.c \
@@ -77,6 +82,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/subr_selftest_vfs.c \
                    sys/kern/subr_selftest_ext2.c \
                    sys/kern/subr_selftest_proc.c \
+                   sys/kern/subr_selftest_str.c \
                    sys/libkern/string.c \
                    sys/vm/vm_kva.c \
                    sys/vm/vm_page.c \

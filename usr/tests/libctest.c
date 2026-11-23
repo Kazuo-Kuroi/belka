@@ -1967,13 +1967,13 @@ test_itimers(void)
 static void
 test_stream_signals(void)
 {
-        const struct timespec now = { 0, 0 };
+        const struct timespec now = { 0, 0 }, wait = { 2, 0 };
         const int mask = S_INPUT | S_RDNORM | S_OUTPUT;
         char buf[4096] = { 0 };
         struct pollfd pollfd;
         sigset_t set, old;
         siginfo_t info;
-        int fd, copy, events, status;
+        int fd, copy, events, status, writes;
         pid_t child;
 
         CHECK(ioctl(-1, I_SETSIG, mask) == -1 && errno == EBADF);
@@ -2002,15 +2002,37 @@ test_stream_signals(void)
         CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
         CHECK(read(fd, buf, 1) == -1 && errno == EAGAIN);
 
+        /*
+         * The first write reaches the empty head at once. Writing on
+         * fills the head (5120 bytes) and then the driver's queue (4096)
+         * until the stream pushes back.
+         */
         CHECK(write(fd, buf, sizeof(buf)) == sizeof(buf));
         CHECK(sigtimedwait(&set, &info, &now) == SIGPOLL &&
             info.si_code == POLL_IN && info.si_band == 0);
+        for (writes = 1; writes < 8 && write(fd, buf, sizeof(buf)) ==
+            sizeof(buf); writes++)
+                continue;
+        CHECK(writes == 3 && errno == EAGAIN);
+        CHECK(sigtimedwait(&set, NULL, &now) == -1 && errno == EAGAIN);
         pollfd = (struct pollfd){ fd, POLLIN | POLLOUT, 0 };
         CHECK(poll(&pollfd, 1, 0) == 1 && pollfd.revents == POLLIN);
         CHECK(write(fd, "x", 1) == -1 && errno == EAGAIN);
+        /*
+         * Reading the head empty lets the driver send the rest up, and
+         * its queue, drained, lets the writer go on: S_OUTPUT (alone, as
+         * the arrival at the head would signal too).
+         */
+        CHECK(ioctl(fd, I_SETSIG, S_OUTPUT) == 0);
         CHECK(read(fd, buf, sizeof(buf)) == sizeof(buf));
-        CHECK(sigtimedwait(&set, &info, &now) == SIGPOLL &&
+        CHECK(read(fd, buf, sizeof(buf)) == sizeof(buf));
+        CHECK(sigtimedwait(&set, &info, &wait) == SIGPOLL &&
             info.si_code == POLL_OUT && info.si_band == 0);
+        CHECK(ioctl(fd, I_SETSIG, mask) == 0);
+        CHECK(poll(&pollfd, 1, 0) == 1 &&
+            pollfd.revents == (POLLIN | POLLOUT));
+        CHECK(read(fd, buf, sizeof(buf)) == sizeof(buf));
+        CHECK(read(fd, buf, sizeof(buf)) == -1 && errno == EAGAIN);
         CHECK(poll(&pollfd, 1, 0) == 1 && pollfd.revents == POLLOUT);
 
         child = fork();

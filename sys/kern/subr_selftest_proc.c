@@ -271,6 +271,7 @@ selftest_proc(void)
         char *ttytest[] = { "ttytest", NULL };
         char *ptytest[] = { "ptytest", NULL };
         char *sproctest[] = { "sproctest", "/p", NULL };
+        char *strtest[] = { "strtest", NULL };
         size_t used1, used2, zone0[NPROCZONES];
         int zones_ok = 1;
 
@@ -303,6 +304,7 @@ selftest_proc(void)
         CHECK(run("/p/bin/credtest", credtest, CLD_EXITED, 0));
         CHECK(run("/p/bin/ttytest", ttytest, CLD_EXITED, 0));
         CHECK(run("/p/bin/ptytest", ptytest, CLD_EXITED, 0));
+        CHECK(run("/p/bin/strtest", strtest, CLD_EXITED, 0));
         CHECK(run("/p/bin/sproctest", sproctest, CLD_EXITED, 0));
         CHECK(run("/p/bin/sproctest-static", sproctest, CLD_EXITED, 0));
         test_kernel_signal();

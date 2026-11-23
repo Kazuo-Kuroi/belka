@@ -37,7 +37,7 @@
 #include <sys/proc.h>
 #include <sys/pty.h>
 #include <sys/specvn.h>
-#include <sys/stream.h>
+#include <sys/strsubr.h>
 #include <sys/systm.h>
 #include <sys/tty.h>
 #include <sys/uio.h>
@@ -375,7 +375,7 @@ clone_open(struct vnode **vpp, int flags, struct cred *cr)
         if (*vpp == &dv_vn[DV_PTMX])
                 return ptm_clone(vpp, flags, cr);
         if (*vpp == &dv_vn[DV_STRLOOP])
-                return strloop_clone(vpp, cr);
+                return str_clone(strdev_find("strloop"), vpp, flags, cr);
         /* /dev/tty: the session's terminal, opened in its own right. */
         if ((vp = tty_ctty_vnode(curproc->p_sid)) == NULL)
                 return ENXIO;

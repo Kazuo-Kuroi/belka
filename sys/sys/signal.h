@@ -117,6 +117,10 @@ typedef struct siginfo {
 
 #define POLL_IN         1
 #define POLL_OUT        2
+#define POLL_MSG        3
+#define POLL_ERR        4
+#define POLL_PRI        5
+#define POLL_HUP        6
 
 #define ILL_ILLOPC      1
 #define ILL_PRVOPC      5

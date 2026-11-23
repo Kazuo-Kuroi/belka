@@ -53,6 +53,7 @@ int selftest_dev(void);
 int selftest_vfs(void);
 int selftest_ext2(void);
 int selftest_proc(void);
+int selftest_str(void);
 static void selftest_clock(void);
 static void selftest_kmem(void);
 static void selftest_kva(void);
@@ -680,6 +681,7 @@ selftest_run(void)
         selftest_failures += selftest_dev();
         selftest_failures += selftest_vfs();
         selftest_failures += selftest_ext2();
+        selftest_failures += selftest_str();
         selftest_failures += selftest_proc();
         return selftest_failures + md_selftest();
 }
