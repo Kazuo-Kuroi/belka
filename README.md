@@ -91,7 +91,10 @@ QEMU's gateway through it. `iptest` links it under `/dev/ip` (IPv4 and
 ARP, `sys/netinet`), configures it, and pings the gateway, itself and
 127.0.0.1. `udptest` links an IP stream under `/dev/udp` (a TPI
 provider) and uses `AF_INET` datagram sockets over the loopback, and
-`tcptest` does the same with `/dev/tcp` and stream sockets.
+`tcptest` does the same with `/dev/tcp` and stream sockets. On a normal
+boot, `/etc/rc.d/network` plumbs the stack with `netcfg(8)` and
+configures `vionet0` as `/etc/rc.conf` says (QEMU's user-mode network),
+which `boottest` checks.
 Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU

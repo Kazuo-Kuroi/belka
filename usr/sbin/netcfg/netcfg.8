@@ -1,0 +1,103 @@
+.\" Copyright (c) 2026 Setsuna Software L.C.
+.\" Created: 2026-11-23
+.\" SPDX-License-Identifier: MIT
+.Dd November 23, 2026
+.Dt NETCFG 8
+.Os Belka
+.Sh NAME
+.Nm netcfg
+.Nd plumb and configure the IPv4 network
+.Sh SYNOPSIS
+.Nm
+.Cm plumb
+.Nm
+.Cm attach
+.Ar interface
+.Nm
+.Cm addr
+.Ar interface
+.Ar address Ns / Ns Ar length
+.Nm
+.Cm route add
+.Ar destination
+.Ar gateway
+.Nm
+.Cm route delete
+.Ar destination
+.Op Ar gateway
+.Nm
+.Cm show
+.Sh DESCRIPTION
+Belka's network stack is a set of STREAMS multiplexing drivers:
+.Pa /dev/ip
+for IPv4, ICMP and ARP, with the interfaces' DLPI devices linked below
+it, and
+.Pa /dev/udp
+and
+.Pa /dev/tcp ,
+each with an IP stream linked below it.
+.Nm
+makes those links and configures IP.
+The links are persistent: they last after
+.Nm
+exits.
+.Pp
+The commands are:
+.Bl -tag -width indent
+.It Cm plumb
+Link an IP stream under UDP and under TCP, so that
+.Dv AF_INET
+sockets can be used.
+A transport that is plumbed already is left as it is.
+.It Cm attach Ar interface
+Make an interface of the DLPI device
+.Pa /dev/ Ns Ar interface ,
+linking it twice under IP, once for IPv4 and once for ARP.
+.It Cm addr Ar interface Ar address Ns / Ns Ar length
+Give the interface its address, with a subnet mask of
+.Ar length
+bits, and a route to the subnet.
+.It Cm route add Ar destination Ar gateway
+Add a route to
+.Ar destination ,
+an
+.Ar address Ns / Ns Ar length
+or
+.Cm default ,
+by way of
+.Ar gateway ,
+which must be reachable on an interface.
+The longest prefix that matches a datagram's destination is its route.
+.It Cm route delete Ar destination Op Ar gateway
+Remove that route.
+.It Cm show
+List the interfaces, the routes and the ARP cache.
+.El
+.Pp
+Changing the configuration needs the superuser.
+The loopback interface,
+.Li lo0
+(127.0.0.1/8), is always there.
+.Sh FILES
+.Bl -tag -width "/etc/rc.d/network" -compact
+.It Pa /etc/rc.d/network
+runs
+.Nm
+at boot, from the settings in
+.Xr rc.conf 5 :
+.Va network ,
+.Va net_interfaces ,
+.Va ifaddr_ Ns Ar interface
+and
+.Va defaultroute .
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+QEMU's user-mode network:
+.Bd -literal -offset indent
+netcfg plumb
+netcfg attach vionet0
+netcfg addr vionet0 10.0.2.15/24
+netcfg route add default 10.0.2.2
+.Ed

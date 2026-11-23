@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-23
+# SPDX-License-Identifier: MIT
+#
+# The IPv4 network, by netcfg(8): IP linked under UDP and TCP, then
+# each of net_interfaces whose device there is, with its ifaddr_<name>
+# (address/length), and the default route through defaultroute. A
+# missing interface is passed over; a configuration that fails is an
+# error.
+
+# PROVIDE: network
+# REQUIRE: hostname
+# BEFORE: NETWORKING
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="network"
+rcvar=$name
+start_cmd="network_start"
+stop_cmd=":"
+
+network_start()
+{
+        /sbin/netcfg plumb || return 1
+        for _if in $net_interfaces; do
+                if [ ! -c /dev/$_if ]; then
+                        echo "Network: no $_if."
+                        continue
+                fi
+                /sbin/netcfg attach $_if || return 1
+                eval _addr=\$ifaddr_$_if
+                if [ -n "$_addr" ]; then
+                        /sbin/netcfg addr $_if $_addr || return 1
+                        echo "Network: $_if $_addr."
+                fi
+        done
+        if [ -n "$defaultroute" ]; then
+                /sbin/netcfg route add default $defaultroute || return 1
+        fi
+        return 0
+}
+
+load_rc_config $name
+run_rc_command "$1"

@@ -17,7 +17,10 @@
  * user in with the right password, to a shell with the user's IDs, home
  * and name, which who lists, and where passwd changes the password, so
  * that the old one fails and the new one works; and that utmpx and
- * wtmpx have the records.
+ * wtmpx have the records; and that /etc/rc.d/network has plumbed the
+ * network: vionet0 configured as /etc/rc.conf says, the default route,
+ * TCP and UDP sockets over the loopback, the gateway answering a ping,
+ * and netcfg show.
  * Then it halts the system with /sbin/halt, after giving init time to
  * start the console's getty.
  *
@@ -31,13 +34,18 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <pwd.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stropts.h>
 #include <sys/ioctl.h>
+#include <sys/ipconf.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -644,6 +652,144 @@ test_ageing(const char *password)
         close(m);
 }
 
+static uint32_t
+inet4(int a, int b, int c, int d)
+{
+        return htonl((uint32_t)a << 24 | (uint32_t)b << 16 |
+            (uint32_t)c << 8 | (uint32_t)d);
+}
+
+static int
+ipstr(int fd, int cmd, void *data, int len)
+{
+        struct strioctl sio = { cmd, 0, len, data };
+
+        return ioctl(fd, I_STR, &sio);
+}
+
+static uint16_t
+cksum16(const unsigned char *p, size_t len)
+{
+        uint32_t sum = 0;
+
+        for (; len > 1; p += 2, len -= 2)
+                sum += (uint32_t)p[0] << 8 | p[1];
+        if (len > 0)
+                sum += (uint32_t)p[0] << 8;
+        while ((sum >> 16) != 0)
+                sum = (sum & 0xffff) + (sum >> 16);
+        return (uint16_t)~sum;
+}
+
+/* An ICMP echo to dst on a raw stream, and its reply within ms. */
+static int
+ping(uint32_t dst, int ms)
+{
+        unsigned char p[64], r[256];
+        int fd = open("/dev/ip", O_RDWR), proto = 1, ok = 0;
+        long end = now_ms() + ms;
+        uint16_t sum;
+
+        if (fd < 0)
+                return 0;
+        if (ipstr(fd, IP_BINDPROTO, &proto, sizeof(proto)) != 0) {
+                close(fd);
+                return 0;
+        }
+        memset(p, 0, sizeof(p));
+        p[0] = 0x45;
+        p[9] = 1;
+        memcpy(p + 16, &dst, 4);
+        p[20] = 8;                      /* echo request */
+        p[24] = 0x0b;                   /* id */
+        p[27] = 1;                      /* sequence */
+        sum = cksum16(p + 20, 44);
+        p[22] = (unsigned char)(sum >> 8);
+        p[23] = (unsigned char)sum;
+        if (write(fd, p, sizeof(p)) == (ssize_t)sizeof(p)) {
+                while (!ok && now_ms() < end) {
+                        struct pollfd pf = { fd, POLLIN, 0 };
+                        ssize_t n;
+
+                        if (poll(&pf, 1, (int)(end - now_ms())) != 1)
+                                break;
+                        n = read(fd, r, sizeof(r));
+                        ok = n >= 28 && memcmp(r + 12, &dst, 4) == 0 &&
+                            r[(r[0] & 0x0f) * 4] == 0 &&
+                            r[(r[0] & 0x0f) * 4 + 4] == 0x0b;
+                }
+        }
+        close(fd);
+        return ok;
+}
+
+static void
+test_network(void)
+{
+        struct sockaddr_in sin;
+        struct ip_ifinfo ifs[8];
+        struct ip_route rts[16];
+        socklen_t len = sizeof(sin);
+        int ipfd, n, found = 0, l, c, a, u, status = -1;
+        char buf[8];
+        pid_t pid;
+
+        ipfd = open("/dev/ip", O_RDWR);
+        CHECK(ipfd >= 0);
+        n = ipstr(ipfd, IP_IFLIST, ifs, sizeof(ifs));
+        for (int i = 0; i < n && i < 8; i++)
+                if (strcmp(ifs[i].ii_name, "vionet0") == 0)
+                        found = ifs[i].ii_addr == inet4(10, 0, 2, 15) &&
+                            ifs[i].ii_mask == inet4(255, 255, 255, 0) &&
+                            (ifs[i].ii_flags & (IPIF_UP | IPIF_RUNNING)) ==
+                            (IPIF_UP | IPIF_RUNNING);
+        CHECK(found);
+        n = ipstr(ipfd, IP_ROUTELIST, rts, sizeof(rts));
+        found = 0;
+        for (int i = 0; i < n && i < 16; i++)
+                if (rts[i].rt_mask == 0 &&
+                    rts[i].rt_gateway == inet4(10, 0, 2, 2))
+                        found = 1;
+        CHECK(found);
+        close(ipfd);
+        CHECK(ping(inet4(10, 0, 2, 2), 3000));
+
+        /* TCP and UDP sockets, which need the plumbing. */
+        memset(&sin, 0, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        l = socket(AF_INET, SOCK_STREAM, 0);
+        CHECK(l >= 0 && bind(l, (struct sockaddr *)&sin, sizeof(sin)) == 0 &&
+            listen(l, 1) == 0 &&
+            getsockname(l, (struct sockaddr *)&sin, &len) == 0);
+        c = socket(AF_INET, SOCK_STREAM, 0);
+        CHECK(c >= 0 && connect(c, (struct sockaddr *)&sin, sizeof(sin)) == 0);
+        a = accept(l, NULL, NULL);
+        CHECK(a >= 0 && write(c, "boot", 4) == 4 &&
+            read(a, buf, sizeof(buf)) == 4 && memcmp(buf, "boot", 4) == 0);
+        close(a);
+        close(c);
+        close(l);
+        u = socket(AF_INET, SOCK_DGRAM, 0);
+        sin.sin_port = 0;
+        CHECK(u >= 0 && bind(u, (struct sockaddr *)&sin, sizeof(sin)) == 0 &&
+            getsockname(u, (struct sockaddr *)&sin, &len) == 0 &&
+            sendto(u, "dgram", 5, 0, (struct sockaddr *)&sin,
+            sizeof(sin)) == 5 && recv(u, buf, sizeof(buf), 0) == 5);
+        close(u);
+
+        if ((pid = fork()) == 0) {
+                int null = open("/dev/null", O_WRONLY);
+
+                if (null >= 0)
+                        dup2(null, 1);
+                execl("/sbin/netcfg", "netcfg", "show", (char *)NULL);
+                _exit(127);
+        }
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -657,6 +803,7 @@ main(int argc, char **argv)
         test_proc();
         test_utilities();
         test_xn_suite();
+        test_network();
         test_login(argv[1], argv[2], argv[3], argv[4]);
         test_utmpx(argv[1]);
         test_ageing(argv[2]);

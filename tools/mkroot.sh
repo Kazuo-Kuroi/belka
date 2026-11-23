@@ -64,6 +64,7 @@ install_prog reboot sbin/reboot
 ln "$src/sbin/reboot" "$src/sbin/halt"
 install_prog mount sbin/mount
 install_prog rcorder sbin/rcorder
+install_prog netcfg sbin/netcfg
 ln "$src/sbin/mount" "$src/sbin/umount"
 install_prog getty usr/libexec/getty
 install_prog login usr/bin/login
@@ -181,6 +182,7 @@ sed -e 's/@PACKAGE_VERSION@/6.24.16/g' \
     -e 's|@PACKAGE_MAILLIST@|https://www.tcsh.org/|g' contrib/tcsh/tcsh.man.in \
     > "$src/usr/share/man/man1/tcsh.1"
 cp usr/sbin/accounts/accounts.8 "$src/usr/share/man/man8/useradd.8"
+cp usr/sbin/netcfg/netcfg.8 "$src/usr/share/man/man8/netcfg.8"
 for name in usermod userdel groupadd groupmod groupdel acctrecover; do
         ln "$src/usr/share/man/man8/useradd.8" "$src/usr/share/man/man8/$name.8"
 done

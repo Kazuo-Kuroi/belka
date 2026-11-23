@@ -2670,3 +2670,27 @@ heap bookkeeping with address-space-owned heap state.
   and sent again, orderly release, a refused connection and a reset.
   The loopback loses nothing else, so retransmission of data is not
   yet exercised.
+
+## The network at boot (2026-11-23)
+
+- **`netcfg`** (`usr/sbin/netcfg`, `/sbin/netcfg`) is Belka's own
+  plumbing and configuration program, over STREAMS links and the
+  `/dev/ip` ioctls: `plumb` links an IP stream under UDP and TCP
+  (persistently; one already linked is left), `attach` makes an
+  interface of a DLPI device (linked twice under IP, then
+  `IP_IFATTACH`), `addr` and `route` configure it, and `show` lists
+  interfaces, routes and the ARP cache. It is not BSD's `ifconfig` or
+  `route`, whose socket ioctls Belka does not have yet; those can come
+  later, built on the same ioctls.
+- **`/etc/rc.d/network`** runs it at boot, before `NETWORKING`: `plumb`
+  always (with `network=YES`, the default), then each interface in
+  `net_interfaces` whose device exists, with its `ifaddr_<name>`, and
+  the default route through `defaultroute`. A missing device is passed
+  over, a failure is an error. There is no DHCP client: the shipped
+  `/etc/rc.conf` sets up QEMU's user-mode network (`vionet0`,
+  10.0.2.15/24, gateway 10.0.2.2), and the normal and test boots now
+  have the virtio-net device (`QEMU_ROOT_FLAGS`). The kernel self-test
+  boot does not run `rc`; its tests plumb what they use themselves.
+- **Testing:** `boottest` checks that the boot configured `vionet0`
+  and the default route, pings the gateway, uses TCP and UDP sockets
+  over the loopback, and runs `netcfg show`.

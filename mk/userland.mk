@@ -10,6 +10,7 @@
 #   /sbin/reboot, halt  Belka's (usr/sbin/reboot), through uadmin
 #   /sbin/mount, umount Belka's (usr/sbin/mount), System V's, over vfstab
 #   /sbin/rcorder       Belka's (usr/sbin/rcorder), for /etc/rc and rc.d
+#   /sbin/netcfg        Belka's (usr/sbin/netcfg), the network's plumbing
 #   /usr/libexec/getty  Belka's (usr/sbin/getty)
 #   /usr/bin/login      NetBSD's (contrib/netbsd/usr.bin/login)
 #   /bin/sh, /bin/mksh  mksh R59c (contrib/mksh)
@@ -159,6 +160,12 @@ $(SYS_OBJ)/mount.o: usr/sbin/mount/mount.c $(MLIBC)
 	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
 $(SYS_DIR)/mount: $(SYS_OBJ)/mount.o $(SYS_DEPS)
 	$(call SYS_LINK,$(SYS_OBJ)/mount.o)
+
+$(SYS_OBJ)/netcfg.o: usr/sbin/netcfg/netcfg.c $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
+$(SYS_DIR)/netcfg: $(SYS_OBJ)/netcfg.o $(SYS_DEPS)
+	$(call SYS_LINK,$(SYS_OBJ)/netcfg.o)
 
 $(SYS_OBJ)/rcorder.o: usr/sbin/rcorder/rcorder.c $(MLIBC)
 	@mkdir -p $(dir $@)
@@ -836,7 +843,7 @@ TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
 
 SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mount rcorder \
-                   mksh tcsh accounts)
+                   netcfg mksh tcsh accounts)
 
 sys-progs: $(SYS_PROGS)
 
@@ -936,7 +943,8 @@ ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    contrib/netbsd/usr.bin/patch/patch.1 contrib/netbsd/usr.bin/patch/NOTICE \
                    contrib/netbsd/external/bsd/less/dist/LICENSE \
                    contrib/netbsd/external/bsd/less/dist/less.1 \
-                   contrib/zlib/README usr/bin/chsh/chsh.1 usr/sbin/accounts/accounts.8) \
+                   contrib/zlib/README usr/bin/chsh/chsh.1 usr/sbin/accounts/accounts.8 \
+                   usr/sbin/netcfg/netcfg.8) \
                    $(wildcard etc/* etc/defaults/* etc/rc.d/* \
                    contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 

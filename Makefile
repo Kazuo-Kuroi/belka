@@ -197,10 +197,14 @@ QEMU_FLAGS      := $(QEMU_BASE) \
                    -nic none -netdev user,id=n0 \
                    -device virtio-net-pci,netdev=n0,mac=$(TEST_MAC),disable-legacy=on \
                    -display none -no-reboot
-# A normal boot: the root image (tools/mkroot.sh) as vd0.
+# A normal boot: the root image (tools/mkroot.sh) as vd0, and the
+# virtio-net device on QEMU's user-mode network, which /etc/rc.conf
+# configures.
 QEMU_ROOT_FLAGS = $(QEMU_BASE) \
                    -drive file=$(1),if=none,id=vd0,format=raw \
                    -device virtio-blk-pci,drive=vd0,disable-legacy=on \
+                   -nic none -netdev user,id=n0 \
+                   -device virtio-net-pci,netdev=n0,disable-legacy=on \
                    -display none -no-reboot
 
 # The C library: mlibc, from the contrib/mlibc submodule (the belka
