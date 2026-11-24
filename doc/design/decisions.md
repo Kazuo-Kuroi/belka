@@ -1489,7 +1489,8 @@ Recorded 2026-11-07.
 ## Utilities (2026-11-14)
 
 - **ksenon-utils,** the Ksenon system's own 45 System V-style
-  utilities (C99, POSIX-2001/XSI, MIT), are `/bin`'s: the
+  utilities (C99, POSIX-2001/XSI, MIT), are `/bin`'s (superseded: `/usr/bin`; see
+  [The file system hierarchy](#the-file-system-hierarchy-2026-11-23)): the
   `contrib/ksenon-utils` submodule, on that repository's `belka` branch,
   which adds `lib/plat_belka.c` (the mount table and device numbers).
   They build with their own strict flags and their own `libxn`, against
@@ -1622,7 +1623,9 @@ Recorded 2026-11-07.
 ## ed and passwd (2026-11-14)
 
 - **ed** is NetBSD's, static in `/bin` so that it works when little else
-  does, with its old command forms and without DES.
+  does, with its old command forms and without DES. (Superseded: it goes
+  in `/sbin`; see
+  [The file system hierarchy](#the-file-system-hierarchy-2026-11-23).)
 - **passwd** is Belka's own (`usr/bin/passwd`), set-user-ID root: a user
   changes their own password after giving the old one, the superuser
   anyone's. The new one is asked twice, hashed with `$sha1$` under a new
@@ -2044,7 +2047,9 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
   NetBSD's user tools require master.passwd and pw_mkdb, so this utility
   uses Belka's existing account format.
 - New users start with a locked password. The default primary group is
-  users, home is /home/name, and shell is /bin/sh. Options cover explicit
+  users, home is /home/name (superseded: /usr/people/name; see
+  [The file system hierarchy](#the-file-system-hierarchy-2026-11-23)),
+  and shell is /bin/sh. Options cover explicit
   identifiers, primary and supplementary groups, comments, homes, shells,
   user/group renaming, and creation of home directories.
 - User renaming updates shadow and supplementary memberships. Group GID
@@ -3112,7 +3117,9 @@ DHCP would set dnscache's servers later, and in
 [DHCP](#dhcp-2026-11-23), that no hook script runs and that TCP sockets
 do not take `MSG_WAITALL`.
 
-- **dhcpcd's hook** is Belka's own, `/libexec/dhcpcd-run-hooks` (a
+- **dhcpcd's hook** is Belka's own, `/libexec/dhcpcd-run-hooks`
+  (superseded: `/usr/libexec`; see
+  [The file system hierarchy](#the-file-system-hierarchy-2026-11-23)) (a
   shell script, from `usr/sbin/dhcpcd`). It keeps the name servers a
   lease offers in `/var/db/dhcpcd/<interface>.dns`, one to a line, and
   removes the file when the lease goes (expiry, release, stop). It does
@@ -3143,3 +3150,37 @@ do not take `MSG_WAITALL`.
   gone; and that `netcfg addr vionet0 none` takes the address and routes
   away. `tcptest` checks `MSG_WAITALL` across two writes 100 ms apart
   and at the end of the peer's data.
+
+## The file system hierarchy (2026-11-23)
+
+The contract is [hierarchy.md](hierarchy.md); in short:
+
+- **Three kinds of software, kept apart.** The base system is `/usr`
+  (programs, `/usr/lib64`, `/usr/libexec`, `/usr/share`), a few static
+  programs in `/sbin`, its configuration in `/etc` (as shipped, in
+  `/etc/defaults`) and its state in `/var/adm` and `/var/db`; it is
+  installed and updated whole, never by the package manager. Software
+  for the whole system is under `/opt`, `/etc/opt` and `/var/opt` (its
+  logs in `/var/opt/log`, with `/var/log` a link there). A user's own
+  is under `/opt/people/USER`, `/etc/opt/people/USER` and
+  `/var/opt/people/USER`, apart from the shared prefix's names.
+- **Back to the defaults** is removing what is under the three `opt`
+  trees and putting `/etc` back from `/etc/defaults`, accounts kept;
+  later tools will check the base against a manifest.
+- **`/bin` is a link to `usr/bin`.** `/sbin` is real and holds only
+  static programs, to start and recover the system when the shared C
+  library or `/usr` is damaged: init, sh, mount and umount, halt and
+  reboot, netcfg, rcorder, ed.
+- **Homes** are `/usr/people/USER` (IRIX's), the superuser's `/adm`.
+  `/root` and `/home` go.
+- **Libraries stay in `/usr/lib64`.** `/usr/lib` is kept for a 32-bit
+  UnixWare personality, whose programs name `/usr/lib/libc.so.1`. The
+  base runtime linker looks only in `/usr/lib64`; programs under `/opt`
+  use their RUNPATH, so nothing there stands in for a base library.
+- **`/tmp` and `/var/run` are tmpfs**, empty at every boot; `/var` and
+  `/var/tmp` are kept. `/stand` is reserved for the kernel and boot
+  files of a disk installation. One file system holds `/`, `/usr` and
+  `/etc`.
+- **Not yet done:** the tree has not moved; hierarchy.md lists what
+  moves. The reset and verify tools, the manifest, the account history
+  and the package manager are to come.

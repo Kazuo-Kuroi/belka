@@ -5,7 +5,8 @@ UnixWare for its interfaces and organisation and on IRIX for its
 multiprocessing, scheduling, and VFS design. It is MIT-licensed.
 
 Design decisions are recorded in
-[doc/design/decisions.md](doc/design/decisions.md). Code follows
+[doc/design/decisions.md](doc/design/decisions.md). Where files go is
+[doc/design/hierarchy.md](doc/design/hierarchy.md). Code follows
 [CODING_STYLE.md](CODING_STYLE.md) with 8-space indentation.
 
 ## Building
