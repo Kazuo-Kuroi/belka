@@ -31,10 +31,10 @@ Dropbear's ifndef_wrapper.sh, in the build. LibTomCrypt's tables
 
 The choices, from localoptions.h and config.h:
 
-  - no privilege drop at authentication (DROPBEAR_SVR_DROP_PRIVS):
-    it needs setresgid, which Belka has not, so the server is root
-    until the session's fork, where it becomes the user; with it,
-    Unix-domain socket forwarding is off
+  - the server gives up root once a user is authenticated
+    (DROPBEAR_SVR_DROP_PRIVS, over setresgid), keeping group utmp
+    (/etc/group) saved for the logout's record in utmpx and wtmpx,
+    which are group utmp, mode 0664
   - no X11 forwarding, SFTP server, re-execution (no fexecve), zlib,
     PAM, lastlog, or the old utmp and wtmp: sessions are in utmpx and
     wtmpx (/var/adm)

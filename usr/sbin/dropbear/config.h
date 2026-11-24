@@ -7,9 +7,10 @@
  * one its configure script makes (contrib/dropbear/src/config.h.in),
  * from what mlibc and the compat library have.
  *
- * Left out on purpose: setresgid (mlibc's has no Belka system call
- * under it), so the server keeps root until the session's fork
- * (localoptions.h); sys/prctl.h, which on Belka is IRIX's prctl, not
+ * The server gives up root once a user is authenticated, keeping group
+ * utmp as its saved group (setresgid) for the logout's record.
+ *
+ * Left out on purpose: sys/prctl.h, which on Belka is IRIX's prctl, not
  * Linux's; stropts.h, as ptys come from openpty; fexecve, so no
  * re-execution; getrandom, so the seed is read from /dev/urandom;
  * zlib, PAM, lastlog and the old utmp and wtmp. Sessions are recorded
@@ -110,6 +111,7 @@
 #define HAVE_UTMPXNAME          1
 #define HAVE_OPENPTY            1
 #define HAVE_PUTENV             1
+#define HAVE_SETRESGID          1
 #define HAVE_STRLCAT            1
 #define HAVE_STRLCPY            1
 #define HAVE_WRITEV             1

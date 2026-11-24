@@ -1535,7 +1535,7 @@ run_shc(char *const env[], const char *script, const char *a, const char *b,
  * ssh-keygen made and runs a command as user; scp copies a file there
  * and back; ssh logs user2 in by its password; a key not authorized,
  * with a wrong password, is turned away; and a session on a
- * pseudo-terminal, recorded in wtmpx.
+ * pseudo-terminal, recorded in wtmpx, its sshd running as the user.
  */
 static void
 test_ssh(const char *user, const char *user2, const char *password,
@@ -1646,25 +1646,50 @@ test_ssh(const char *user, const char *user2, const char *password,
                 say(m, "tty; echo \"<$((40 + 2))>\"\n");
                 CHECK(expect(m, "/dev/pts/", 5000));
                 CHECK(expect(m, "<42>", 5000));
+                /* The shell's parent, sshd, has given up root for the user. */
+                say(m, "ps -f -p $PPID | tail -n 1 | while read u r; do "
+                    "echo \"<$u>\"; done\n");
+                snprintf(dest, sizeof(dest), "<%s>", user);
+                CHECK(expect(m, dest, 5000));
                 say(m, "exit\n");
                 CHECK(reap(pid, 10000) == 0);
                 close(m);
 
-                CHECK((fp = fopen("/var/adm/wtmpx", "r")) != NULL);
-                if (fp != NULL) {
+                /*
+                 * The login's record in wtmpx, with the client's address,
+                 * and the logout's after it on the same line, which sshd
+                 * writes as the user with group utmp raised again (it may
+                 * come a moment after the client is gone).
+                 */
+                for (int tries = 0; tries < 20 && inwtmp != 2; tries++) {
+                        char line[sizeof(((struct utmpx *)0)->ut_line)];
                         struct utmpx rec;
 
-                        while (fread(&rec, sizeof(rec), 1, fp) == 1)
+                        if (tries > 0)
+                                usleep(100000);
+                        inwtmp = 0;
+                        if ((fp = fopen("/var/adm/wtmpx", "r")) == NULL)
+                                break;
+
+                        while (fread(&rec, sizeof(rec), 1, fp) == 1) {
                                 if (rec.ut_type == USER_PROCESS &&
                                     strcmp(rec.ut_user, user) == 0 &&
-                                    strcmp(rec.ut_host, "127.0.0.1") == 0)
+                                    strcmp(rec.ut_host, "127.0.0.1") == 0) {
+                                        memcpy(line, rec.ut_line,
+                                            sizeof(line));
                                         inwtmp = 1;
+                                } else if (inwtmp == 1 &&
+                                    rec.ut_type == DEAD_PROCESS &&
+                                    strncmp(rec.ut_line, line,
+                                    sizeof(line)) == 0) {
+                                        inwtmp = 2;
+                                }
+                        }
                         fclose(fp);
                 }
-                CHECK(inwtmp);
+                CHECK(inwtmp == 2);
         }
 }
-
 
 int
 main(int argc, char **argv)

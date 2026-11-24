@@ -26,16 +26,6 @@
 #define DEFAULT_PATH            "/usr/bin:/opt/bin"
 #define DEFAULT_ROOT_PATH       "/sbin:/usr/sbin:/usr/bin:/opt/sbin:/opt/bin"
 
-/*
- * The server stays root until a session's fork, then becomes the user
- * there (svr_switch_user): dropping privileges at authentication needs
- * setresgid, which Belka has not. Forwarding Unix-domain sockets needs
- * the drop, so it is off; TCP forwarding and agent forwarding are not.
- */
-#define DROPBEAR_SVR_DROP_PRIVS 0
-#define DROPBEAR_SVR_LOCALSTREAMFWD 0
-#define DROPBEAR_SVR_REMOTESTREAMFWD 0
-
 /* Not built: X11, re-execution (no fexecve), and an SFTP server. */
 #define DROPBEAR_X11FWD         0
 #define DROPBEAR_REEXEC         0

@@ -7,7 +7,8 @@
 /*
  * Credentials (see <sys/cred.h>) and the system calls on user and group
  * ids, with System V numbers: setuid 23, getuid 24, setgid 46, getgid
- * 47, setgroups 91, getgroups 92, setegid 136, seteuid 141.
+ * 47, setgroups 91, getgroups 92, setegid 136, seteuid 141; and
+ * Belka's setresuid 256, setresgid 257, getresuid 258, getresgid 259.
  *
  * The rules are POSIX's with saved ids. The superuser's setuid sets all
  * three user ids, and seteuid the effective one only; anyone else may
@@ -227,6 +228,100 @@ sys_getgid(const uint64_t *args __unused, uint64_t *rv)
         rv[0] = cr->cr_rgid;
         rv[1] = cr->cr_gid;
         return 0;
+}
+
+/*
+ * Set the real, effective and saved user (or, without SET_USER, group)
+ * ids at once, as setresuid and setresgid; an id of -1 is left as it
+ * is. The superuser may set any; anyone else only to ids among the
+ * three it has, each change checked before any is made.
+ */
+static int
+setresid(const uint64_t *args, int how)
+{
+        struct proc *p = curproc;
+        struct cred *cr, *ncr;
+        uint32_t id[3], *cur[3];
+        int root;
+
+        for (int i = 0; i < 3; i++) {
+                id[i] = (uint32_t)args[i];
+                if (id[i] != (uint32_t)-1 && id[i] > MAXUID)
+                        return EINVAL;
+        }
+        mutex_lock(&p->p_lock);
+        cr = p->p_cred;
+        root = CRED_ISROOT(cr);
+        ncr = crdup(cr);
+        if ((how & SET_USER) != 0) {
+                cur[0] = &ncr->cr_ruid;
+                cur[1] = &ncr->cr_uid;
+                cur[2] = &ncr->cr_suid;
+        } else {
+                cur[0] = &ncr->cr_rgid;
+                cur[1] = &ncr->cr_gid;
+                cur[2] = &ncr->cr_sgid;
+        }
+        for (int i = 0; i < 3 && !root; i++) {
+                if (id[i] != (uint32_t)-1 && id[i] != *cur[0] &&
+                    id[i] != *cur[1] && id[i] != *cur[2]) {
+                        mutex_unlock(&p->p_lock);
+                        crfree(ncr);
+                        return EPERM;
+                }
+        }
+        for (int i = 0; i < 3; i++)
+                if (id[i] != (uint32_t)-1)
+                        *cur[i] = id[i];
+        cred_setproc(p, ncr);
+        mutex_unlock(&p->p_lock);
+        cred_refresh(curlwp);
+        return 0;
+}
+
+/* setresuid(ruid, euid, suid): Belka's 256, as HP-UX and POSIX 2024. */
+int
+sys_setresuid(const uint64_t *args, uint64_t *rv __unused)
+{
+        return setresid(args, SET_USER);
+}
+
+/* setresgid(rgid, egid, sgid): Belka's 257. */
+int
+sys_setresgid(const uint64_t *args, uint64_t *rv __unused)
+{
+        return setresid(args, 0);
+}
+
+/* The three ids to the three addresses of args. */
+static int
+getresid(const uint64_t *args, uint32_t r, uint32_t e, uint32_t s)
+{
+        uint32_t id[3] = { r, e, s };
+        int error = 0;
+
+        for (int i = 0; i < 3 && error == 0; i++)
+                error = copyout(&id[i], (void *)(uintptr_t)args[i],
+                    sizeof(id[i]));
+        return error;
+}
+
+/* getresuid(uid_t *ruid, uid_t *euid, uid_t *suid): Belka's 258. */
+int
+sys_getresuid(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct cred *cr = CRED();
+
+        return getresid(args, cr->cr_ruid, cr->cr_uid, cr->cr_suid);
+}
+
+/* getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid): Belka's 259. */
+int
+sys_getresgid(const uint64_t *args, uint64_t *rv __unused)
+{
+        struct cred *cr = CRED();
+
+        return getresid(args, cr->cr_rgid, cr->cr_gid, cr->cr_sgid);
 }
 
 /*

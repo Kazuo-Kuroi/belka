@@ -132,6 +132,10 @@ install_prog dropbearconvert usr/bin/dropbearconvert
 install_prog scp usr/bin/scp
 mkdir -p "$src/usr/share/licenses/dropbear" "$src/etc/dropbear"
 chmod 700 "$src/etc/dropbear"
+# The login records, writable by group utmp, which sshd keeps as its
+# saved group after giving up root, for the record of a logout.
+: > "$src/var/adm/utmpx"
+: > "$src/var/adm/wtmpx"
 cp contrib/dropbear/LICENSE contrib/dropbear/README.belka \
     "$src/usr/share/licenses/dropbear/"
 mkdir -p "$src/usr/share/licenses/tcsh"
@@ -414,6 +418,8 @@ $FAKEROOT sh -c '
         chmod 0400 "$src/etc/shadow"
         chmod 1777 "$src/tmp" "$src/var/tmp" "$src/var/tmp/vi.recover"
         chmod 0700 "$src/adm"
+        chgrp 45 "$src/var/adm/utmpx" "$src/var/adm/wtmpx"
+        chmod 0664 "$src/var/adm/utmpx" "$src/var/adm/wtmpx"
         if [ -d "$src/usr/people/test" ]; then
                 chown 100:100 "$src/usr/people/test"
         fi

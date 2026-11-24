@@ -176,7 +176,11 @@
 #define SYS_setsockopt  253
 #define SYS_getsockopt  254
 #define SYS_getentropy  255     /* as OpenBSD's */
+#define SYS_setresuid   256     /* as HP-UX's, and POSIX 2024 */
+#define SYS_setresgid   257
+#define SYS_getresuid   258
+#define SYS_getresgid   259
 
-#define NSYSCALL        256     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        260     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

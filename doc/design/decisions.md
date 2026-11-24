@@ -3340,7 +3340,8 @@ Their options stay Dropbear's. The manual pages go in under both names.
   ENOSYS. The setting is off (`DROPBEAR_SVR_DROP_PRIVS 0`), so the
   server stays root until the session's fork. Unix-domain socket
   forwarding needs the drop, so it is off too. `setresuid` and
-  `setresgid` (POSIX 2024) would bring the drop back.
+  `setresgid` (POSIX 2024) would bring the drop back. Superseded the same
+  day: see "setresuid and setresgid" below.
 - **Off:** X11 forwarding, the SFTP server, re-execution (no
   `fexecve`), zlib, PAM, lastlog, and the old utmp and wtmp. Sessions
   are recorded in utmpx and wtmpx. The seed comes from `/dev/urandom`.
@@ -3369,3 +3370,35 @@ wrong key and password. Last, it runs a session on a pseudo-terminal
 and checks its record in wtmpx with the client's address.
 `make run SSH_PORT=n` forwards a port on the host's loopback to the
 guest's port 22.
+
+## setresuid and setresgid (2026-11-24)
+
+Belka now has `setresuid`, `setresgid`, `getresuid` and `getresgid`.
+They appeared in HP-UX by 1997, were later taken up by the BSDs and
+Linux, and are in POSIX 2024. They are Belka's own calls 256 to 259
+(`NSYSCALL` is now 260), and mlibc's generic functions reach them
+through the `SetResuid`, `SetResgid`, `GetResuid` and `GetResgid`
+sysdeps.
+
+- **setres\*id(r, e, s):** an id of -1 leaves that one as it is. With
+  an effective user id of 0, any id may be set. Otherwise, each id
+  given must already be one of the three the process has, and every
+  id is checked before any changes, so a call either does all of it or
+  none (EPERM). An id past the largest is EINVAL. Like the other set
+  calls, both publish the change to the share group (`PR_SID`).
+- **getres\*id(&r, &e, &s):** copy the three ids out, or EFAULT.
+
+This supersedes the privileges bullet of "SSH and inetd" above.
+Dropbear now builds with `DROPBEAR_SVR_DROP_PRIVS`, so the server
+gives up root once a user is authenticated. Unix-domain socket
+forwarding is back. The server keeps group `utmp` (gid 45, new in
+`/etc/group`) as its saved group, and raises it again to write the
+logout's record. `/var/adm/utmpx` and `wtmpx` are made group `utmp`,
+mode 0664, on the image.
+
+`credtest` checks the calls as the superuser and as the user. It sets
+each id alone and all three at once, keeps a saved group for a later
+`setegid`, and takes back a saved user id 0. It also checks EPERM,
+EINVAL and EFAULT. `boottest` checks that the shell's parent, sshd,
+runs as the user in an SSH session, and that wtmpx gets the logout's
+record as well as the login's.

@@ -189,6 +189,10 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_setsockopt] = sys_setsockopt,
         [SYS_getsockopt] = sys_getsockopt,
         [SYS_getentropy] = sys_getentropy,
+        [SYS_setresuid] = sys_setresuid,
+        [SYS_setresgid] = sys_setresgid,
+        [SYS_getresuid] = sys_getresuid,
+        [SYS_getresgid] = sys_getresgid,
         [SYS_exit] = sys_exit,
         [SYS_fork] = sys_fork,
         [SYS_read] = sys_read,
@@ -363,6 +367,8 @@ syscall_dispatch(uint64_t code, const uint64_t *args, uint64_t *rv)
                 case SYS_seteuid:
                 case SYS_setgid:
                 case SYS_setegid:
+                case SYS_setresuid:
+                case SYS_setresgid:
                 case SYS_setgroups:
                         changed = PR_SID;
                         break;

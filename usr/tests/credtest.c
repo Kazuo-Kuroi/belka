@@ -6,7 +6,7 @@
 
 /*
  * The credentials test, built against mlibc: user and group ids with
- * saved ids, supplementary groups, the file permission rules (search,
+ * saved ids (and setresuid and setresgid), supplementary groups, the file permission rules (search,
  * read and write, directory writes, sticky directories, new files'
  * owners, set-group-ID directories, chmod and chown), access() with the
  * real ids, set-ID programs and AT_SECURE, and who may send a signal or
@@ -23,6 +23,7 @@
 
 #define _DEFAULT_SOURCE         /* setgroups */
 #define _POSIX_C_SOURCE 202405L
+#define _XOPEN_SOURCE 800       /* setresuid and the rest, in mlibc */
 
 #include <errno.h>
 #include <fcntl.h>
@@ -190,6 +191,42 @@ saved_ids(void)
         CHECK(getuid() == USER && geteuid() == USER);
         CHECK(seteuid(0) == -1 && errno == EPERM);
         CHECK(access(path("/rootonly"), R_OK) == -1 && errno == EACCES);
+}
+
+/*
+ * setresuid and setresgid (POSIX 2024), and getresuid and getresgid:
+ * the superuser sets any of the three, -1 leaving one as it is; then,
+ * as the user, a saved group kept for a later setegid (as an SSH
+ * server keeps utmp's), the saved user id 0 taken back as effective,
+ * and nothing outside the three allowed.
+ */
+static void
+res_ids(void)
+{
+        uid_t r, e, s;
+        gid_t rg, eg, sg;
+
+        CHECK(getresuid(&r, &e, &s) == 0 && r == 0 && e == 0 && s == 0);
+        CHECK(setresuid(0, (uid_t)0x80000000, 0) == -1 && errno == EINVAL);
+        CHECK(getresuid(NULL, &e, &s) == -1 && errno == EFAULT);
+        CHECK(setresgid(USER, USER, GROUP2) == 0);
+        CHECK(getresgid(&rg, &eg, &sg) == 0 && rg == USER && eg == USER &&
+            sg == GROUP2);
+        CHECK(setresuid(USER, USER, (uid_t)-1) == 0);
+        CHECK(getresuid(&r, &e, &s) == 0 && r == USER && e == USER &&
+            s == 0);
+        /* No longer the superuser. */
+        CHECK(setresgid((gid_t)-1, 0, (gid_t)-1) == -1 && errno == EPERM);
+        CHECK(setegid(GROUP2) == 0 && getegid() == GROUP2);
+        CHECK(setegid(USER) == 0 && getegid() == USER);
+        CHECK(setresgid(GROUP2, (gid_t)-1, USER) == 0);
+        CHECK(getresgid(&rg, &eg, &sg) == 0 && rg == GROUP2 && eg == USER &&
+            sg == USER);
+        CHECK(setresuid((uid_t)-1, 0, (uid_t)-1) == 0 && geteuid() == 0);
+        CHECK(setresuid(USER, USER, USER) == 0);
+        CHECK(setresuid((uid_t)-1, 0, (uid_t)-1) == -1 && errno == EPERM);
+        CHECK(getresuid(&r, &e, &s) == 0 && r == USER && e == USER &&
+            s == USER);
 }
 
 /* Reading and writing by owner, group, and others. */
@@ -449,6 +486,7 @@ main(int argc, char **argv)
         setup();
         failures += in_child(user_ids);
         failures += in_child(saved_ids);
+        failures += in_child(res_ids);
         failures += in_child(file_modes);
         failures += in_child(directories);
         failures += in_child(owners);
