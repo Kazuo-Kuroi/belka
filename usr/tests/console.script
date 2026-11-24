@@ -13,7 +13,10 @@ expect #\x20 15000
 
 # /etc/profile, and the console as the terminal.
 send echo "<$PATH>"\r
-expect </sbin:/usr/sbin:/bin:/usr/bin>
+expect </sbin:/usr/sbin:/usr/bin:/opt/sbin:/opt/bin>
+# Root's home is /adm (doc/design/hierarchy.md).
+send pwd\r
+expect /adm
 send tty\r
 expect /dev/console
 send who\r

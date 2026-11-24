@@ -502,8 +502,9 @@ main(int argc, char **argv)
                             (long)(time(NULL) / 86400));
                         setfield(shadow, 2, today);
                         if (home == NULL) {
-                                default_home = allocate(strlen(name) + 7);
-                                sprintf(default_home, "/home/%s", name);
+                                default_home = allocate(sizeof("/usr/people/") +
+                                    strlen(name));
+                                sprintf(default_home, "/usr/people/%s", name);
                                 home = default_home;
                         }
                         if (shell == NULL)

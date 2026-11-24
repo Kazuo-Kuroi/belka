@@ -1,7 +1,7 @@
 # The file system hierarchy
 
-**Status:** adopted 2026-11-23; the tree is not yet moved to it (see
-"Moving to it" at the end).
+**Status:** adopted 2026-11-23; the image follows it since 2026-11-24,
+with the gaps listed in "Where the tree stands" at the end.
 
 This is the contract for where things go in a Belka system: which
 directories there are, who owns each, what survives a reboot, and what
@@ -206,26 +206,37 @@ and backups whose owners come from elsewhere.
 3. Whether `/stand` is used, and what it holds.
 4. The package manager, and how it records what it installed.
 
-## 9. Moving to it
+## 9. Where the tree stands
 
-The image (`tools/mkroot.sh`) does not follow this yet. What moves:
+The image (`tools/mkroot.sh`) follows this since 2026-11-24:
 
-- **`/bin`'s programs** (mksh, the Ksenon utilities, ps, hostname, tcsh
-  and the rest) go to `/usr/bin`, and `/bin` becomes the link.
-- **`/sbin`** keeps init, mount and umount, halt and reboot, netcfg and
-  rcorder, all static, and gains static copies of `sh` and `ed`.
-  dhcpcd, which is dynamic, goes to `/usr/sbin`.
-- **`/libexec/dhcpcd-run-hooks`** goes to `/usr/libexec` (dhcpcd's
-  `LIBEXECDIR`).
-- **Homes:** root's from `/root` to `/adm`; the default for new
-  accounts (`useradd`) from `/home/USER` to `/usr/people/USER`; the test
-  image's users likewise. `/home` goes.
-- **New:** `/opt`, `/etc/opt`, `/var/opt` (with `log`) and their
-  `people` directories, `/var/log` as the link, and a `/var/run` tmpfs
-  in `/etc/vfstab`.
-- **Paths written in:** `/etc/profile`'s and `/etc/rc`'s PATH, the
-  shells in `/etc/passwd` and `/etc/shells`, `/sbin/nologin`, and the
-  paths compiled into imported programs (`_PATH_` constants in
-  `usr/lib/compat`).
-- **Unchanged:** `/usr/lib64`, so no program has to be linked again for
-  this.
+- **`/usr/bin`** has what was in `/bin` (mksh as `sh`, tcsh, the Ksenon
+  utilities, ps, hostname, stty, gzip, pax, ed), and `/bin` is the link.
+  Paths such as `/bin/sh` in `/etc/passwd`, `/etc/shells` and imported
+  programs still work through it, and stay.
+- **`/sbin`** has init, mount and umount, halt and reboot, netcfg and
+  rcorder, and copies of `sh` and `ed`, all static. dhcpcd is
+  `/usr/sbin/dhcpcd`, and its hook `/usr/libexec/dhcpcd-run-hooks`.
+- **`/usr/sbin/nologin`**, new, is the system accounts' shell; it was
+  named `/sbin/nologin` before, and there was no such program.
+- **Homes:** root's is `/adm` (mode 0700); `useradd` makes new ones in
+  `/usr/people`; the test image's users are in `/usr/people/test`.
+  `/root`, `/home` and `/libexec` are gone.
+- **New:** `/opt/people`, `/etc/opt/people`, `/var/opt/people`,
+  `/var/opt/log` (with `/var/log` the link), `/var/db`, and a `/var/run`
+  tmpfs (`/etc/vfstab`).
+- **PATH** (`/etc/profile`): `/sbin:/usr/sbin:/usr/bin:/opt/sbin:/opt/bin`
+  for root, `/usr/bin:/opt/bin:/opt/people/USER/bin` for others;
+  `/etc/rc`'s is `/sbin:/usr/sbin:/usr/bin`.
+- **The image is made with umask 022,** so that the base system's
+  directories are root's alone, whatever the host's umask.
+
+Not yet done:
+
+- **`/usr/lib/gcc`:** the native GCC keeps its own files there, as its
+  build lays them out. It is to go under `/usr/lib64` when the native
+  compiler is next built.
+- **`/etc/defaults`** has only `rc.conf`; the other files shipped in
+  `/etc` are to be copied there as they are.
+- The reset and `verify` tools, the manifest, and the account history
+  (section 8).

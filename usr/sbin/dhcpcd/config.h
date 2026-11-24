@@ -19,9 +19,9 @@
 #include <sys/types.h>
 
 #define SYSCONFDIR      "/etc"
-#define SBINDIR         "/sbin"
-#define LIBDIR          "/lib"
-#define LIBEXECDIR      "/libexec"
+#define SBINDIR         "/usr/sbin"
+#define LIBDIR          "/usr/lib64"
+#define LIBEXECDIR      "/usr/libexec"
 #define DBDIR           "/var/db/dhcpcd"
 #define RUNDIR          "/var/run/dhcpcd"
 #define DATADIR         "/usr/share"

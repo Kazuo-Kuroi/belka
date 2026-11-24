@@ -367,8 +367,8 @@ check "useradd uid" 2200 id -u acct-test
 check "useradd gid" 2200 id -g acct-test
 status "useradd supplementary" 0 sh -c 'id -Gn acct-test | grep -q acct-extra'
 check "useradd locked" LK sh -c 'set -- $(passwd -s acct-test); echo $2'
-check "useradd home owner" 2200 stat -f %u /home/acct-test
-check "useradd home group" 2200 stat -f %g /home/acct-test
+check "useradd home owner" 2200 stat -f %u /usr/people/acct-test
+check "useradd home group" 2200 stat -f %g /usr/people/acct-test
 status "useradd duplicate" 1 useradd acct-test
 status "useradd duplicate uid" 1 useradd -u 2200 acct-duplicate
 status "groupadd duplicate gid" 1 groupadd -g 2200 acct-duplicate
@@ -398,7 +398,7 @@ check "userdel removes supplementary" "" awk -F: '$1 == "acct-extra" { print $4 
 status "groupdel primary" 0 groupdel acct-primary-new
 status "groupdel supplementary" 0 groupdel acct-extra
 status "account journal clean" 1 test -e /etc/.accttxn
-status "home separately removable" 0 rmdir /home/acct-test
+status "home separately removable" 0 rmdir /usr/people/acct-test
 
 # Reconstruct an interrupted publication, then recover its original files.
 cp /etc/passwd account-passwd-before

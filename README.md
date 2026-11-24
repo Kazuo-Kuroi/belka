@@ -38,10 +38,10 @@ make test-all           # every test above
 
 The system programs are built statically against mlibc and put on an
 ext2 root image by `tools/mkroot.sh` (it needs `fakeroot`): NetBSD's
-`init`, `login` and `su` (`contrib/netbsd`), mksh as `/bin/sh`
+`init`, `login` and `su` (`contrib/netbsd`), mksh as `/usr/bin/sh`
 (`contrib/mksh`), and Belka's own `getty`, `reboot`/`halt`, System
 V's `mount`/`umount` and `rcorder` (`usr/sbin`), over a small compat
-library (`usr/lib/compat`), and in `/bin` the Ksenon utilities, `ls`,
+library (`usr/lib/compat`), and in `/usr/bin` the Ksenon utilities, `ls`,
 `cat`, `cp` and the rest (`contrib/ksenon-utils`, mostly linked
 dynamically), Belka's `ps` over IRIX-style `/proc` and its `passwd`,
 NetBSD's terminfo (`tic`, `tput`, `infocmp`; compiled at boot) and
@@ -49,11 +49,14 @@ NetBSD's terminfo (`tic`, `tput`, `infocmp`; compiled at boot) and
 `stat` and others, and nvi as `vi`, `ex` and `view` over NetBSD's
 curses. `/etc` comes from `etc/`:
 `/etc/rc` starts the scripts in `/etc/rc.d` (NetBSD's `rc.subr`) in
-`rcorder`'s order, and `/etc/vfstab` says what is mounted (`/tmp` is a
-tmpfs); the passwords are in `/etc/shadow`. `make sys-progs` builds
-the programs and `make root-image` the image. A normal boot (no
-`selftest` on the kernel command line) mounts that image as root and
-starts `/sbin/init`.
+`rcorder`'s order, and `/etc/vfstab` says what is mounted (`/tmp` and
+`/var/run` are tmpfs); the passwords are in `/etc/shadow`. The image is
+laid out as [doc/design/hierarchy.md](doc/design/hierarchy.md) says:
+`/bin` is a link to `/usr/bin`, `/sbin` has static copies of what starts
+and recovers the system, and homes are in `/usr/people`, root's `/adm`.
+`make sys-progs` builds the programs and `make root-image` the image.
+A normal boot (no `selftest` on the kernel command line) mounts that
+image as root and starts `/sbin/init`.
 
 Every self-test boot attaches `build/test-disk.img`, an 8 MB disk with
 a known pattern in each sector, as a virtio block device (`vd0`); it is

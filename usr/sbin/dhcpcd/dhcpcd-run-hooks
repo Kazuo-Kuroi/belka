@@ -4,7 +4,7 @@
 # Created: 2026-11-23
 # SPDX-License-Identifier: MIT
 #
-# dhcpcd(8)'s hook on Belka (its script, /libexec/dhcpcd-run-hooks),
+# dhcpcd(8)'s hook on Belka (its script, /usr/libexec/dhcpcd-run-hooks),
 # run for each event with $reason, $interface and the lease's options
 # in the environment. It keeps the name servers a lease offers in
 # /var/db/dhcpcd/<interface>.dns, one to a line, and drops the file

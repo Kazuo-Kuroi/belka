@@ -3182,5 +3182,29 @@ The contract is [hierarchy.md](hierarchy.md); in short:
   files of a disk installation. One file system holds `/`, `/usr` and
   `/etc`.
 - **Not yet done:** the tree has not moved; hierarchy.md lists what
-  moves. The reset and verify tools, the manifest, the account history
+  moves (superseded: see
+  [The tree moved](#the-tree-moved-2026-11-24)). The reset and verify tools, the manifest, the account history
   and the package manager are to come.
+
+## The tree moved (2026-11-24)
+
+The root image follows [hierarchy.md](hierarchy.md), whose last section
+says what moved and what is still to do:
+
+- `/bin`'s programs are in `/usr/bin`, and `/bin` is a link to it;
+  `/sbin` holds init, mount, halt and reboot, netcfg, rcorder, and
+  static copies of sh and ed. dhcpcd and its hook moved to `/usr/sbin`
+  and `/usr/libexec` (its `SBINDIR`, `LIBEXECDIR` and `LIBDIR` with
+  them); its manual pages are given the new path as they are installed.
+- Root's home is `/adm`; `useradd`'s default is `/usr/people/NAME`.
+- `/var/run` is a tmpfs, as `/tmp` is; `/var/log` links to `/var/opt/log`.
+- `/usr/sbin/nologin` is new: the system accounts' shell was
+  `/sbin/nologin`, which did not exist.
+- `tools/mkroot.sh` sets umask 022, so that the image's directories are
+  root's alone whatever the host's umask; they were 0775 under an umask
+  of 002.
+- **Testing:** `boottest` checks the links, `/sbin`'s own static sh and
+  ed, the opt and people directories and their modes, root's home, the
+  `/var/run` tmpfs, and nologin; `test-console` checks root's PATH and
+  that its login starts in `/adm`; `utiltest` that `useradd -m` makes
+  the home in `/usr/people`.

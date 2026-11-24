@@ -13,8 +13,10 @@
 #   /sbin/netcfg        Belka's (usr/sbin/netcfg), the network's plumbing
 #   /usr/libexec/getty  Belka's (usr/sbin/getty)
 #   /usr/bin/login      NetBSD's (contrib/netbsd/usr.bin/login)
-#   /bin/sh, /bin/mksh  mksh R59c (contrib/mksh)
-#   /bin/ls, cat, ...  ksenon-utils (contrib/ksenon-utils), below
+#   /usr/bin/sh, mksh   mksh R59c (contrib/mksh), and a copy as /sbin/sh
+#   /usr/bin/ls, cat, ... ksenon-utils (contrib/ksenon-utils), below
+#   /usr/sbin/nologin   Belka's (usr/sbin/nologin)
+#   (/bin is a link to usr/bin: doc/design/hierarchy.md)
 #   /usr/bin/sed, grep, awk, vi (ex, view)   NetBSD's, below, vi over
 #                       NetBSD's curses
 #
@@ -166,6 +168,12 @@ $(SYS_OBJ)/netcfg.o: usr/sbin/netcfg/netcfg.c $(MLIBC)
 	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
 $(SYS_DIR)/netcfg: $(SYS_OBJ)/netcfg.o $(SYS_DEPS)
 	$(call SYS_LINK,$(SYS_OBJ)/netcfg.o)
+
+$(SYS_OBJ)/nologin.o: usr/sbin/nologin/nologin.c $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
+$(SYS_DIR)/nologin: $(SYS_OBJ)/nologin.o $(SYS_DEPS)
+	$(call SYS_LINK,$(SYS_OBJ)/nologin.o)
 
 $(SYS_OBJ)/rcorder.o: usr/sbin/rcorder/rcorder.c $(MLIBC)
 	@mkdir -p $(dir $@)
@@ -843,7 +851,7 @@ TERM_PROGS      := $(addprefix $(SYS_DIR)/,tic infocmp tput ed) \
                    $(SYS_DIR)/passwd $(SYS_DIR)/su $(TEXT_PROGS)
 
 SYS_PROGS       := $(addprefix $(SYS_DIR)/,init login getty reboot mount rcorder \
-                   netcfg mksh tcsh accounts)
+                   netcfg mksh tcsh accounts nologin)
 
 sys-progs: $(SYS_PROGS)
 

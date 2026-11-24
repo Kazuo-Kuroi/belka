@@ -14,7 +14,7 @@
 # go in /etc/rc.local, which the local script runs.
 
 export HOME=/
-export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH=/sbin:/usr/sbin:/usr/bin
 umask 022
 
 . /etc/rc.subr

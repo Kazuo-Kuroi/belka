@@ -350,6 +350,77 @@ test_utmpx(const char *user)
         CHECK(inwtmp);
 }
 
+static int run_outv(char *const [], char *const [], char *, size_t);
+static int run_out(const char *, const char *, char *, size_t);
+
+/* Whether path is a directory with mode (permission bits) and root's. */
+static int
+root_dir(const char *path, mode_t mode)
+{
+        struct stat st;
+
+        return stat(path, &st) == 0 && S_ISDIR(st.st_mode) &&
+            (st.st_mode & 07777) == mode && st.st_uid == 0;
+}
+
+/*
+ * The layout (doc/design/hierarchy.md): /bin a link to usr/bin and
+ * /var/log one to opt/log; /sbin's own static sh and ed, which run
+ * apart from /usr's; the opt trees and their people directories, root's;
+ * root's home /adm, and no /root or /home; /var/run a tmpfs, as /tmp is;
+ * and nologin, the system accounts' shell, refusing.
+ */
+static void
+test_hierarchy(void)
+{
+        char *sh[] = { "/sbin/sh", "-c", "echo static", NULL };
+        char *none[] = { NULL };
+        struct passwd *pw;
+        struct stat a, b;
+        char buf[4096];
+        ssize_t n;
+        int fd, tmpfs = 0;
+
+        n = readlink("/bin", buf, sizeof(buf) - 1);
+        CHECK(n == 7 && memcmp(buf, "usr/bin", 7) == 0);
+        n = readlink("/var/log", buf, sizeof(buf) - 1);
+        CHECK(n == 7 && memcmp(buf, "opt/log", 7) == 0);
+        CHECK(stat("/bin/sh", &a) == 0 && stat("/usr/bin/sh", &b) == 0 &&
+            a.st_ino == b.st_ino);
+        CHECK(stat("/sbin/sh", &a) == 0 && a.st_ino != b.st_ino &&
+            (a.st_mode & 0111) != 0);
+        CHECK(stat("/sbin/ed", &a) == 0 && stat("/usr/bin/ed", &b) == 0 &&
+            a.st_ino != b.st_ino);
+        CHECK(run_outv(sh, none, buf, sizeof(buf)) &&
+            strcmp(buf, "static\n") == 0);
+        CHECK(root_dir("/opt/people", 0755) &&
+            root_dir("/etc/opt/people", 0755) &&
+            root_dir("/var/opt/people", 0755) &&
+            root_dir("/var/opt/log", 0755) && root_dir("/usr/people", 0755));
+        CHECK(root_dir("/adm", 0700));
+        CHECK(lstat("/root", &a) == -1 && lstat("/home", &a) == -1 &&
+            lstat("/libexec", &a) == -1);
+        CHECK((pw = getpwnam("root")) != NULL &&
+            strcmp(pw->pw_dir, "/adm") == 0);
+        CHECK((pw = getpwnam("daemon")) != NULL &&
+            strcmp(pw->pw_shell, "/usr/sbin/nologin") == 0);
+        CHECK(!run_out("/usr/sbin/nologin", NULL, buf, sizeof(buf)) &&
+            strstr(buf, "not available") != NULL);
+
+        /* /var/run in the mount table, as a tmpfs. */
+        if ((fd = open("/etc/mnttab", O_RDONLY)) >= 0) {
+                if ((n = read(fd, buf, sizeof(buf) - 1)) > 0) {
+                        buf[n] = '\0';
+                        for (char *l = strtok(buf, "\n"); l != NULL;
+                            l = strtok(NULL, "\n"))
+                                if (strstr(l, "\t/var/run\ttmpfs") != NULL)
+                                        tmpfs = 1;
+                }
+                close(fd);
+        }
+        CHECK(tmpfs);
+}
+
 /* The utilities, by usr/tests/utiltest.sh: it must find no failures. */
 static void
 test_utilities(void)
@@ -1062,7 +1133,7 @@ test_dhcp(void)
         CHECK(stat("/var/db/dhcpcd/vionet0.lease", &st) == 0 &&
             st.st_size > 0);
         CHECK(stat("/var/db/dhcpcd/duid", &st) == 0);
-        CHECK(run_out2("/sbin/dhcpcd", "-U", "vionet0", out, sizeof(out)) &&
+        CHECK(run_out2("/usr/sbin/dhcpcd", "-U", "vionet0", out, sizeof(out)) &&
             strstr(out, "ip_address=10.0.2.15") != NULL &&
             strstr(out, "routers=10.0.2.2") != NULL);
 
@@ -1087,7 +1158,7 @@ test_dhcp(void)
                     vionet0_addr(ipfd, inet4(10, 0, 2, 2), &routed) ==
                     inet4(10, 0, 2, 15) && routed);
         }
-        CHECK(run_out2("/sbin/dhcpcd", "-k", "vionet0", out, sizeof(out)));
+        CHECK(run_out2("/usr/sbin/dhcpcd", "-k", "vionet0", out, sizeof(out)));
         for (int i = 0; i < 50 && !ok; i++) {
                 ok = vionet0_addr(ipfd, inet4(10, 0, 2, 2), &routed) == 0 &&
                     !routed;
@@ -1097,7 +1168,7 @@ test_dhcp(void)
         CHECK(ok);
         CHECK(stat("/var/db/dhcpcd/vionet0.dns", &st) == -1 &&
             errno == ENOENT);
-        CHECK(run_out2("/sbin/dhcpcd", "-n", "vionet0", out, sizeof(out)));
+        CHECK(run_out2("/usr/sbin/dhcpcd", "-n", "vionet0", out, sizeof(out)));
         ok = 0;
         for (int i = 0; i < 150 && !ok; i++) {
                 ok = vionet0_addr(ipfd, inet4(10, 0, 2, 2), &routed) ==
@@ -1186,7 +1257,7 @@ test_dns_forward(void)
             "new_domain_name_servers=127.0.0.54", NULL };
         char *again[] = { "reason=RENEW", "interface=vionet0",
             "new_domain_name_servers=10.0.2.3", NULL };
-        char *hook[] = { "/bin/sh", "/libexec/dhcpcd-run-hooks", NULL };
+        char *hook[] = { "/bin/sh", "/usr/libexec/dhcpcd-run-hooks", NULL };
         char *restart[] = { "/bin/sh", "/etc/rc.d/dnscache", "restart",
             NULL };
         struct addrinfo hints, *ai = NULL;
@@ -1300,6 +1371,7 @@ main(int argc, char **argv)
         test_setting();
         test_orphan();
         test_proc();
+        test_hierarchy();
         test_utilities();
         test_xn_suite();
         test_network();

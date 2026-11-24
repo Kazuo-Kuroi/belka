@@ -15,3 +15,4 @@
 #special	fsckdev	mountp	fstype	fsckpass	at_boot	options
 /dev/vd0	-	/	ext2fs	1	no	-
 swap	-	/tmp	tmpfs	-	yes	-
+swap	-	/var/run	tmpfs	-	yes	-

@@ -6,9 +6,12 @@
 # /etc/profile: read by every login shell before the user's own
 # ~/.profile.
 
-PATH=/bin:/usr/bin
+# The base system first, then the shared prefix, then the user's own
+# (doc/design/hierarchy.md); root's has nothing a user can write.
 if [ "$(id -u)" -eq 0 ]; then
-        PATH=/sbin:/usr/sbin:$PATH
+        PATH=/sbin:/usr/sbin:/usr/bin:/opt/sbin:/opt/bin
+else
+        PATH=/usr/bin:/opt/bin:/opt/people/$(id -un)/bin
 fi
 export PATH
 
