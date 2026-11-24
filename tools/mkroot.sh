@@ -21,6 +21,10 @@
 #     with dnscache's root in /etc/dnscache/root
 #   /usr/sbin/dhcpcd (NetBSD's DHCP client) and its hook,
 #     /usr/libexec/dhcpcd-run-hooks; its state in /var/db/dhcpcd
+#   /usr/sbin/tcpserver, tcprules, tcprulescheck, /usr/bin/tcpclient
+#     (ucspi-tcp), for /etc/rc.d/inetd and /etc/inetd.conf
+#   Dropbear's SSH programs under OpenSSH's names: /usr/sbin/sshd,
+#     /usr/bin/ssh, ssh-keygen and scp, and dropbearconvert
 #
 # Everything is owned by root, and login is set-user-ID, through
 # fakeroot(1). The password hashes are in /etc/shadow (mode 0400);
@@ -112,6 +116,24 @@ cp usr/sbin/dhcpcd/dhcpcd-run-hooks "$src/usr/libexec/dhcpcd-run-hooks"
 mkdir -p "$src/usr/share/licenses/dhcpcd" "$src/var/db/dhcpcd"
 cp contrib/dhcpcd/LICENSE contrib/dhcpcd/README.belka \
     "$src/usr/share/licenses/dhcpcd/"
+# ucspi-tcp's tcpserver and its tools (contrib/ucspi-tcp), for inetd.
+for prog in tcpserver tcprules tcprulescheck; do
+        install_prog $prog usr/sbin/$prog
+done
+install_prog tcpclient usr/bin/tcpclient
+mkdir -p "$src/usr/share/licenses/ucspi-tcp" "$src/etc/inetd"
+cp contrib/ucspi-tcp/README.belka "$src/usr/share/licenses/ucspi-tcp/"
+# Dropbear (contrib/dropbear), under OpenSSH's names; its host keys
+# are made in /etc/dropbear at the first boot (/etc/rc.d/sshd).
+install_prog dropbear usr/sbin/sshd
+install_prog dbclient usr/bin/ssh
+install_prog dropbearkey usr/bin/ssh-keygen
+install_prog dropbearconvert usr/bin/dropbearconvert
+install_prog scp usr/bin/scp
+mkdir -p "$src/usr/share/licenses/dropbear" "$src/etc/dropbear"
+chmod 700 "$src/etc/dropbear"
+cp contrib/dropbear/LICENSE contrib/dropbear/README.belka \
+    "$src/usr/share/licenses/dropbear/"
 mkdir -p "$src/usr/share/licenses/tcsh"
 cp contrib/tcsh/Copyright contrib/tcsh/NOTICE "$src/usr/share/licenses/tcsh/"
 ln "$src/usr/bin/mksh" "$src/usr/bin/sh"
@@ -216,6 +238,13 @@ sed s,/libexec/dhcpcd,/usr/libexec/dhcpcd,g contrib/dhcpcd/src/dhcpcd.8 \
 sed s,/libexec/dhcpcd,/usr/libexec/dhcpcd,g contrib/dhcpcd/src/dhcpcd.conf.5 \
     > "$src/usr/share/man/man5/dhcpcd.conf.5"
 ln "$src/usr/share/man/man1/gmake.1" "$src/usr/share/man/man1/make.1"
+# Dropbear's pages, also under the names its programs have here.
+cp contrib/dropbear/manpages/dropbear.8 "$src/usr/share/man/man8/"
+ln "$src/usr/share/man/man8/dropbear.8" "$src/usr/share/man/man8/sshd.8"
+cp contrib/dropbear/manpages/dbclient.1 contrib/dropbear/manpages/dropbearkey.1 \
+    contrib/dropbear/manpages/dropbearconvert.1 "$src/usr/share/man/man1/"
+ln "$src/usr/share/man/man1/dbclient.1" "$src/usr/share/man/man1/ssh.1"
+ln "$src/usr/share/man/man1/dropbearkey.1" "$src/usr/share/man/man1/ssh-keygen.1"
 cp contrib/netbsd/usr.bin/m4/m4.1 contrib/netbsd/usr.bin/tsort/tsort.1 \
     contrib/netbsd/external/bsd/byacc/dist/yacc.1 "$src/usr/share/man/man1/"
 cp contrib/netbsd/bin/stty/stty.1 contrib/netbsd/bin/pax/pax.1 \
@@ -287,7 +316,7 @@ cp contrib/mlibc/LICENSE "$src/usr/share/licenses/mlibc/"
 cp -R contrib/compiler-runtime-licenses/. "$src/usr/share/licenses/compiler-runtime/"
 
 for f in rc rc.conf ttys passwd shadow group shells profile vfstab \
-    hosts resolv.conf services defaults/rc.conf dhcpcd.conf; do
+    hosts resolv.conf services defaults/rc.conf dhcpcd.conf inetd.conf; do
         cp "etc/$f" "$src/etc/$f"
 done
 # /bin is /usr/bin, and /var/log the shared prefix's logs.

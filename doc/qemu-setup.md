@@ -180,11 +180,35 @@ dnsip example.com
 kernel does not run `#!` scripts, so give an rc script to `sh` when you
 run it by hand.
 
-### What is not there yet
+### SSH
 
-There is no `ping`. There are no network servers, such as telnet or
-ssh, so nothing on the host can connect into Belka. The serial console
-is the way in.
+Belka's SSH programs are Dropbear's, under OpenSSH's names: `sshd`,
+`ssh`, `ssh-keygen` and `scp`. Their options are Dropbear's, so see
+their manual pages. `sshd` runs under inetd, which is ucspi-tcp's
+`tcpserver` started for each service in `/etc/inetd.conf`. The first
+boot makes the host keys in `/etc/dropbear`. Logging in as root by
+password is refused (`sshd -g`), as OpenSSH refuses it by default.
+
+To reach Belka's ssh from the host, have QEMU forward a port of the
+host's loopback to it:
+
+```sh
+make run SSH_PORT=2222
+```
+
+Then, in Belka, give a user a password or a key. The client's
+`~/.ssh/authorized_keys` works as it does for OpenSSH. From the host:
+
+```sh
+ssh -p 2222 user@localhost
+```
+
+To limit who may connect, write tcprules(1) rules for the service in
+`/etc/inetd/ssh.rules`, for example `127.:allow` and then `:deny`.
+`/etc/rc.d/inetd` compiles them each time it starts. To run sshd as a
+daemon of its own instead, set `sshd_standalone=YES` in `/etc/rc.conf`
+and remove its line from `/etc/inetd.conf`.
+
 
 ## 5. Settings
 
@@ -199,6 +223,7 @@ These go on the make command line (`make run SMP=2`) or in `config.mk`:
 | `LINKER`          | `illumos`             | `gnu` links with the host's GNU ld |
 | `OVMF_CODE`       | `/usr/share/OVMF/OVMF_CODE_4M.fd` | the UEFI firmware     |
 | `QEMU`            | `qemu-system-x86_64`  | the QEMU to run                   |
+| `SSH_PORT`        | (none)                | `make run` forwards this host port to Belka's ssh |
 
 Each toolchain and linker has its own build directory and images, for
 example `build/amd64-clang` and `build/root-clang.img`, so they can sit

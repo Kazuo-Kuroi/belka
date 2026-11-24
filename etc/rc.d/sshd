@@ -1,0 +1,55 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-24
+# SPDX-License-Identifier: MIT
+#
+# The SSH server, Dropbear's (/usr/sbin/sshd). Its host keys, of each
+# type of sshd_hostkeys, are made in /etc/dropbear by ssh-keygen(1) the
+# first time. With sshd_standalone=NO, inetd runs sshd for each
+# connection (/etc/inetd.conf); with YES, it is started here as a
+# daemon, with sshd_flags, on port 22.
+
+# PROVIDE: sshd
+# REQUIRE: NETWORKING mountall
+# BEFORE: DAEMON
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="sshd"
+rcvar=$name
+command="/usr/sbin/sshd"
+pidfile="/var/run/sshd.pid"
+start_cmd="sshd_start"
+stop_cmd="sshd_stop"
+
+sshd_keys()
+{
+        mkdir -p /etc/dropbear
+        chmod 700 /etc/dropbear
+        for _type in $sshd_hostkeys; do
+                _key=/etc/dropbear/dropbear_${_type}_host_key
+                [ -s $_key ] && continue
+                echo "Making the SSH host key ($_type)."
+                /usr/bin/ssh-keygen -t $_type -f $_key > /dev/null 2>&1 ||
+                    echo "sshd: no $_type host key."
+        done
+}
+
+sshd_start()
+{
+        sshd_keys
+        checkyesno sshd_standalone || return 0
+        echo "Starting sshd."
+        $command $sshd_flags
+}
+
+sshd_stop()
+{
+        [ -r $pidfile ] || return 0
+        kill $(cat $pidfile) 2>/dev/null
+        rm -f $pidfile
+}
+
+load_rc_config $name
+run_rc_command "$1"

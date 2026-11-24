@@ -983,6 +983,60 @@ $(DJB_LIB): $(patsubst %,$(DJB_OBJ)/%.o,$(DJB_LIBSRCS))
 $(DJB_PROGS): $(SYS_DIR)/%: $(DJB_OBJ)/%.o $(DJB_LIB) $(SYS_DYNDEPS)
 	$(call SYS_DYNLINK,$< $(DJB_LIB))
 
+# ucspi-tcp 0.88's tcpserver, tcprules, tcprulescheck and tcpclient
+# (contrib/ucspi-tcp), the TCP side of inetd (/etc/rc.d/inetd), built as
+# djbdns is: the header variants that fit Belka copied in, everything
+# but the programs in one library. Its K&R-style code is compiled as C89
+# (implicit int), with the system headers it leaves out given by
+# -include; calls with no declaration stay errors.
+UCSPI           := contrib/ucspi-tcp
+UCSPI_OBJ       := $(SYS_OBJ)/ucspi-tcp
+UCSPI_MAINS     := tcpserver tcprules tcprulescheck tcpclient
+UCSPI_LIBSRCS   := $(filter-out $(UCSPI_MAINS),$(basename $(notdir \
+                   $(wildcard $(UCSPI)/*.c))))
+UCSPI_GEN       := $(addprefix $(UCSPI_OBJ)/,hassgact.h hassgprm.h hasshsgr.h \
+                   haswaitp.h iopause.h select.h uint32.h uint64.h)
+UCSPI_CFLAGS    := $(IMPORT_CFLAGS) -std=gnu89 -include unistd.h \
+                   -include arpa/inet.h -include stdio.h -I$(UCSPI_OBJ) \
+                   -I$(UCSPI) -Wno-unused-variable -Wno-parentheses \
+                   -Wno-pointer-sign -Wno-array-parameter \
+                   -Wno-misleading-indentation -Wno-incompatible-pointer-types \
+                   -Wno-return-type -Wno-implicit-int \
+                   -Wno-builtin-declaration-mismatch -Wno-address \
+                   -Wno-deprecated-non-prototype -Wno-empty-body \
+                   -Wno-incompatible-pointer-types-discards-qualifiers \
+                   -Wno-unknown-warning-option \
+                   -Werror=implicit-function-declaration -Werror=int-conversion
+UCSPI_LIB       := $(UCSPI_OBJ)/libucspi.a
+UCSPI_PROGS     := $(addprefix $(SYS_DIR)/,$(UCSPI_MAINS))
+
+$(UCSPI_OBJ)/hassgact.h: $(UCSPI)/hassgact.h2
+$(UCSPI_OBJ)/hassgprm.h: $(UCSPI)/hassgprm.h2
+$(UCSPI_OBJ)/hasshsgr.h: $(UCSPI)/hasshsgr.h1
+$(UCSPI_OBJ)/haswaitp.h: $(UCSPI)/haswaitp.h2
+$(UCSPI_OBJ)/iopause.h: $(UCSPI)/iopause.h2
+$(UCSPI_OBJ)/select.h: $(UCSPI)/select.h2
+$(UCSPI_OBJ)/uint32.h: $(UCSPI)/uint32.h1
+$(UCSPI_OBJ)/uint64.h: $(UCSPI)/uint64.h1
+$(UCSPI_GEN):
+	@mkdir -p $(dir $@)
+	cp $< $@
+
+$(UCSPI_OBJ)/%.o: $(UCSPI)/%.c $(UCSPI_GEN) $(wildcard $(UCSPI)/*.h) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(UCSPI_CFLAGS) -c -o $@ $<
+
+$(UCSPI_LIB): $(patsubst %,$(UCSPI_OBJ)/%.o,$(UCSPI_LIBSRCS))
+	rm -f $@
+	ar rcs $@ $^
+
+$(UCSPI_PROGS): $(SYS_DIR)/%: $(UCSPI_OBJ)/%.o $(UCSPI_LIB) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$< $(UCSPI_LIB))
+
+inetd-progs: $(UCSPI_PROGS)
+
+.PHONY: inetd-progs
+
 # xdig: Belka's (usr/bin/xdig), over djbdns' DNS library.
 $(SYS_OBJ)/xdig.o: usr/bin/xdig/xdig.c $(DJB_GEN) $(wildcard $(DJB)/*.h) \
                 $(MLIBC)
@@ -1045,6 +1099,96 @@ dhcpcd: $(SYS_DIR)/dhcpcd
 
 .PHONY: dhcpcd
 
+# Dropbear 2026.94 (contrib/dropbear), the SSH server and client, with
+# its bundled libtomcrypt and libtommath, without its configure script
+# or Makefiles: usr/sbin/dropbear has the config.h and localoptions.h
+# written for Belka. GCC's __linux__ is taken away, as for dhcpcd.
+# default_options_guard.h is made as Dropbear's
+# ifndef_wrapper.sh makes it, by the same sed. The programs go on the
+# image under OpenSSH's names (tools/mkroot.sh): sshd, ssh, ssh-keygen,
+# scp; dropbearconvert keeps its own.
+DB              := contrib/dropbear
+DB_OBJ          := $(SYS_OBJ)/dropbear
+DB_COMMON       := dbutil buffer dbhelpers dss bignum signkey rsa dbrandom \
+                   queue atomicio compat fake-rfc2553 ltc_prng ecc ecdsa \
+                   sk-ecdsa crypto_desc curve25519 ed25519 sk-ed25519 \
+                   dbmalloc dbctype gensignkey gendss genrsa gened25519
+DB_CLISVR       := common-session packet common-algo common-kex \
+                   common-channel common-chansession termcodes loginrec \
+                   tcp-accept listener process-packet dh_groups \
+                   common-runopts circbuffer list netio chachapoly gcm \
+                   kex-x25519 kex-dh kex-ecdh kex-pqhybrid sntrup761 mlkem768
+DB_SVR          := svr-kex svr-auth sshpty svr-authpasswd svr-authpubkey \
+                   svr-authpubkeyoptions svr-session svr-service \
+                   svr-chansession svr-runopts svr-agentfwd svr-main \
+                   svr-x11fwd svr-forward svr-tcpfwd svr-streamfwd svr-authpam
+DB_CLI          := cli-main cli-auth cli-authpasswd cli-kex cli-session \
+                   cli-runopts cli-chansession cli-authpubkey cli-tcpfwd \
+                   cli-channel cli-authinteract cli-agentfwd cli-readconf
+DB_SCP          := scp progressmeter atomicio scpmisc compat dbctype
+DB_o            = $(patsubst %,$(DB_OBJ)/%.o,$(1))
+DB_GUARD        := $(DB_OBJ)/default_options_guard.h
+DB_INC          := -I$(DB_OBJ) -Iusr/sbin/dropbear -I$(DB)/src \
+                   -I$(DB)/libtomcrypt/src/headers -I$(DB)/libtommath
+DB_CFLAGS       := -std=gnu11 -O2 -g -Wall -nostdinc \
+                   -isystem $(SYSROOT)/usr/include -isystem $(CC_INCLUDE) \
+                   -fno-stack-protector -fno-pic -fno-pie \
+                   -U__linux__ -U__linux -Ulinux -U__gnu_linux__ \
+                   -D_GNU_SOURCE -D_DEFAULT_SOURCE \
+                   -DLOCALOPTIONS_H_EXISTS -DDROPBEAR_SERVER \
+                   -DDROPBEAR_CLIENT -DPROGRESS_METER $(DB_INC) \
+                   -Wno-pointer-sign -fno-strict-overflow \
+                   -Werror=implicit-function-declaration -Werror=int-conversion
+DB_HDRS         := $(wildcard $(DB)/src/*.h usr/sbin/dropbear/*.h) $(DB_GUARD)
+# The tables (*tab.c) are included by the files that use them.
+LTC_SRCS        := $(filter-out %_tab.c %tab.c,$(shell find $(DB)/libtomcrypt/src -name '*.c'))
+LTC_OBJS        := $(patsubst $(DB)/libtomcrypt/src/%.c,$(DB_OBJ)/ltc/%.o,$(LTC_SRCS))
+LTC_HDRS        := $(wildcard $(DB)/libtomcrypt/src/headers/*.h)
+LTM_SRCS        := $(wildcard $(DB)/libtommath/*.c)
+LTM_OBJS        := $(patsubst $(DB)/libtommath/%.c,$(DB_OBJ)/ltm/%.o,$(LTM_SRCS))
+LTM_HDRS        := $(wildcard $(DB)/libtommath/*.h)
+DB_LIBS         := $(DB_OBJ)/libtomcrypt.a $(DB_OBJ)/libtommath.a
+DB_PROGS        := $(addprefix $(SYS_DIR)/,dropbear dbclient dropbearkey \
+                   dropbearconvert scp)
+
+$(DB_GUARD): $(DB)/src/default_options.h
+	@mkdir -p $(dir $@)
+	sed 's/^\( *#define \([^ ][^ ]*\) .*\)/#ifndef \2\
+\1\
+#endif/' $< > $@.tmp && mv $@.tmp $@
+
+$(DB_OBJ)/%.o: $(DB)/src/%.c $(DB_HDRS) $(LTC_HDRS) $(LTM_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(DB_CFLAGS) -c -o $@ $<
+$(DB_OBJ)/ltc/%.o: $(DB)/libtomcrypt/src/%.c $(DB_HDRS) $(LTC_HDRS) $(LTM_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(DB_CFLAGS) -DLTC_SOURCE -c -o $@ $<
+$(DB_OBJ)/ltm/%.o: $(DB)/libtommath/%.c $(DB_HDRS) $(LTM_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(DB_CFLAGS) -Wno-deprecated -c -o $@ $<
+
+$(DB_OBJ)/libtomcrypt.a: $(LTC_OBJS)
+	rm -f $@
+	ar rcs $@ $^
+$(DB_OBJ)/libtommath.a: $(LTM_OBJS)
+	rm -f $@
+	ar rcs $@ $^
+
+$(SYS_DIR)/dropbear: $(call DB_o,$(DB_COMMON) $(DB_CLISVR) $(DB_SVR)) $(DB_LIBS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(call DB_o,$(DB_COMMON) $(DB_CLISVR) $(DB_SVR)) $(DB_LIBS))
+$(SYS_DIR)/dbclient: $(call DB_o,$(DB_COMMON) $(DB_CLISVR) $(DB_CLI)) $(DB_LIBS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(call DB_o,$(DB_COMMON) $(DB_CLISVR) $(DB_CLI)) $(DB_LIBS))
+$(SYS_DIR)/dropbearkey: $(call DB_o,$(DB_COMMON) dropbearkey) $(DB_LIBS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(call DB_o,$(DB_COMMON) dropbearkey) $(DB_LIBS))
+$(SYS_DIR)/dropbearconvert: $(call DB_o,$(DB_COMMON) dropbearconvert keyimport signkey_ossh) $(DB_LIBS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(call DB_o,$(DB_COMMON) dropbearconvert keyimport signkey_ossh) $(DB_LIBS))
+$(SYS_DIR)/scp: $(call DB_o,$(DB_SCP)) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(call DB_o,$(DB_SCP)))
+
+ssh-progs: $(DB_PROGS)
+
+.PHONY: ssh-progs
+
 # The root images (tools/mkroot.sh): for "run", kept between boots and
 # made again when what goes in changes; for "test-boot", made afresh
 # for each boot.
@@ -1055,6 +1199,7 @@ ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    build/native-gcc-source-sdk/*.stamp) $(SYS_PROGS) $(SYS_DIR)/ps $(DJB_PROGS) $(SYS_DIR)/dhcpcd \
                    $(SYS_DIR)/ping $(SYS_DIR)/traceroute $(SYS_DIR)/whois \
                    $(SYS_DIR)/xdig \
+                   $(UCSPI_PROGS) $(DB_PROGS) \
                    $(TERM_PROGS) $(XN_BINS) \
 	           $(SYS_DIR)/sdk.stamp usr/share/mk/sys.mk usr/bin/ranlib/ranlib.sh \
                    contrib/mlibc/LICENSE \
@@ -1093,6 +1238,8 @@ ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    usr/bin/dnstools/host.sh usr/bin/dnstools/dig.sh \
                    contrib/zlib/README usr/bin/chsh/chsh.1 usr/sbin/accounts/accounts.8 \
                    usr/sbin/netcfg/netcfg.8) \
+                   contrib/ucspi-tcp/README.belka contrib/dropbear/README.belka \
+                   contrib/dropbear/LICENSE $(wildcard contrib/dropbear/manpages/*) \
                    $(wildcard etc/* etc/defaults/* etc/rc.d/* etc/routed/* etc/dnscache/* etc/dnscache/root/*/* \
                    contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 

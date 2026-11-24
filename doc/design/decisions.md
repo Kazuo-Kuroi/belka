@@ -3319,3 +3319,53 @@ Supersedes most of the "Not yet" of
   segment and new data past the first window; and "fragmentation
   needed" at 576 bringing 536-byte segments with DF. `tcptest` checks
   the larger `SO_RCVBUF`.
+
+## SSH and inetd (2026-11-24)
+
+The SSH server and client are Dropbear 2026.94 (`contrib/dropbear`, MIT,
+with LibTomCrypt and LibTomMath in the public domain), not OpenSSH. It
+is small and self-contained, carries its own cryptography, and needs no
+OpenSSL. The programs are installed under OpenSSH's names, so that
+scripts and habits find them: `dropbear` is `/usr/sbin/sshd`, `dbclient`
+`/usr/bin/ssh`, `dropbearkey` `/usr/bin/ssh-keygen`, and `scp` keeps its
+name. `dropbearconvert` keeps its own, as OpenSSH has no such program.
+Their options stay Dropbear's. The manual pages go in under both names.
+
+- **Built without configure:** `usr/sbin/dropbear/config.h` is written
+  by hand from what mlibc and the compat library offer, and
+  `localoptions.h` holds Belka's choices. No source file is changed.
+- **Privileges:** Dropbear drops to the user at authentication only
+  with `setresgid`, which Belka lacks: the kernel keeps saved IDs, but
+  there is no call to set the three at once, and mlibc's falls to
+  ENOSYS. The setting is off (`DROPBEAR_SVR_DROP_PRIVS 0`), so the
+  server stays root until the session's fork. Unix-domain socket
+  forwarding needs the drop, so it is off too. `setresuid` and
+  `setresgid` (POSIX 2024) would bring the drop back.
+- **Off:** X11 forwarding, the SFTP server, re-execution (no
+  `fexecve`), zlib, PAM, lastlog, and the old utmp and wtmp. Sessions
+  are recorded in utmpx and wtmpx. The seed comes from `/dev/urandom`.
+- **Keys:** the host keys (ed25519 and ecdsa by default; rsa when
+  asked, as it is slow to make) are in `/etc/dropbear`, made at the
+  first boot by `/etc/rc.d/sshd`.
+- **Logins:** `sshd -g` refuses root by password, as OpenSSH's
+  `prohibit-password` does. Root may still log in by key.
+
+The inetd is ucspi-tcp 0.88's `tcpserver` (`contrib/ucspi-tcp`, public
+domain), not a monolithic inetd. One small process listens per
+service, with a connection limit and tcprules' access rules (a cdb
+compiled from `/etc/inetd/<name>.rules`). It forks the server with the
+connection on its standard input and output, and the remote address in
+the environment. `/etc/rc.d/inetd` starts one for each line of
+`/etc/inetd.conf` (`name port user program args`) on `inetd_address`.
+It passes no ident or name lookups (`-RHl0`) and turns off Nagle (`-D`).
+`sshd` runs under it by default (`sshd -i -g`). `sshd_standalone=YES`
+runs it as a daemon instead. Only TCP is served: no UDP, RPC or
+internal services.
+
+`boottest` checks the host keys and inetd's listener. It then logs in
+with ssh by a key ssh-keygen made, runs a command as the user, copies
+a file both ways with scp, logs in by password, and is refused with a
+wrong key and password. Last, it runs a session on a pseudo-terminal
+and checks its record in wtmpx with the client's address.
+`make run SSH_PORT=n` forwards a port on the host's loopback to the
+guest's port 22.

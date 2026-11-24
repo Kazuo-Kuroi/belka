@@ -23,6 +23,7 @@
  * and netcfg show; and that /etc/rc.d/dnscache has started dnscache,
  * which resolves names, from a fake root server of the test's, for the
  * C library and djbdns' tools; and that chroot(2) confines a process.
+ * And that ssh reaches Dropbear's sshd under inetd, by key and password.
  * Then it halts the system with /sbin/halt, after giving init time to
  * start the console's getty.
  *
@@ -1516,6 +1517,155 @@ test_chroot(void)
             WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
+/* sh -c script, with arguments a and b, in env: its output, status 0. */
+static int
+run_shc(char *const env[], const char *script, const char *a, const char *b,
+    char *out, size_t size)
+{
+        char *argv[] = { "/bin/sh", "-c", (char *)script, "sh", (char *)a,
+            (char *)b, NULL };
+
+        return run_outv(argv, env, out, size);
+}
+
+/*
+ * SSH, through inetd: tcpserver on port 22 (/etc/rc.d/inetd, from
+ * /etc/inetd.conf) running Dropbear's sshd for each connection, with
+ * the host keys /etc/rc.d/sshd made. ssh logs user in by a key
+ * ssh-keygen made and runs a command as user; scp copies a file there
+ * and back; ssh logs user2 in by its password; a key not authorized,
+ * with a wrong password, is turned away; and a session on a
+ * pseudo-terminal, recorded in wtmpx.
+ */
+static void
+test_ssh(const char *user, const char *user2, const char *password,
+    const char *home)
+{
+        static const char setup[] =
+            "set -e; umask 077; rm -f /tmp/sshkey /tmp/sshkey2;"
+            "ssh-keygen -t ed25519 -f /tmp/sshkey > /dev/null 2>&1;"
+            "ssh-keygen -t ed25519 -f /tmp/sshkey2 > /dev/null 2>&1;"
+            "mkdir -p $2/.ssh;"
+            "ssh-keygen -y -f /tmp/sshkey | grep '^ssh-ed25519 ' "
+            "    > $2/.ssh/authorized_keys;"
+            "chown $1 $2/.ssh $2/.ssh/authorized_keys";
+        char *env[] = { "PATH=/sbin:/usr/sbin:/usr/bin", "HOME=/adm",
+            NULL, NULL };
+        char pwenv[64], out[512], dest[128];
+        struct sockaddr_in sin;
+        long end = now_ms() + 10000;
+        int fd, up = 0;
+
+        CHECK(access("/etc/dropbear/dropbear_ed25519_host_key", R_OK) == 0);
+        CHECK(access("/etc/dropbear/dropbear_ecdsa_host_key", R_OK) == 0);
+
+        /* inetd starts its tcpservers in the background: a few tries. */
+        memset(&sin, 0, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_port = htons(22);
+        sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        while (!up && now_ms() < end) {
+                if ((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+                        break;
+                up = connect(fd, (struct sockaddr *)&sin, sizeof(sin)) == 0;
+                close(fd);
+                if (!up)
+                        usleep(200000);
+        }
+        CHECK(up);
+        if (!up)
+                return;
+
+        CHECK(run_shc(env, setup, user, home, out, sizeof(out)));
+
+        /* By the key: a command, as user. (ssh says on stderr that it
+         * took the host key.) */
+        snprintf(dest, sizeof(dest), "%s@127.0.0.1", user);
+        CHECK(run_shc(env, "ssh -y -i /tmp/sshkey $1 'echo hello; id -un'"
+            " < /dev/null 2> /dev/null", dest, NULL, out, sizeof(out)) &&
+            strncmp(out, "hello\n", 6) == 0 &&
+            strncmp(out + 6, user, strlen(user)) == 0);
+        if (strncmp(out, "hello\n", 6) != 0)
+                printf("boottest: ssh said \"%s\"\n", out);
+
+        /* scp there and back, the host key now known. */
+        CHECK(run_shc(env, "rm -f /tmp/scp1 /tmp/scp2;"
+            "scp -i /tmp/sshkey /etc/services $1:/tmp/scp1 < /dev/null &&"
+            "scp -i /tmp/sshkey $1:/tmp/scp1 /tmp/scp2 < /dev/null &&"
+            "cmp /etc/services /tmp/scp2", dest, NULL, out, sizeof(out)));
+
+        /* By password (the client takes it from DROPBEAR_PASSWORD). */
+        snprintf(pwenv, sizeof(pwenv), "DROPBEAR_PASSWORD=%s", password);
+        env[2] = pwenv;
+        snprintf(dest, sizeof(dest), "%s@127.0.0.1", user2);
+        CHECK(run_shc(env, "ssh -y $1 'id -un' < /dev/null 2>&1", dest, NULL,
+            out, sizeof(out)) && strncmp(out, user2, strlen(user2)) == 0 &&
+            out[strlen(user2)] == '\n');
+
+        /* Neither the other key nor a wrong password lets user in. */
+        env[2] = "DROPBEAR_PASSWORD=not-the-password";
+        snprintf(dest, sizeof(dest), "%s@127.0.0.1", user);
+        CHECK(!run_shc(env, "ssh -y -i /tmp/sshkey2 $1 'echo in'"
+            " < /dev/null 2>&1", dest, NULL, out, sizeof(out)) &&
+            strstr(out, "in\n") == NULL);
+
+        /*
+         * A login session on a pseudo-terminal: ssh on one of the test's,
+         * sshd giving the shell one of its own, recorded in wtmpx with
+         * the client's address.
+         */
+        {
+                int m = posix_openpt(O_RDWR | O_NOCTTY), inwtmp = 0;
+                const char *slave;
+                pid_t pid;
+                FILE *fp;
+
+                CHECK(m >= 0 && grantpt(m) == 0 && unlockpt(m) == 0 &&
+                    (slave = ptsname(m)) != NULL);
+                if (m < 0)
+                        return;
+                env[2] = NULL;
+                if ((pid = fork()) == 0) {
+                        int s;
+
+                        close(m);
+                        setsid();
+                        if ((s = open(slave, O_RDWR)) < 0)
+                                _exit(127);
+                        dup2(s, 0);
+                        dup2(s, 1);
+                        dup2(s, 2);
+                        if (s > 2)
+                                close(s);
+                        execle("/usr/bin/ssh", "ssh", "-i", "/tmp/sshkey",
+                            dest, (char *)NULL, env);
+                        _exit(127);
+                }
+                nseen = 0;
+                CHECK(expect(m, "$ ", 15000));
+                say(m, "tty; echo \"<$((40 + 2))>\"\n");
+                CHECK(expect(m, "/dev/pts/", 5000));
+                CHECK(expect(m, "<42>", 5000));
+                say(m, "exit\n");
+                CHECK(reap(pid, 10000) == 0);
+                close(m);
+
+                CHECK((fp = fopen("/var/adm/wtmpx", "r")) != NULL);
+                if (fp != NULL) {
+                        struct utmpx rec;
+
+                        while (fread(&rec, sizeof(rec), 1, fp) == 1)
+                                if (rec.ut_type == USER_PROCESS &&
+                                    strcmp(rec.ut_user, user) == 0 &&
+                                    strcmp(rec.ut_host, "127.0.0.1") == 0)
+                                        inwtmp = 1;
+                        fclose(fp);
+                }
+                CHECK(inwtmp);
+        }
+}
+
+
 int
 main(int argc, char **argv)
 {
@@ -1540,6 +1690,7 @@ main(int argc, char **argv)
         test_login(argv[1], argv[2], argv[3], argv[4]);
         test_utmpx(argv[1]);
         test_ageing(argv[2]);
+        test_ssh(argv[1], "test2", argv[2], argv[4]);
         printf("boottest: %d failures\n", failures);
         /* Let init start the console's getty, then stop the system. */
         sleep(3);

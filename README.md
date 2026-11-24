@@ -114,6 +114,13 @@ client tools with Belka's `host` and `dig` (and `drill`) over them, and
 `xdig`, which reports all DNS and WHOIS say of a domain; ping and
 traceroute use raw sockets (`SOCK_RAW`), the superuser's, and are
 set-user-ID root.
+The SSH programs are Dropbear's (`contrib/dropbear`), installed under
+OpenSSH's names (`sshd`, `ssh`, `ssh-keygen`, `scp`), with `sshd` run for
+each connection by `/etc/rc.d/inetd`: ucspi-tcp's `tcpserver`
+(`contrib/ucspi-tcp`) for each service of `/etc/inetd.conf`, with
+tcprules' access rules. `boottest` logs in over the loopback by key, by
+password and on a pseudo-terminal, and copies with `scp`;
+`make run SSH_PORT=2222` forwards a host port to it.
 Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU

@@ -1,0 +1,55 @@
+Dropbear
+========
+
+Dropbear 2026.94, by Matt Johnston, the SSH server and client, from
+https://matt.ucc.asn.au/dropbear/dropbear.html
+(https://matt.ucc.asn.au/dropbear/releases/dropbear-2026.94.tar.bz2,
+SHA-256 e098034a843699200c8c977a991fff73159735bf795d5f72ef672c41a6b1ae81;
+the release publishes a signature, not a checksum). MIT licence, with
+the other pieces' terms beside it: LICENSE. The bundled LibTomCrypt
+1.18.2 and LibTomMath are in the public domain, or under the WTFPL for
+LibTomCrypt, at the user's choice (libtomcrypt/LICENSE,
+libtommath/LICENSE).
+
+Only what Belka builds is here: src/'s C sources and headers, the
+manual pages, LibTomCrypt's src/ and LibTomMath's sources, each with
+its LICENSE and README. Not here: Dropbear's configure script and
+Makefiles, its tests, fuzzers, Debian files and helper scripts, and
+the libraries' own build files, demonstrations, tests and documents.
+
+None of the sources is changed. Belka builds them without configure or
+the Makefiles (mk/userland.mk), over Belka's own pieces in
+usr/sbin/dropbear:
+
+    config.h        in place of configure's, written for mlibc and the
+                    compat library (whose crypt it declares)
+    localoptions.h  Belka's choices over default_options.h
+
+default_options_guard.h is made from default_options.h by the sed of
+Dropbear's ifndef_wrapper.sh, in the build. LibTomCrypt's tables
+(*tab.c) are not built alone: the files that use them include them.
+
+The choices, from localoptions.h and config.h:
+
+  - no privilege drop at authentication (DROPBEAR_SVR_DROP_PRIVS):
+    it needs setresgid, which Belka has not, so the server is root
+    until the session's fork, where it becomes the user; with it,
+    Unix-domain socket forwarding is off
+  - no X11 forwarding, SFTP server, re-execution (no fexecve), zlib,
+    PAM, lastlog, or the old utmp and wtmp: sessions are in utmpx and
+    wtmpx (/var/adm)
+  - the seed from /dev/urandom (Belka has no getrandom)
+  - the host keys in /etc/dropbear, the pid file /var/run/sshd.pid,
+    and PATH as /etc/profile sets it
+
+The programs are installed under OpenSSH's names: dropbear as
+/usr/sbin/sshd, dbclient as /usr/bin/ssh, dropbearkey as
+/usr/bin/ssh-keygen; scp is scp, and dropbearconvert keeps its name.
+Their options are Dropbear's, not OpenSSH's: see their manual pages,
+installed under both names. The client's own key is ~/.ssh/id_dropbear
+unless -i names another; authorized keys and known hosts are in
+~/.ssh/authorized_keys and ~/.ssh/known_hosts, as OpenSSH's.
+
+sshd runs under inetd by default (/etc/inetd.conf: "sshd -i -g", no
+root logins by password); /etc/rc.d/sshd makes the host keys at the
+first boot and, with sshd_standalone=YES, runs it as a daemon instead.

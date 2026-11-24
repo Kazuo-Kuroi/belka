@@ -1,0 +1,44 @@
+ucspi-tcp
+=========
+
+ucspi-tcp 0.88, by D. J. Bernstein, from https://cr.yp.to/ucspi-tcp.html
+(https://cr.yp.to/ucspi-tcp/ucspi-tcp-0.88.tar.gz, SHA-256
+4a0615cab74886f5b4f7e8fd32933a07b955536a3476d74ea087a3ea66a23e9c). Its
+author placed it in the public domain on 2007-12-28
+(https://cr.yp.to/distributors.html).
+
+Only what Belka builds is here: tcpserver, tcprules, tcprulescheck and
+tcpclient, with the library sources they are linked from, and README,
+VERSION and CHANGES. The other programs (recordio, argv0, the mconnect,
+http@ and rblsmtpd ones, addcr and the rest) and ucspi-tcp's own build
+and install are not. Belka builds the programs without its Makefile
+(see mk/userland.mk), choosing for each system header the variant that
+fits Belka, as for djbdns:
+
+    uint32.h1 -> uint32.h       uint32 is an unsigned int
+    uint64.h1 -> uint64.h       uint64 is an unsigned long long
+    iopause.h2 -> iopause.h     iopause by poll(2)
+    select.h2 -> select.h
+    hasshsgr.h1 -> hasshsgr.h   setgroups(2) takes gid_t, not short
+    hassgact.h2 -> hassgact.h   sigaction(2)
+    hassgprm.h2 -> hassgprm.h   sigprocmask(2)
+    haswaitp.h2 -> haswaitp.h   waitpid(2)
+
+The sources are C89, built as such, with <unistd.h>, <arpa/inet.h> and
+<stdio.h> included ahead of each.
+
+Changed for Belka:
+
+    error.h         <errno.h> for errno, not "extern int errno" (errno
+                    is thread-local in mlibc)
+    prot.c          <grp.h> and <unistd.h>, for setgroups and setgid
+    readwrite.h     <unistd.h> for read and write, not its own externs
+    alloc.c         <stdlib.h> for malloc and free, not its own externs
+    socket.h        prototypes for socket_tcpnodelay and
+                    socket_ipoptionskill
+    tcprules.c      "open.h" and "scan.h", for the calls it makes
+    tcprulescheck.c "open.h"
+
+tcpserver is Belka's inetd: /etc/rc.d/inetd starts one for each service
+of /etc/inetd.conf, with its rules, if it has any, from
+/etc/inetd/<name>.rules made into a cdb by tcprules.

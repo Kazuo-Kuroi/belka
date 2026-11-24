@@ -206,11 +206,17 @@ QEMU_FLAGS      := $(QEMU_BASE) \
                    -display none -no-reboot
 # A normal boot: the root image (tools/mkroot.sh) as vd0, and the
 # virtio-net device on QEMU's user-mode network, which /etc/rc.conf
-# configures.
+# configures, with $(2) after the user-mode network's id for options of
+# its own. For "run": SSH_PORT, if set, is a port on the host's loopback that
+# QEMU forwards to Belka's ssh (port 22), as "ssh -p 2222 user@localhost"
+# reaches it with SSH_PORT=2222.
+SSH_PORT        ?=
+comma           := ,
+RUN_NETOPTS     := $(if $(SSH_PORT),$(comma)hostfwd=tcp:127.0.0.1:$(SSH_PORT)-:22)
 QEMU_ROOT_FLAGS = $(QEMU_BASE) \
                    -drive file=$(1),if=none,id=vd0,format=raw \
                    -device virtio-blk-pci,drive=vd0,disable-legacy=on \
-                   -nic none -netdev user,id=n0 \
+                   -nic none -netdev user,id=n0$(2) \
                    -device virtio-net-pci,netdev=n0,disable-legacy=on \
                    -display none -no-reboot
 
@@ -447,7 +453,7 @@ run: $(ISO) $(ROOT_IMG)
 	@# A boot that did not end in halt leaves the image dirty, which the
 	@# kernel mounts read-only; repair it here, as Belka has no fsck yet.
 	$(E2FSCK) -p $(ROOT_IMG) || [ $$? -le 1 ]
-	$(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_IMG)) -cdrom $(ISO) \
+	$(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_IMG),$(RUN_NETOPTS)) -cdrom $(ISO) \
 	    -serial mon:stdio
 
 run-selftest: $(TEST_ISO) $(DISK) $(LIBC_BINS)

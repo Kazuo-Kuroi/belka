@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-24
+# SPDX-License-Identifier: MIT
+#
+# The TCP services of /etc/inetd.conf, each under its own tcpserver(1)
+# (ucspi-tcp), listening on inetd_address. A service's rules, if it has
+# /etc/inetd/<name>.rules, are made into /var/run/inetd/<name>.cdb by
+# tcprules(1) at each start, and tcpserver checks each connection
+# against them (-x). Each tcpserver's pid is in /var/run/inetd/<name>.pid,
+# its log (with -v) goes to inetd_log.
+
+# PROVIDE: inetd
+# REQUIRE: NETWORKING mountall sshd
+# BEFORE: DAEMON
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="inetd"
+rcvar=$name
+start_cmd="inetd_start"
+stop_cmd="inetd_stop"
+_dir=/var/run/inetd
+
+inetd_start()
+{
+        [ -r /etc/inetd.conf ] || return 0
+        mkdir -p $_dir
+        _names=
+        while read _name _port _user _prog _args; do
+                case "$_name" in
+                ""|\#*) continue ;;
+                esac
+                _uid=$(id -u "$_user") && _gid=$(id -g "$_user") || continue
+                _rules=
+                if [ -r /etc/inetd/$_name.rules ]; then
+                        if ! tcprules $_dir/$_name.cdb $_dir/$_name.tmp \
+                            < /etc/inetd/$_name.rules; then
+                                echo "inetd: $_name: bad rules; not started."
+                                continue
+                        fi
+                        _rules="-x $_dir/$_name.cdb"
+                fi
+                # In the background, deaf to the console's hangup.
+                (trap '' HUP; exec /usr/sbin/tcpserver $inetd_flags $_rules \
+                    -u $_uid -g $_gid "$inetd_address" $_port $_prog $_args \
+                    < /dev/null >> "$inetd_log" 2>&1) &
+                echo $! > $_dir/$_name.pid
+                _names="$_names $_name"
+        done < /etc/inetd.conf
+        [ -n "$_names" ] && echo "Starting inetd:$_names."
+        return 0
+}
+
+inetd_stop()
+{
+        for _pid in $_dir/*.pid; do
+                [ -r "$_pid" ] || continue
+                kill $(cat "$_pid") 2>/dev/null
+                rm -f "$_pid"
+        done
+}
+
+load_rc_config $name
+run_rc_command "$1"
