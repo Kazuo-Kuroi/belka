@@ -22,13 +22,18 @@
  * it binds, then in its tcb too; a child takes its listener's, and the
  * stream that accepts it takes them from the child.
  *
- * Not yet: window scaling, timestamps, SACK, fast retransmit, the
- * queueing of segments that arrive out of order (they are dropped and
- * acknowledged at rcv_nxt), Nagle's algorithm and delayed ACKs, urgent
- * data, and ICMP errors. TCP_NODELAY is kept and reported, but changes
- * nothing: without Nagle's algorithm, data goes as the window allows.
- * See doc/design/decisions.md, "TCP and stream sockets over TPI" and
- * "Socket options, and connecting without waiting".
+ * Initial sequence numbers are RFC 6528's: a clock and a keyed hash.
+ * Congestion control is RFC 5681's, with fast retransmit and NewReno's
+ * fast recovery (RFC 6582); windows are scaled (RFC 7323 2) when both
+ * sides offer it; segments are sent with DF, and "fragmentation needed"
+ * makes them smaller (path MTU discovery, RFC 1191). Segments that come
+ * out of order are held until the gap fills; ACKs for data in order
+ * are delayed (to the second segment, or 200 ms), and small writes wait
+ * for what is unacknowledged (Nagle's algorithm) unless TCP_NODELAY.
+ * Not yet: timestamps, SACK, and urgent data. See doc/design/
+ * decisions.md, "TCP and stream sockets over TPI", "Socket options, and
+ * connecting without waiting", and "TCP: sequence numbers, congestion,
+ * windows and the path MTU".
  */
 
 #include <stddef.h>
@@ -39,11 +44,14 @@
 #include <sys/ipconf.h>
 #include <sys/kmem.h>
 #include <sys/param.h>
+#include <sys/random.h>
+#include <sys/siphash.h>
 #include <sys/socket.h>
 #include <sys/stream.h>
 #include <sys/stropts.h>
 #include <sys/systm.h>
 #include <sys/tihdr.h>
+#include <sys/time.h>
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -54,7 +62,12 @@
 #define TCP_MSS         1460    /* what we take: an Ethernet's */
 #define TCP_DEFMSS      536     /* what a peer takes without saying */
 #define TCP_SNDBUF      65536
-#define TCP_RCVBUF      65535   /* no window scaling: the largest window */
+#define TCP_RCVBUF      131072  /* a window past 64 KB needs scaling */
+#define TCP_MAXRCVBUF   262144
+#define TCP_RCVWSCALE   3       /* ours: 65535 << 3 covers TCP_MAXRCVBUF */
+#define TCP_MAXWSCALE   14      /* the most a peer's may be (RFC 7323) */
+#define TCP_MINPMTU     296     /* the least path MTU taken (RFC 1191) */
+#define TCP_MAXOOO      64      /* segments held out of order, at most */
 #define TCP_MINBUF      2048    /* the least SO_SNDBUF and SO_RCVBUF */
 #define TCP_MAXSNDBUF   262144
 #define TCP_BACKLOG     128
@@ -65,6 +78,7 @@
 #define TCP_RTOINIT     10
 #define TCP_RTOMIN      2
 #define TCP_RTOMAX      600
+#define TCP_DELACK      2       /* an ACK held at most this long */
 #define TCP_MAXRXT      12      /* retransmissions before giving up */
 #define TCP_MAXSYNRXT   6
 #define TCP_2MSL        600     /* TIME_WAIT: twice a 30-second MSL */
@@ -98,6 +112,8 @@ enum {
 
 #define TF_ACKNOW       0x0001  /* send an ACK at the next output */
 #define TF_FORCE        0x0002  /* a window probe: one byte past it */
+#define TF_DELACK       0x0004  /* an ACK owed, held for a while */
+#define TF_ONESEG       0x0008  /* output: one segment, a retransmission */
 
 struct tcb;
 
@@ -165,7 +181,13 @@ struct tcb {
         int             tc_finacked;
         uint32_t        tc_cwnd;
         uint32_t        tc_ssthresh;
-        uint32_t        tc_mss;         /* the peer's */
+        uint32_t        tc_mss;         /* the peer's, or less for the path */
+        int             tc_wsok;        /* both sides scale windows */
+        uint8_t         tc_snd_wscale;  /* the peer's shift */
+        uint8_t         tc_rcv_wscale;  /* ours */
+        int             tc_dupacks;     /* duplicate ACKs in a row */
+        int             tc_inrecovery;  /* fast recovery (RFC 6582) */
+        uint32_t        tc_recover;     /* snd_max when it began */
 
         uint32_t        tc_irs;
         uint32_t        tc_rcv_nxt;
@@ -173,6 +195,10 @@ struct tcb {
         mblk_t          *tc_rcvq;       /* for the stream, by b_next */
         mblk_t          *tc_rcvtail;
         size_t          tc_rcvcc;       /* the data bytes there */
+        struct tcp_ooo  *tc_ooo;        /* out of order, by sequence */
+        int             tc_nooo;
+        size_t          tc_ooocc;       /* their bytes */
+        int             tc_delack;      /* ticks till a held ACK goes */
 
         int             tc_rexmt;       /* ticks to retransmission; 0 off */
         int             tc_rxtshift;
@@ -189,6 +215,15 @@ struct tcb {
         struct tcp_opt  tc_opt;
 };
 
+/* A segment that came out of order, held until the gap before it fills. */
+struct tcp_ooo {
+        struct tcp_ooo  *to_next;
+        uint32_t        to_seq;
+        size_t          to_len;
+        int             to_fin;
+        mblk_t          *to_data;       /* NULL if to_len is 0 */
+};
+
 /* A segment that has arrived. */
 struct tcp_seg {
         in_addr_t       ts_src;
@@ -200,6 +235,7 @@ struct tcp_seg {
         uint8_t         ts_flags;
         uint32_t        ts_win;
         uint32_t        ts_mss;         /* its option, or 0 */
+        int             ts_wscale;      /* its window scale, or -1 */
         size_t          ts_len;         /* data bytes */
 };
 
@@ -211,7 +247,8 @@ static int64_t tcp_timer;
 static uint32_t tcp_nextid = 1;
 static t_scalar_t tcp_nextseqno = 1;
 static uint16_t tcp_nextport = TCP_PORT_FIRST;
-static uint32_t tcp_issseed;
+static uint8_t tcp_isskey[SIPHASH_KEYLEN];
+static int tcp_isskeyed;
 
 static int tcp_open(queue_t *, dev_t *, int, int, struct cred *);
 static int tcp_close(queue_t *, int, struct cred *);
@@ -349,11 +386,28 @@ tcp_addr(const mblk_t *mp, t_scalar_t len, t_scalar_t off,
         return sin->sin_family == AF_INET ? 0 : TBADADDR;
 }
 
+/*
+ * An initial sequence number (RFC 6528): a clock that ticks every 4
+ * microseconds, plus a keyed hash (SipHash-2-4, its key random at the
+ * first use) of the connection's addresses and ports. Each connection's
+ * numbers still rise with time, as RFC 9293 wants, but one connection's
+ * tell nothing of another's.
+ */
 static uint32_t
-tcp_newiss(void)
+tcp_newiss(const struct tcb *tc)
 {
-        tcp_issseed += 64000;
-        return tcp_issseed + (uint32_t)lbolt * 2500;
+        uint8_t id[12];
+
+        if (!tcp_isskeyed) {
+                rnd_get(tcp_isskey, sizeof(tcp_isskey));
+                tcp_isskeyed = 1;
+        }
+        memcpy(id, &tc->tc_laddr, 4);
+        memcpy(id + 4, &tc->tc_faddr, 4);
+        memcpy(id + 8, &tc->tc_lport, 2);
+        memcpy(id + 10, &tc->tc_fport, 2);
+        return (uint32_t)(gethrtime() / 4000) +
+            (uint32_t)siphash24(tcp_isskey, id, sizeof(id));
 }
 
 static struct tcb *
@@ -371,14 +425,29 @@ tcp_newtcb(void)
         return tc;
 }
 
+/* The initial window (RFC 5681 3.1): 4 segments, but no more than
+ * 4380 bytes unless that is less than 2 segments. */
+static uint32_t
+tcp_iw(uint32_t mss)
+{
+        uint32_t w = 4 * mss, cap = 2 * mss > 4380 ? 2 * mss : 4380;
+
+        return w < cap ? w : cap;
+}
+
 /* Fresh sequence state for a connection about to begin. */
 static void
 tcp_begin(struct tcb *tc)
 {
-        tc->tc_iss = tcp_newiss();
+        tc->tc_iss = tcp_newiss(tc);
         tc->tc_snd_una = tc->tc_snd_nxt = tc->tc_snd_max = tc->tc_iss;
+        tc->tc_recover = tc->tc_iss;
+        tc->tc_dupacks = tc->tc_inrecovery = 0;
+        tc->tc_wsok = 0;
+        tc->tc_snd_wscale = 0;
+        tc->tc_rcv_wscale = TCP_RCVWSCALE;     /* offered; 0 if declined */
         tc->tc_sndbase = tc->tc_iss + 1;
-        tc->tc_cwnd = 4 * tc->tc_mss;
+        tc->tc_cwnd = tcp_iw(tc->tc_mss);
         tc->tc_ssthresh = TCP_RCVBUF;
         tc->tc_rto = TCP_RTOINIT;
         tc->tc_rxtshift = 0;
@@ -411,7 +480,17 @@ tcp_clear(struct tcb *tc)
         tcp_flushq(&tc->tc_rcvq);
         tc->tc_rcvtail = NULL;
         tc->tc_rcvcc = 0;
-        tc->tc_rexmt = tc->tc_timer2 = tc->tc_rtt = 0;
+        while (tc->tc_ooo != NULL) {
+                struct tcp_ooo *o = tc->tc_ooo;
+
+                tc->tc_ooo = o->to_next;
+                if (o->to_data != NULL)
+                        freemsg(o->to_data);
+                kmem_free(o, sizeof(*o));
+        }
+        tc->tc_nooo = 0;
+        tc->tc_ooocc = 0;
+        tc->tc_rexmt = tc->tc_timer2 = tc->tc_rtt = tc->tc_delack = 0;
         tc->tc_flags = 0;
 }
 
@@ -490,6 +569,13 @@ tcp_up_byid(uint32_t id)
 
 /* --- Sending. --- */
 
+/* Our window's shift in force: none unless both sides scale. */
+static unsigned
+tcp_rshift(const struct tcb *tc)
+{
+        return tc->tc_wsok ? tc->tc_rcv_wscale : 0;
+}
+
 static uint32_t
 tcp_window(const struct tcb *tc)
 {
@@ -501,7 +587,28 @@ tcp_window(const struct tcb *tc)
         if (SEQ_GT(tc->tc_rcv_adv, tc->tc_rcv_nxt) &&
             tc->tc_rcv_adv - tc->tc_rcv_nxt > win)
                 win = tc->tc_rcv_adv - tc->tc_rcv_nxt;
+        /* No more than the header can say, at our scale. */
+        if (win > (uint32_t)65535 << tcp_rshift(tc))
+                win = (uint32_t)65535 << tcp_rshift(tc);
         return win;
+}
+
+/* The window field to send (unscaled on a SYN, as RFC 7323 says). */
+static uint32_t
+tcp_winfield(const struct tcb *tc, uint32_t win, int syn)
+{
+        uint32_t field = syn ? win : win >> tcp_rshift(tc);
+
+        return field > 65535 ? 65535 : field;
+}
+
+/* The peer's window in a segment, in bytes. */
+static uint32_t
+tcp_sndwin(const struct tcb *tc, const struct tcp_seg *sg)
+{
+        if ((sg->ts_flags & TH_SYN) != 0 || !tc->tc_wsok)
+                return sg->ts_win;
+        return sg->ts_win << tc->tc_snd_wscale;
 }
 
 /*
@@ -528,6 +635,7 @@ tcp_xmit(in_addr_t src, in_addr_t dst, in_port_t sport, in_port_t dport,
         ip = (struct ip *)hp->b_wptr;
         ip->ip_vhl = 0x45;
         ip->ip_p = IPPROTO_TCP;
+        ip->ip_off = htons(IP_DF);      /* path MTU discovery (RFC 1191) */
         ip->ip_src = src;
         ip->ip_dst = dst;
         th = hp->b_wptr + IP_MINHLEN;
@@ -582,24 +690,38 @@ tcp_copydata(const struct tcb *tc, size_t off, size_t len)
 static void
 tcp_send(struct tcb *tc, uint32_t seq, uint8_t flags, mblk_t *data)
 {
-        uint32_t win = tcp_window(tc);
-        uint8_t opt[4];
+        int syn = (flags & TH_SYN) != 0;
+        uint32_t field = tcp_winfield(tc, tcp_window(tc), syn);
+        uint32_t win = syn ? field : field << tcp_rshift(tc);
+        uint8_t opt[8];
         size_t optlen = 0;
 
-        if ((flags & TH_SYN) != 0) {
+        if (syn) {
                 opt[0] = 2;             /* MSS */
                 opt[1] = 4;
                 opt[2] = (uint8_t)(TCP_MSS >> 8);
                 opt[3] = (uint8_t)TCP_MSS;
                 optlen = 4;
+                /* Window scale: offered first, or answering the offer. */
+                if (tc->tc_state == TCPS_SYN_SENT || tc->tc_wsok) {
+                        opt[4] = 1;     /* NOP */
+                        opt[5] = 3;
+                        opt[6] = 3;
+                        opt[7] = tc->tc_rcv_wscale;
+                        optlen = 8;
+                }
         }
         if ((flags & TH_ACK) != 0 && win > 0 &&
             SEQ_GT(tc->tc_rcv_nxt + win, tc->tc_rcv_adv))
                 tc->tc_rcv_adv = tc->tc_rcv_nxt + win;
         tcp_xmit(tc->tc_laddr, tc->tc_faddr, tc->tc_lport, tc->tc_fport,
-            seq, (flags & TH_ACK) != 0 ? tc->tc_rcv_nxt : 0, flags, win,
+            seq, (flags & TH_ACK) != 0 ? tc->tc_rcv_nxt : 0, flags, field,
             opt, optlen, data);
-        tc->tc_flags &= ~TF_ACKNOW;
+        if ((flags & TH_ACK) != 0) {
+                /* Whatever ACK was owed, or held, has gone with this. */
+                tc->tc_flags &= ~(TF_ACKNOW | TF_DELACK);
+                tc->tc_delack = 0;
+        }
 }
 
 /* Send what tc may: its SYN, data and FIN, or an ACK it owes. */
@@ -649,6 +771,15 @@ tcp_output(struct tcb *tc)
                         len = tc->tc_mss;
                 fin = tc->tc_fin && off <= tc->tc_sndcc &&
                     off + len == tc->tc_sndcc;
+                /*
+                 * Nagle's algorithm (RFC 896, RFC 1122 4.2.3.4): less than
+                 * a segment, and all there is, waits while anything is
+                 * unacknowledged, unless TCP_NODELAY or a FIN says not.
+                 */
+                if (len > 0 && len < tc->tc_mss && len == avail && !fin &&
+                    flight > 0 && !tc->tc_opt.to_nodelay &&
+                    (tc->tc_flags & (TF_FORCE | TF_ONESEG)) == 0)
+                        len = 0;
                 if (len == 0 && !fin) {
                         if ((tc->tc_flags & TF_ACKNOW) != 0)
                                 tcp_send(tc, tc->tc_snd_nxt, TH_ACK, NULL);
@@ -672,13 +803,35 @@ tcp_output(struct tcb *tc)
                         tc->tc_snd_max = tc->tc_snd_nxt;
                 if (tc->tc_rexmt == 0)
                         tc->tc_rexmt = tc->tc_rto;
-                if (fin)
+                if (fin || (tc->tc_flags & TF_ONESEG) != 0)
                         break;
         }
         /* Data waiting on a closed window: the timer probes it. */
         if (tc->tc_snd_wnd == 0 && tc->tc_rexmt == 0 &&
             tc->tc_snd_nxt - tc->tc_sndbase < tc->tc_sndcc)
                 tc->tc_rexmt = tc->tc_rto;
+}
+
+/*
+ * The first unacknowledged segment again, at once (fast retransmit,
+ * and a partial ACK in fast recovery), whatever the windows say: what
+ * else is in flight stays so. Not timed (Karn).
+ */
+static void
+tcp_rexmit1(struct tcb *tc)
+{
+        uint32_t nxt = tc->tc_snd_nxt, cwnd = tc->tc_cwnd;
+
+        tc->tc_snd_nxt = tc->tc_snd_una;
+        tc->tc_cwnd = tc->tc_mss;
+        tc->tc_flags |= TF_ONESEG;
+        tc->tc_rtt = 0;
+        tcp_output(tc);
+        tc->tc_rtt = 0;
+        tc->tc_flags &= ~TF_ONESEG;
+        tc->tc_cwnd = cwnd;
+        if (SEQ_GT(nxt, tc->tc_snd_nxt))
+                tc->tc_snd_nxt = nxt;
 }
 
 /* A reset for a segment no connection takes (RFC 9293 3.10.7.1). */
@@ -898,7 +1051,11 @@ tcp_sndtrim(struct tcb *tc, size_t n)
 static void
 tcp_newack(struct tcb *tc, uint32_t ack)
 {
+        uint32_t acked = ack - tc->tc_snd_una;
+        size_t data = 0;
+
         tc->tc_softerr = 0;             /* the way is open after all */
+        tc->tc_dupacks = 0;
         if (tc->tc_rtt != 0 && SEQ_GT(ack, tc->tc_rtseq))
                 tcp_rttupdate(tc);
         if (SEQ_GT(ack, tc->tc_sndbase)) {
@@ -910,21 +1067,67 @@ tcp_newack(struct tcb *tc, uint32_t ack)
                                 tc->tc_finacked = 1;
                 }
                 tcp_sndtrim(tc, n);
+                data = n;
         }
         tc->tc_snd_una = ack;
         if (SEQ_LT(tc->tc_snd_nxt, ack))
                 tc->tc_snd_nxt = ack;
-        if (tc->tc_cwnd < tc->tc_ssthresh)
-                tc->tc_cwnd += tc->tc_mss;
-        else
+        if (tc->tc_inrecovery && SEQ_LT(ack, tc->tc_recover)) {
+                /*
+                 * A partial ACK (RFC 6582 3.2): the next hole is lost too.
+                 * Resend it; deflate the window by what was acknowledged,
+                 * and give back a segment for the one resent.
+                 */
+                tcp_rexmit1(tc);
+                tc->tc_cwnd = tc->tc_cwnd > acked ? tc->tc_cwnd - acked : 0;
+                if (acked >= tc->tc_mss)
+                        tc->tc_cwnd += tc->tc_mss;
+        } else if (tc->tc_inrecovery) {
+                /* A full ACK: recovery is over (RFC 6582 3.2, step 3). */
+                uint32_t flight = tc->tc_snd_max - tc->tc_snd_una;
+
+                tc->tc_cwnd = flight + tc->tc_mss < tc->tc_ssthresh ?
+                    flight + tc->tc_mss : tc->tc_ssthresh;
+                tc->tc_inrecovery = 0;
+        } else if (data == 0) {
+                ;       /* our SYN or FIN alone: no growth (RFC 5681 3.1) */
+        } else if (tc->tc_cwnd < tc->tc_ssthresh) {
+                tc->tc_cwnd += tc->tc_mss;      /* slow start */
+        } else {
                 tc->tc_cwnd += tc->tc_mss * tc->tc_mss / tc->tc_cwnd + 1;
-        if (tc->tc_cwnd > 4 * TCP_SNDBUF)
-                tc->tc_cwnd = 4 * TCP_SNDBUF;
+        }
+        if (tc->tc_cwnd > 4 * TCP_MAXSNDBUF)
+                tc->tc_cwnd = 4 * TCP_MAXSNDBUF;
         tc->tc_rxtshift = 0;
         tc->tc_rexmt = tc->tc_snd_una == tc->tc_snd_max ? 0 : tc->tc_rto;
         /* Room for what the stream waits to send. */
         if (tc->tc_up != NULL && WR(tc->tc_up->tu_rq)->q_first != NULL)
                 qenable(WR(tc->tc_up->tu_rq));
+}
+
+/*
+ * A duplicate ACK (RFC 5681 2): the third in a row means a segment was
+ * lost, and is resent at once (fast retransmit); recovery (RFC 6582)
+ * then lets a segment more out for each further one, as each says one
+ * of ours has left the network.
+ */
+static void
+tcp_dupack(struct tcb *tc)
+{
+        uint32_t flight = tc->tc_snd_max - tc->tc_snd_una;
+
+        if (tc->tc_inrecovery) {
+                tc->tc_cwnd += tc->tc_mss;
+                return;                 /* tcp_output follows */
+        }
+        if (++tc->tc_dupacks != 3 || !SEQ_GT(tc->tc_snd_una, tc->tc_recover))
+                return;
+        tc->tc_ssthresh = flight / 2 > 2 * tc->tc_mss ? flight / 2 :
+            2 * tc->tc_mss;
+        tc->tc_recover = tc->tc_snd_max;
+        tc->tc_inrecovery = 1;
+        tcp_rexmit1(tc);
+        tc->tc_cwnd = tc->tc_ssthresh + 3 * tc->tc_mss;
 }
 
 /* A SYN for a listener: a child, in SYN_RCVD, answering it. */
@@ -950,6 +1153,12 @@ tcp_listen_input(struct tcb *l, const struct tcp_seg *sg)
         if (sg->ts_mss != 0)
                 tc->tc_mss = sg->ts_mss < TCP_MSS ? sg->ts_mss : TCP_MSS;
         tcp_begin(tc);
+        if (sg->ts_wscale >= 0) {
+                tc->tc_wsok = 1;        /* offered: ours goes back */
+                tc->tc_snd_wscale = (uint8_t)sg->ts_wscale;
+        } else {
+                tc->tc_rcv_wscale = 0;
+        }
         tc->tc_state = TCPS_SYN_RCVD;
         tc->tc_irs = sg->ts_seq;
         tc->tc_rcv_nxt = tc->tc_rcv_adv = sg->ts_seq + 1;
@@ -987,7 +1196,15 @@ tcp_synsent_input(struct tcb *tc, const struct tcp_seg *sg)
         tc->tc_rcv_nxt = tc->tc_rcv_adv = sg->ts_seq + 1;
         if (sg->ts_mss != 0)
                 tc->tc_mss = sg->ts_mss < TCP_MSS ? sg->ts_mss : TCP_MSS;
-        tc->tc_cwnd = 4 * tc->tc_mss;
+        tc->tc_cwnd = tcp_iw(tc->tc_mss);
+        /* Our offer of a window scale taken, or not (RFC 7323 2.2). */
+        if (sg->ts_wscale >= 0) {
+                tc->tc_wsok = 1;
+                tc->tc_snd_wscale = (uint8_t)sg->ts_wscale;
+        } else {
+                tc->tc_wsok = 0;
+                tc->tc_rcv_wscale = 0;
+        }
         tc->tc_laddr = sg->ts_dst;      /* the source IP chose for us */
         tc->tc_snd_wnd = sg->ts_win;
         tc->tc_snd_wl1 = sg->ts_seq;
@@ -1059,6 +1276,119 @@ tcp_ordrel_ind(struct tcb *tc)
         }
 }
 
+/* Whether the connection takes data now (the peer has not finished). */
+static int
+tcp_takesdata(const struct tcb *tc)
+{
+        return tc->tc_state == TCPS_ESTABLISHED ||
+            tc->tc_state == TCPS_FIN_WAIT_1 || tc->tc_state == TCPS_FIN_WAIT_2;
+}
+
+/* len bytes in order, data (freed): to the stream, or for an orphan none. */
+static void
+tcp_rcvtake(struct tcb *tc, mblk_t *data, size_t len)
+{
+        tc->tc_rcv_nxt += (uint32_t)len;
+        if (data == NULL)
+                return;
+        if (tc->tc_up != NULL || tc->tc_listener != NULL)
+                tcp_rcvappend(tc, data);
+        else
+                freemsg(data);  /* an orphan has no reader: let it go */
+}
+
+/*
+ * A segment past rcv_nxt, held in sequence order: up to TCP_MAXOOO of
+ * them, and no more of them in all than the window. data is taken.
+ */
+static void
+tcp_ooo_add(struct tcb *tc, uint32_t seq, size_t len, int fin, mblk_t *data)
+{
+        uint32_t edge = tc->tc_rcv_nxt + tcp_window(tc);
+        struct tcp_ooo *o, **link;
+
+        if (len > 0 && SEQ_GT(seq + (uint32_t)len, edge)) {
+                size_t over = (seq + (uint32_t)len) - edge;
+
+                if (over >= len)
+                        goto drop;
+                (void)adjmsg(data, -(ssize_t)over);
+                len -= over;
+                fin = 0;
+        }
+        if (tc->tc_nooo >= TCP_MAXOOO || tc->tc_ooocc + len > tcp_window(tc) ||
+            (o = kmem_zalloc(sizeof(*o), KM_NOSLEEP)) == NULL)
+                goto drop;
+        o->to_seq = seq;
+        o->to_len = len;
+        o->to_fin = fin;
+        o->to_data = len > 0 ? data : NULL;
+        if (len == 0 && data != NULL)
+                freemsg(data);
+        for (link = &tc->tc_ooo; *link != NULL &&
+            SEQ_LEQ((*link)->to_seq, seq); link = &(*link)->to_next)
+                continue;
+        o->to_next = *link;
+        *link = o;
+        tc->tc_nooo++;
+        tc->tc_ooocc += len;
+        return;
+drop:
+        if (data != NULL)
+                freemsg(data);
+}
+
+/*
+ * What is held and now in order, after the gap filled, to the stream,
+ * its overlap with what came already trimmed. 1 if a held FIN is now
+ * in order too.
+ */
+static int
+tcp_ooo_drain(struct tcb *tc)
+{
+        struct tcp_ooo *o;
+
+        while ((o = tc->tc_ooo) != NULL && SEQ_LEQ(o->to_seq, tc->tc_rcv_nxt)) {
+                uint32_t end = o->to_seq + (uint32_t)o->to_len;
+                int fin;
+
+                tc->tc_ooo = o->to_next;
+                tc->tc_nooo--;
+                tc->tc_ooocc -= o->to_len;
+                if (SEQ_GT(end, tc->tc_rcv_nxt)) {
+                        uint32_t skip = tc->tc_rcv_nxt - o->to_seq;
+
+                        if (skip > 0)
+                                (void)adjmsg(o->to_data, (ssize_t)skip);
+                        tcp_rcvtake(tc, o->to_data, o->to_len - skip);
+                        o->to_data = NULL;
+                }
+                fin = o->to_fin && end == tc->tc_rcv_nxt;
+                if (o->to_data != NULL)
+                        freemsg(o->to_data);
+                kmem_free(o, sizeof(*o));
+                if (fin)
+                        return 1;
+        }
+        return 0;
+}
+
+/*
+ * An ACK for data in order, held a little (RFC 1122 4.2.3.2, RFC 5681
+ * 4.2): sent with the next segment of ours, at the second segment that
+ * comes, or after TCP_DELACK ticks, whichever is first.
+ */
+static void
+tcp_delack(struct tcb *tc)
+{
+        if ((tc->tc_flags & TF_DELACK) != 0) {
+                tc->tc_flags |= TF_ACKNOW;
+        } else {
+                tc->tc_flags |= TF_DELACK;
+                tc->tc_delack = TCP_DELACK;
+        }
+}
+
 /* A segment for a synchronized connection, or one in SYN_RCVD. */
 static void
 tcp_conn_input(struct tcb *tc, struct tcp_seg *sg, mblk_t *data)
@@ -1100,7 +1430,7 @@ tcp_conn_input(struct tcb *tc, struct tcp_seg *sg, mblk_t *data)
                 }
                 tc->tc_state = tc->tc_fin ? TCPS_FIN_WAIT_1 :
                     TCPS_ESTABLISHED;
-                tc->tc_snd_wnd = sg->ts_win;
+                tc->tc_snd_wnd = tcp_sndwin(tc, sg);
                 tc->tc_snd_wl1 = sg->ts_seq;
                 tc->tc_snd_wl2 = sg->ts_ack;
                 if (tc->tc_listener != NULL) {
@@ -1117,10 +1447,14 @@ tcp_conn_input(struct tcb *tc, struct tcp_seg *sg, mblk_t *data)
         }
         if (SEQ_GT(sg->ts_ack, tc->tc_snd_una))
                 tcp_newack(tc, sg->ts_ack);
+        else if (sg->ts_ack == tc->tc_snd_una && sg->ts_len == 0 && !fin &&
+            tc->tc_snd_max != tc->tc_snd_una &&
+            tcp_sndwin(tc, sg) == tc->tc_snd_wnd)
+                tcp_dupack(tc);
         if (SEQ_LT(tc->tc_snd_wl1, sg->ts_seq) ||
             (tc->tc_snd_wl1 == sg->ts_seq &&
             SEQ_LEQ(tc->tc_snd_wl2, sg->ts_ack))) {
-                tc->tc_snd_wnd = sg->ts_win;
+                tc->tc_snd_wnd = tcp_sndwin(tc, sg);
                 tc->tc_snd_wl1 = sg->ts_seq;
                 tc->tc_snd_wl2 = sg->ts_ack;
         }
@@ -1167,28 +1501,32 @@ tcp_conn_input(struct tcb *tc, struct tcp_seg *sg, mblk_t *data)
                 fin = 0;
         }
         if (sg->ts_seq != tc->tc_rcv_nxt) {
-                /* Out of order: dropped, and our ACK says what we want. */
-                if (sg->ts_len > 0 || fin)
+                /*
+                 * Out of order: held until the gap before it fills, and an
+                 * ACK at once says what we want (a duplicate, which tells
+                 * the peer of the gap).
+                 */
+                if (sg->ts_len > 0 || fin) {
                         tc->tc_flags |= TF_ACKNOW;
+                        if (tcp_takesdata(tc)) {
+                                tcp_ooo_add(tc, sg->ts_seq, sg->ts_len, fin,
+                                    data);
+                                data = NULL;
+                        }
+                }
                 sg->ts_len = 0;
                 fin = 0;
         }
-        if (sg->ts_len > 0) {
-                switch (tc->tc_state) {
-                case TCPS_ESTABLISHED:
-                case TCPS_FIN_WAIT_1:
-                case TCPS_FIN_WAIT_2:
-                        tc->tc_rcv_nxt += (uint32_t)sg->ts_len;
+        if (sg->ts_len > 0 && tcp_takesdata(tc)) {
+                tcp_rcvtake(tc, data, sg->ts_len);
+                data = NULL;
+                if (tc->tc_ooo != NULL) {
+                        /* A gap filling: what was held follows; ACK now. */
+                        if (tcp_ooo_drain(tc))
+                                fin = 1;
                         tc->tc_flags |= TF_ACKNOW;
-                        /* An orphan has no reader: the data is let go. */
-                        if (data != NULL &&
-                            (tc->tc_up != NULL || tc->tc_listener != NULL)) {
-                                tcp_rcvappend(tc, data);
-                                data = NULL;
-                        }
-                        break;
-                default:
-                        break;
+                } else {
+                        tcp_delack(tc);
                 }
         }
         if (fin && tc->tc_state != TCPS_SYN_RCVD) {
@@ -1268,7 +1606,8 @@ tcp_input(mblk_t *mp)
         sg.ts_flags = th[13];
         sg.ts_win = (uint32_t)th[14] << 8 | th[15];
         sg.ts_len = len - hlen - off;
-        /* The options: only MSS, and only on a SYN. */
+        sg.ts_wscale = -1;
+        /* The options: MSS and the window scale, and only on a SYN. */
         if ((sg.ts_flags & TH_SYN) != 0) {
                 for (size_t i = TCP_HLEN; i < off;) {
                         uint8_t kind = th[i];
@@ -1285,6 +1624,9 @@ tcp_input(mblk_t *mp)
                         if (kind == 2 && th[i + 1] == 4)
                                 sg.ts_mss = (uint32_t)th[i + 2] << 8 |
                                     th[i + 3];
+                        if (kind == 3 && th[i + 1] == 3)
+                                sg.ts_wscale = th[i + 2] > TCP_MAXWSCALE ?
+                                    TCP_MAXWSCALE : th[i + 2];
                         i += th[i + 1];
                 }
                 if (sg.ts_mss != 0 && sg.ts_mss < 64)
@@ -1354,6 +1696,9 @@ tcp_timeout(struct tcb *tc)
         tc->tc_cwnd = tc->tc_mss;
         tc->tc_snd_nxt = tc->tc_snd_una;
         tc->tc_rtt = 0;                 /* no timing a retransmission */
+        tc->tc_inrecovery = 0;          /* a timeout ends recovery */
+        tc->tc_dupacks = 0;
+        tc->tc_recover = tc->tc_snd_max;
         if (tc->tc_snd_wnd == 0 && TCPS_SYNCED(tc->tc_state))
                 tc->tc_flags |= TF_FORCE;
         tcp_output(tc);
@@ -1383,8 +1728,8 @@ tcp_keepalive(struct tcb *tc)
         }
         tc->tc_kprobes++;
         tcp_xmit(tc->tc_laddr, tc->tc_faddr, tc->tc_lport, tc->tc_fport,
-            tc->tc_snd_una - 1, tc->tc_rcv_nxt, TH_ACK, tcp_window(tc),
-            NULL, 0, NULL);
+            tc->tc_snd_una - 1, tc->tc_rcv_nxt, TH_ACK,
+            tcp_winfield(tc, tcp_window(tc), 0), NULL, 0, NULL);
 }
 
 static void
@@ -1396,6 +1741,11 @@ tcp_tick(void *arg __unused)
                 next = tc->tc_next;
                 if (tc->tc_rtt != 0)
                         tc->tc_rtt++;
+                if (tc->tc_delack != 0 && --tc->tc_delack == 0 &&
+                    (tc->tc_flags & TF_DELACK) != 0) {
+                        tc->tc_flags |= TF_ACKNOW;     /* held long enough */
+                        tcp_output(tc);
+                }
                 if (tc->tc_rexmt != 0 && --tc->tc_rexmt == 0) {
                         tcp_timeout(tc);
                 } else if (tc->tc_timer2 != 0 && --tc->tc_timer2 == 0) {
@@ -1743,7 +2093,8 @@ tcp_optfn(void *arg, int mgmt, int level, int name, const void *val,
                 case SO_RCVBUF:
                         if (set)
                                 o->to_rcvbuf = v < TCP_MINBUF ? TCP_MINBUF :
-                                    v > TCP_RCVBUF ? TCP_RCVBUF : (uint32_t)v;
+                                    v > TCP_MAXRCVBUF ? TCP_MAXRCVBUF :
+                                    (uint32_t)v;
                         v = (int)o->to_rcvbuf;
                         break;
                 default:
@@ -2247,6 +2598,42 @@ tcp_ursrv(queue_t *q)
  * out before anything is acknowledged. A need-frag is passed over: TCP's
  * segments may be fragmented. Frees mp.
  */
+/*
+ * "Fragmentation needed" for a segment of ours (RFC 1191): the path
+ * takes datagrams of mtu bytes, or, from a router that does not say
+ * (mtu 0), the next plateau below the quoted datagram's length. Smaller
+ * segments from now on, and what is in flight sent again in them; not
+ * a sign of congestion, so the window stays.
+ */
+static void
+tcp_pmtu(struct tcb *tc, uint32_t mtu, uint32_t qlen)
+{
+        static const uint16_t plateau[] = { 32000, 17914, 8166, 4352, 2002,
+            1492, 1006, 508, 296 };
+        uint32_t mss;
+
+        if (mtu == 0) {
+                mtu = TCP_MINPMTU;
+                for (size_t i = 0; i < sizeof(plateau) / sizeof(plateau[0]);
+                    i++)
+                        if (plateau[i] < qlen) {
+                                mtu = plateau[i];
+                                break;
+                        }
+        }
+        if (mtu < TCP_MINPMTU)
+                mtu = TCP_MINPMTU;
+        mss = mtu - IP_MINHLEN - TCP_HLEN;
+        if (mss >= tc->tc_mss)
+                return;
+        tc->tc_mss = mss;
+        if (TCPS_SYNCED(tc->tc_state) && tc->tc_snd_una != tc->tc_snd_max) {
+                tc->tc_snd_nxt = tc->tc_snd_una;
+                tc->tc_rtt = 0;         /* no timing a retransmission */
+                tcp_output(tc);
+        }
+}
+
 static void
 tcp_icmp(mblk_t *mp)
 {
@@ -2268,8 +2655,6 @@ tcp_icmp(mblk_t *mp)
                 goto drop;
         type = ic.ic_arg >> 8;
         code = ic.ic_arg & 0xff;
-        if (type == ICMP_UNREACH && code == ICMP_UNREACH_NEEDFRAG)
-                goto drop;
         th = dp->b_rptr + IP_HLEN(ip);
         memcpy(&sport, th, 2);
         memcpy(&dport, th + 2, 2);
@@ -2285,6 +2670,11 @@ tcp_icmp(mblk_t *mp)
                 if (SEQ_LT(seq, tc->tc_snd_una) ||
                     SEQ_GEQ(seq, tc->tc_snd_max))
                         break;          /* not one in flight: forged */
+                if (type == ICMP_UNREACH && code == ICMP_UNREACH_NEEDFRAG) {
+                        tcp_pmtu(tc, ntohl(ic.ic_info) & 0xffff,
+                            ntohs(ip->ip_len));
+                        break;
+                }
                 if (type == ICMP_UNREACH &&
                     (code == ICMP_UNREACH_PORT ||
                     code == ICMP_UNREACH_PROTOCOL)) {

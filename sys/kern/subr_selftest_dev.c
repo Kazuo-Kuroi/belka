@@ -20,6 +20,7 @@
 #include <sys/kthread.h>
 #include <sys/param.h>
 #include <sys/random.h>
+#include <sys/siphash.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
 
@@ -240,12 +241,31 @@ test_random(void)
         CHECK(memcmp(a, b, sizeof(a)) != 0);
 }
 
+/*
+ * SipHash-2-4: the paper's vector (key 00..0f, message 00..0e), and the
+ * empty message at each length below a word.
+ */
+static void
+test_siphash(void)
+{
+        uint8_t key[SIPHASH_KEYLEN], msg[15];
+
+        for (int i = 0; i < 16; i++)
+                key[i] = (uint8_t)i;
+        for (int i = 0; i < 15; i++)
+                msg[i] = (uint8_t)i;
+        CHECK(siphash24(key, msg, 15) == 0xa129ca6149be45e5ULL);
+        CHECK(siphash24(key, msg, 0) == 0x726fdb47dd0e0e31ULL);
+        CHECK(siphash24(key, msg, 8) == 0x93f5f5799a932462ULL);
+}
+
 int
 selftest_dev(void)
 {
         failures = 0;
         test_pci();
         test_random();
+        test_siphash();
         test_block_io();
         test_concurrent_reads();
         return failures;

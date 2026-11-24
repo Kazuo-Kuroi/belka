@@ -337,7 +337,9 @@ test_options(int s)
         CHECK(getint(c, SOL_SOCKET, SO_KEEPALIVE, &v) == 0 && v == 0);
         CHECK(setint(c, SOL_SOCKET, SO_KEEPALIVE, 1) == 0);
         CHECK(getint(c, SOL_SOCKET, SO_KEEPALIVE, &v) == 0 && v == 1);
-        CHECK(getint(c, SOL_SOCKET, SO_RCVBUF, &v) == 0 && v == 65535);
+        CHECK(getint(c, SOL_SOCKET, SO_RCVBUF, &v) == 0 && v == 131072);
+        CHECK(setint(c, SOL_SOCKET, SO_RCVBUF, 1 << 20) == 0);
+        CHECK(getint(c, SOL_SOCKET, SO_RCVBUF, &v) == 0 && v == 262144);
         CHECK(setint(c, SOL_SOCKET, SO_RCVBUF, 1) == 0);
         CHECK(getint(c, SOL_SOCKET, SO_RCVBUF, &v) == 0 && v == 2048);
         CHECK(setint(c, SOL_SOCKET, SO_SNDBUF, 8192) == 0);

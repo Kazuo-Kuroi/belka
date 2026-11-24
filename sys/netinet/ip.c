@@ -56,6 +56,7 @@ static const uint8_t ip_bcast_hw[IP_HWADDRLEN] = {
 static int ip_open(queue_t *, dev_t *, int, int, struct cred *);
 static int ip_close(queue_t *, int, struct cred *);
 static int ip_uwput(queue_t *, mblk_t *);
+static void icmp_toupper(const struct icmp *, size_t);
 static int ip_lrput(queue_t *, mblk_t *);
 static int ip_lwput(queue_t *, mblk_t *);
 static void ip_send(mblk_t *);
@@ -413,6 +414,24 @@ ip_fragment(struct ip_if *ifp, int bcast, in_addr_t hop, mblk_t *mp)
         uint8_t hdr[60], ohdr[60];
 
         if ((off & IP_DF) != 0 || ifp->if_mtu < 60 + 8) {
+                /*
+                 * Ours, and not to be fragmented: its transport hears, as
+                 * a router's "fragmentation needed" would say, what the
+                 * link takes (path MTU discovery, RFC 1191).
+                 */
+                if ((off & IP_DF) != 0 && ip_ours(ip->ip_src) == 1 &&
+                    pullupmsg(mp, (ssize_t)(hlen + 8))) {
+                        uint8_t m[ICMP_MINLEN + 60 + 8];
+
+                        memset(m, 0, ICMP_MINLEN);
+                        m[0] = ICMP_UNREACH;
+                        m[1] = ICMP_UNREACH_NEEDFRAG;
+                        m[6] = (uint8_t)(ifp->if_mtu >> 8);
+                        m[7] = (uint8_t)ifp->if_mtu;
+                        memcpy(m + ICMP_MINLEN, mp->b_rptr, hlen + 8);
+                        icmp_toupper((const struct icmp *)m,
+                            ICMP_MINLEN + hlen + 8);
+                }
                 ifp->if_drops++;
                 freemsg(mp);
                 return;

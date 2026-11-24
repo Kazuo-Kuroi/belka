@@ -38,6 +38,7 @@
 #include <sys/dlpi.h>
 #include <sys/ipconf.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 
 #define ETHERTYPE_ARP   0x0806
@@ -343,6 +344,35 @@ icmp_send(uint8_t type, uint8_t code, const uint8_t *q, size_t qlen)
         CHECK(dlsendto(hip, ifmac, ETHERTYPE_IP, d, 28 + qlen) == 0);
 }
 
+/* "Fragmentation needed" from the sender, the next hop's MTU mtu. */
+static void
+icmp_send_mtu(const uint8_t *q, size_t qlen, uint16_t mtu)
+{
+        uint8_t d[20 + 8 + 68];
+        uint16_t sum;
+
+        if (qlen > 68)
+                qlen = 68;
+        memset(d, 0, sizeof(d));
+        put32(d, 0x45u << 24 | (uint32_t)(28 + qlen));
+        d[8] = 64;
+        d[9] = 1;
+        put32(d + 12, SENDER);
+        put32(d + 16, OURS);
+        sum = cksum(d, 20);
+        d[10] = (uint8_t)(sum >> 8);
+        d[11] = (uint8_t)sum;
+        d[20] = 3;
+        d[21] = 4;
+        d[26] = (uint8_t)(mtu >> 8);
+        d[27] = (uint8_t)mtu;
+        memcpy(d + 28, q, qlen);
+        sum = cksum(d + 20, 8 + qlen);
+        d[22] = (uint8_t)(sum >> 8);
+        d[23] = (uint8_t)sum;
+        CHECK(dlsendto(hip, ifmac, ETHERTYPE_IP, d, 28 + qlen) == 0);
+}
+
 /* The next datagram of ours of proto to port, within ms, into q. */
 static size_t
 catch_ours(int proto, uint16_t port, uint8_t *q, int ms)
@@ -359,6 +389,376 @@ catch_ours(int proto, uint16_t port, uint8_t *q, int ms)
                 }
         }
         return 0;
+}
+
+/* --- A TCP peer, played on the wire, for TCP's behaviour. --- */
+
+#define TCP_LPORT       7000            /* our listener, on OURS */
+
+/* A segment of ours that reached the peer. */
+struct seg {
+        uint32_t        seq, ack;
+        uint8_t         flags;
+        uint16_t        win;
+        int             mss, wscale;    /* its options; -1 none */
+        int             df;
+        size_t          dlen;
+        uint8_t         data[1500];
+};
+
+/* One of the peer's connections to our listener. */
+struct peer {
+        uint16_t        port;
+        uint32_t        snd;            /* the peer's next sequence */
+        uint32_t        rcv;            /* what it next wants of ours */
+        uint32_t        iss;            /* ours */
+        uint16_t        win;            /* the window field it sends */
+        int             fd;             /* the accepted socket */
+};
+
+static void
+put16(uint8_t *p, uint16_t v)
+{
+        p[0] = (uint8_t)(v >> 8);
+        p[1] = (uint8_t)v;
+}
+
+/* A segment from the peer (SENDER:port) to our listener. */
+static void
+tcp_out(uint16_t port, uint32_t seq, uint32_t ack, uint8_t flags,
+    uint16_t win, const uint8_t *opt, size_t optlen, const void *d,
+    size_t dlen)
+{
+        static uint8_t f[20 + 40 + 1460], ph[12 + 40 + 1460];
+        size_t thl = 20 + optlen, total = 20 + thl + dlen;
+        uint16_t sum;
+
+        memset(f, 0, 20 + thl);
+        f[0] = 0x45;
+        put16(f + 2, (uint16_t)total);
+        f[8] = 64;
+        f[9] = 6;
+        put32(f + 12, SENDER);
+        put32(f + 16, OURS);
+        sum = cksum(f, 20);
+        put16(f + 10, sum);
+        put16(f + 20, port);
+        put16(f + 22, TCP_LPORT);
+        put32(f + 24, seq);
+        put32(f + 28, ack);
+        f[32] = (uint8_t)((thl / 4) << 4);
+        f[33] = flags;
+        put16(f + 34, win);
+        memcpy(f + 40, opt, optlen);
+        if (dlen > 0)
+                memcpy(f + 20 + thl, d, dlen);
+        memcpy(ph, f + 12, 8);
+        ph[8] = 0;
+        ph[9] = 6;
+        put16(ph + 10, (uint16_t)(thl + dlen));
+        memcpy(ph + 12, f + 20, thl + dlen);
+        sum = cksum(ph, 12 + thl + dlen);
+        put16(f + 36, sum);
+        CHECK(dlsendto(hip, ifmac, ETHERTYPE_IP, f, total) == 0);
+}
+
+/* The next segment of ours to the peer's port, within ms; 0 if none. */
+static int
+tcp_in(uint16_t port, int ms, struct seg *s)
+{
+        while (next_ip(ms) == 0) {
+                size_t hl = (size_t)(pkt[0] & 0x0f) * 4, off, len;
+                const uint8_t *th = pkt + hl;
+
+                if (pkt[9] != 6 || get32(pkt + 12) != OURS ||
+                    get32(pkt + 16) != SENDER || pktlen < (int)hl + 20 ||
+                    get16(th + 2) != port)
+                        continue;
+                off = (size_t)(th[12] >> 4) * 4;
+                len = get16(pkt + 2);
+                if (off < 20 || hl + off > len || len > (size_t)pktlen)
+                        continue;
+                memset(s, 0, sizeof(*s));
+                s->seq = get32(th + 4);
+                s->ack = get32(th + 8);
+                s->flags = th[13];
+                s->win = get16(th + 14);
+                s->df = (pkt[6] & 0x40) != 0;
+                s->mss = s->wscale = -1;
+                for (size_t i = 20; i < off; ) {
+                        if (th[i] == 0)
+                                break;
+                        if (th[i] == 1) {
+                                i++;
+                                continue;
+                        }
+                        if (i + 1 >= off || th[i + 1] < 2)
+                                break;
+                        if (th[i] == 2 && th[i + 1] == 4)
+                                s->mss = get16(th + i + 2);
+                        if (th[i] == 3 && th[i + 1] == 3)
+                                s->wscale = th[i + 2];
+                        i += th[i + 1];
+                }
+                s->dlen = len - hl - off;
+                if (s->dlen > sizeof(s->data))
+                        s->dlen = sizeof(s->data);
+                memcpy(s->data, th + off, s->dlen);
+                return 1;
+        }
+        return 0;
+}
+
+/*
+ * The data of ours within ms, ACKing none: the span of sequence it
+ * covers from the first segment's (into *first), so that a segment sent
+ * again counts once.
+ */
+static size_t
+tcp_drain_unacked(struct peer *p, int ms, uint32_t *first)
+{
+        uint32_t lo = 0, hi = 0;
+        struct seg s;
+        int any = 0;
+
+        while (tcp_in(p->port, ms, &s))
+                if (s.dlen > 0) {
+                        uint32_t end = s.seq + (uint32_t)s.dlen;
+
+                        if (!any || (int32_t)(s.seq - lo) < 0)
+                                lo = s.seq;
+                        if (!any || (int32_t)(end - hi) > 0)
+                                hi = end;
+                        any = 1;
+                }
+        if (first != NULL)
+                *first = lo;
+        return any ? hi - lo : 0;
+}
+
+/*
+ * A connection from the peer to listener l: the SYN (with a window
+ * scale ws, or none if -1), our SYN-ACK into *sa, the ACK, and accept.
+ */
+static int
+tcp_peer_open(int l, struct peer *p, uint16_t port, int ws, uint16_t win,
+    struct seg *sa)
+{
+        uint8_t opt[8] = { 2, 4, 1460 >> 8, 1460 & 0xff, 1, 3, 3, 0 };
+        struct pollfd pf = { l, POLLIN, 0 };
+
+        memset(p, 0, sizeof(*p));
+        p->port = port;
+        p->snd = 100000u * port;
+        p->win = win;
+        p->fd = -1;
+        opt[7] = (uint8_t)(ws < 0 ? 0 : ws);
+        tcp_out(port, p->snd, 0, 0x02, 65535, opt, ws < 0 ? 4 : 8, NULL, 0);
+        if (!tcp_in(port, 1000, sa) || sa->flags != 0x12 ||
+            sa->ack != p->snd + 1)
+                return 0;
+        p->snd++;
+        p->iss = sa->seq;
+        p->rcv = sa->seq + 1;
+        tcp_out(port, p->snd, p->rcv, 0x10, win, NULL, 0, NULL, 0);
+        if (poll(&pf, 1, 1000) != 1)
+                return 0;
+        p->fd = accept(l, NULL, NULL);
+        return p->fd >= 0;
+}
+
+/* Data from the peer: len bytes of c at seq, ACKing what we sent. */
+static void
+tcp_peer_send(struct peer *p, uint32_t seq, char c, size_t len)
+{
+        uint8_t d[1460];
+
+        memset(d, c, len);
+        tcp_out(p->port, seq, p->rcv, 0x18, p->win, NULL, 0, d, len);
+}
+
+/* The peer resets the connection, and the socket goes. */
+static void
+tcp_peer_close(struct peer *p)
+{
+        tcp_out(p->port, p->snd + 4096, 0, 0x04, 0, NULL, 0, NULL, 0);
+        if (p->fd >= 0)
+                close(p->fd);
+        p->fd = -1;
+}
+
+/*
+ * TCP against a peer that does what a test wants: the window scale
+ * offered and taken (RFC 7323), or not; initial sequence numbers no
+ * clock gives away (RFC 6528); segments out of order held for the gap;
+ * delayed ACKs; Nagle's algorithm, and TCP_NODELAY; fast retransmit
+ * and recovery (RFC 5681, 6582); and path MTU discovery (RFC 1191).
+ */
+static void
+test_tcp_peer(void)
+{
+        struct sockaddr_in sin;
+        struct peer a, b, c, d;
+        struct seg s;
+        uint32_t iss[3], first;
+        size_t n;
+        char buf[16384];
+        int l, on = 1;
+
+        memset(&sin, 0, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_port = htons(TCP_LPORT);
+        sin.sin_addr.s_addr = htonl(OURS);
+        l = socket(AF_INET, SOCK_STREAM, 0);
+        CHECK(l >= 0 && bind(l, (struct sockaddr *)&sin, sizeof(sin)) == 0 &&
+            listen(l, 8) == 0);
+
+        /* Scaling offered: ours goes back, and both sides scale. */
+        CHECK(tcp_peer_open(l, &a, 40001, 2, 1000, &s));
+        CHECK(s.mss == 1460 && s.wscale == 3 && s.df);
+        tcp_peer_send(&a, a.snd, 'x', 1);
+        a.snd += 1;
+        /* Past the window update that may come first (the SYN-ACK could
+         * offer only 64 KB), the ACK of that byte. */
+        while ((n = (size_t)tcp_in(a.port, 1000, &s)) && s.ack != a.snd)
+                continue;
+        CHECK(n && s.ack == a.snd && s.win >= 16000 && s.win <= 16384 &&
+            s.df);
+        if (!(n && s.ack == a.snd && s.win >= 16000 && s.win <= 16384))
+                printf("fwdtest: scaled ACK: ack %u want %u, win %u\n",
+                    s.ack, a.snd, s.win);
+        /* The peer's 1000 at shift 2: 4000 bytes may come, and no more. */
+        memset(buf, 'y', sizeof(buf));
+        CHECK(write(a.fd, buf, 10000) == 10000);
+        n = tcp_drain_unacked(&a, 60, &first);
+        CHECK(n == 4000 && first == a.rcv);
+        tcp_peer_close(&a);
+
+        /* Not offered: no scale back, and windows as they are. */
+        CHECK(tcp_peer_open(l, &a, 40002, -1, 65535, &s));
+        CHECK(s.wscale == -1 && s.mss == 1460);
+        tcp_peer_send(&a, a.snd, 'x', 1);
+        a.snd += 1;
+        CHECK(tcp_in(a.port, 1000, &s) && s.ack == a.snd && s.win == 65535);
+        tcp_peer_close(&a);
+
+        /* Three connections' sequence numbers: no run of a clock. */
+        CHECK(tcp_peer_open(l, &a, 40003, -1, 65535, &s));
+        iss[0] = a.iss;
+        CHECK(tcp_peer_open(l, &b, 40004, -1, 65535, &s));
+        iss[1] = b.iss;
+        CHECK(tcp_peer_open(l, &c, 40005, -1, 65535, &s));
+        iss[2] = c.iss;
+        CHECK(!(iss[1] - iss[0] < (1u << 20) && iss[2] - iss[1] < (1u << 20)));
+
+        /* Out of order: held; a duplicate ACK; then both, in order. */
+        tcp_peer_send(&a, a.snd + 100, 'b', 100);
+        CHECK(tcp_in(a.port, 1000, &s) && s.ack == a.snd);
+        tcp_peer_send(&a, a.snd, 'a', 100);
+        CHECK(tcp_in(a.port, 1000, &s) && s.ack == a.snd + 200);
+        a.snd += 200;
+        {
+                struct pollfd pf = { a.fd, POLLIN, 0 };
+                size_t got = 0;
+
+                while (got < 200 && poll(&pf, 1, 1000) == 1) {
+                        ssize_t r = read(a.fd, buf + got, 200 - got);
+
+                        if (r <= 0)
+                                break;
+                        got += (size_t)r;
+                }
+                CHECK(got == 200 && buf[0] == 'a' && buf[99] == 'a' &&
+                    buf[100] == 'b' && buf[199] == 'b');
+        }
+        tcp_peer_close(&a);
+
+        /* Two segments in a row: one delayed ACK for both. */
+        tcp_peer_send(&b, b.snd, 'm', 100);
+        tcp_peer_send(&b, b.snd + 100, 'n', 100);
+        b.snd += 200;
+        CHECK(tcp_in(b.port, 1000, &s) && s.ack == b.snd);
+        tcp_peer_close(&b);
+
+        /* Nagle: small writes behind unacknowledged data wait, as one. */
+        CHECK(write(c.fd, "0123456789", 10) == 10);
+        CHECK(tcp_in(c.port, 1000, &s) && s.dlen == 10);
+        for (int i = 0; i < 5; i++)
+                CHECK(write(c.fd, "abcdefghij", 10) == 10);
+        n = tcp_drain_unacked(&c, 50, NULL);
+        CHECK(n == 0);
+        c.rcv += 10;
+        tcp_out(c.port, c.snd, c.rcv, 0x10, c.win, NULL, 0, NULL, 0);
+        CHECK(tcp_in(c.port, 1000, &s) && s.dlen == 50 && s.seq == c.rcv);
+        c.rcv += 50;
+        /* TCP_NODELAY: each goes at once. */
+        CHECK(setsockopt(c.fd, IPPROTO_TCP, TCP_NODELAY, &on,
+            sizeof(on)) == 0);
+        tcp_out(c.port, c.snd, c.rcv, 0x10, c.win, NULL, 0, NULL, 0);
+        CHECK(write(c.fd, "0123456789", 10) == 10 &&
+            write(c.fd, "0123456789", 10) == 10);
+        n = tcp_drain_unacked(&c, 60, NULL);
+        CHECK(n == 20);
+        tcp_peer_close(&c);
+
+        /*
+         * Fast retransmit and recovery: the first window out (RFC 5681's
+         * 4380 bytes), its first segment lost; three duplicate ACKs bring
+         * it again at once, and, the window inflated, new data past what
+         * went. A timeout would resend the first alone.
+         */
+        CHECK(tcp_peer_open(l, &d, 40006, 2, 65535, &s));
+        CHECK(write(d.fd, buf, 8 * 1460) == 8 * 1460);
+        n = tcp_drain_unacked(&d, 60, &first);
+        CHECK(n == 4380 && first == d.rcv);    /* RFC 5681's first window */
+        if (n != 4380 || first != d.rcv)
+                printf("fwdtest: four segments: %zu bytes from %u, want %u\n",
+                    n, first, d.rcv);
+        for (int i = 0; i < 3; i++)
+                tcp_out(d.port, d.snd, d.rcv, 0x10, d.win, NULL, 0, NULL, 0);
+        {
+                int again = 0, beyond = 0;
+
+                while (tcp_in(d.port, 300, &s))
+                        if (s.dlen > 0 && s.seq == d.rcv)
+                                again = 1;
+                        else if (s.dlen > 0 && s.seq == d.rcv + n)
+                                beyond = 1;
+                CHECK(again && beyond);
+        }
+        tcp_out(d.port, d.snd, d.rcv + 8 * 1460, 0x10, d.win, NULL, 0, NULL,
+            0);
+        tcp_peer_close(&d);
+
+        /*
+         * Path MTU: "fragmentation needed" at 576 for a segment in
+         * flight brings it again in 536-byte segments, still DF.
+         */
+        CHECK(tcp_peer_open(l, &d, 40007, -1, 65535, &s));
+        CHECK(write(d.fd, buf, 2 * 1460) == 2 * 1460);
+        {
+                uint8_t q[68];
+                size_t ql = 0;
+                int small = 0;
+
+                while (next_ip(60) == 0) {
+                        size_t hl = (size_t)(pkt[0] & 0x0f) * 4;
+
+                        if (pkt[9] == 6 && get16(pkt + hl + 2) == d.port &&
+                            get32(pkt + hl + 4) == d.rcv && ql == 0) {
+                                ql = (size_t)pktlen < 68 ? (size_t)pktlen : 68;
+                                memcpy(q, pkt, ql);
+                        }
+                }
+                CHECK(ql >= 28 && (q[6] & 0x40) != 0);
+                icmp_send_mtu(q, ql, 576);
+                while (tcp_in(d.port, 300, &s))
+                        if (s.dlen > 0 && s.seq == d.rcv)
+                                small = s.dlen == 536 && s.df;
+                CHECK(small);
+        }
+        tcp_peer_close(&d);
+        close(l);
 }
 
 static int
@@ -636,6 +1036,7 @@ main(void)
                     getsockopt(t, SOL_SOCKET, SO_ERROR, &err, &sl) == 0 &&
                     err == ECONNREFUSED);
                 close(t);
+                test_tcp_peer();
                 CHECK(ioctl(uctl, I_PUNLINK, MUXID_ALL) == 0 &&
                     ioctl(tctl, I_PUNLINK, MUXID_ALL) == 0);
                 close(uctl);

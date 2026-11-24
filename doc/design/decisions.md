@@ -2651,7 +2651,9 @@ heap bookkeeping with address-space-owned heap state.
   Not yet: window scaling, timestamps, SACK, fast retransmit, queueing
   out-of-order segments (they are dropped and acknowledged), Nagle's
   algorithm, delayed ACKs, urgent data, keep-alives, options, ICMP
-  errors, and RFC 6528 initial sequence numbers.
+  errors, and RFC 6528 initial sequence numbers. (Superseded, but for
+  timestamps, SACK and urgent data: see
+  [TCP: sequence numbers, congestion, windows and the path MTU](#tcp-sequence-numbers-congestion-windows-and-the-path-mtu-2026-11-24).)
 - **Closing a stream closes as a socket does:** with a FIN, finished by
   the connection as an orphan, or with a reset if data the reader never
   took was waiting (in TCP or at the stream head, which TCP looks at in
@@ -3269,3 +3271,51 @@ says what moved and what is still to do:
   and host, dig, drill, the djbdns tools and `xdig -W -P` against its
   fake root, which now answers test.belka's A, MX and SOA, and no data
   (not NXDOMAIN) for its other types.
+
+## TCP: sequence numbers, congestion, windows and the path MTU (2026-11-24)
+
+Supersedes most of the "Not yet" of
+[TCP and stream sockets over TPI](#tcp-and-stream-sockets-over-tpi-2026-11-23).
+
+- **Initial sequence numbers** (RFC 6528): a clock of 4 microseconds
+  plus SipHash-2-4 of the addresses and ports, keyed from the random
+  generator at the first connection (`kern/subr_siphash.c`, written from
+  Aumasson and Bernstein's paper; the self-test checks its vectors).
+- **Congestion control** (RFC 5681): the first window is min(4 MSS,
+  max(2 MSS, 4380 bytes)); slow start and congestion avoidance grow it
+  only for data acknowledged, not for our SYN or FIN. Fast retransmit:
+  the third duplicate ACK resends the first segment unacknowledged at
+  once. Fast recovery is NewReno's (RFC 6582): the window inflated by a
+  segment for each further duplicate, a partial ACK resending the next
+  hole, a full ACK ending it at min(ssthresh, flight + MSS); a timeout
+  ends it too.
+- **Out of order:** segments past `rcv_nxt` are held (64 at most, and
+  no more bytes than the window), and joined on when the gap fills; each
+  draws a duplicate ACK at once, as does the one that fills a gap.
+- **Delayed ACKs:** data in order is acknowledged with our next
+  segment, at the second segment that comes, or after 200 ms (two of
+  TCP's ticks). **Nagle's algorithm:** less than a segment, and all
+  there is, waits while anything is unacknowledged, unless
+  `TCP_NODELAY` (which now means something), or it carries the FIN.
+- **Window scaling** (RFC 7323 2): every SYN of ours offers a shift of
+  3, a listener's SYN-ACK only if the peer offered one; both scale, or
+  neither. SYN windows are never scaled. The receive buffer is 128 KB
+  by default, 256 KB at most (`SO_RCVBUF`).
+- **Path MTU discovery** (RFC 1191): TCP sends with DF. "Fragmentation
+  needed" quoting a segment in flight (checked as other ICMP errors)
+  lowers the MSS to the next hop's MTU less 40 (the next plateau below
+  the quoted length if the router gives none; 296 at least) and sends
+  again what is in flight; it is not taken as congestion. IP now tells
+  the transport the same, with the link's MTU, when a datagram of ours
+  with DF is too big for the interface, rather than dropping it unsaid.
+  There is no black-hole detection.
+- **Not yet:** timestamps (RFC 7323 3), SACK, and urgent data.
+- **Testing:** `fwdtest` plays a TCP peer on the wire to a listener of
+  ours: the window scale offered and taken (and its effect both ways),
+  or not; three connections' initial sequence numbers not a run of a
+  clock; a segment out of order held, then both delivered in order;
+  two segments drawing one delayed ACK; small writes held by Nagle,
+  and not with `TCP_NODELAY`; three duplicate ACKs bringing the lost
+  segment and new data past the first window; and "fragmentation
+  needed" at 576 bringing 536-byte segments with DF. `tcptest` checks
+  the larger `SO_RCVBUF`.
