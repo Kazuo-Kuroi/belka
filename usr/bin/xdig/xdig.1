@@ -1,0 +1,63 @@
+.\" Copyright (c) 2026 Setsuna Software L.C.
+.\" Created: 2026-11-24
+.\" SPDX-License-Identifier: MIT
+.Dd November 24, 2026
+.Dt XDIG 1
+.Os Belka
+.Sh NAME
+.Nm xdig
+.Nd dig up everything DNS and WHOIS say of a domain
+.Sh SYNOPSIS
+.Nm
+.Op Fl cPW
+.Ar domain | user@domain | url
+.Nm
+.Fl \-about | \-help
+.Sh DESCRIPTION
+.Nm
+(eXtended dig) reports on the domain in its argument, which may be a
+domain, a mail address, or a URL:
+.Bl -bullet
+.It
+its level, its root domain (its last two labels), and the zone it is
+in;
+.It
+a quick WHOIS of the root domain: its registrar, name servers and
+expiry;
+.It
+the zone's records as they can be seen: SOA, NS, A, AAAA, MX, TXT, CAA
+and CNAME, asked for one by one;
+.It
+what public resolvers (Google, Cloudflare, Quad9) have cached for the
+domain, and the zone's serial at each;
+.It
+where web traffic goes (its addresses) and where mail goes (its MX
+hosts' addresses), each with its PTR name and its owner by WHOIS.
+.El
+.Pp
+Queries go to the resolver
+.Pa /etc/resolv.conf
+names, or to a public resolver directly.
+WHOIS starts at whois.iana.org and follows its referrals.
+.Pp
+The options:
+.Bl -tag -width Ds
+.It Fl c
+No colour; colour is used only on a terminal.
+.It Fl P
+Leave out the public resolvers.
+.It Fl W
+Leave out WHOIS, and so the addresses' owners.
+.El
+.Sh EXIT STATUS
+0 when the report is made; 1 if the domain does not exist or is not a
+domain; 2 for bad arguments; 111 if there is no resolver.
+.Sh SEE ALSO
+.Xr dig 1 ,
+.Xr host 1 ,
+.Xr whois 1
+.Sh HISTORY
+A shell script of 2011, written again in C for Belka, without
+.Ql ANY
+queries, which servers no longer answer, and with today's public
+resolvers.

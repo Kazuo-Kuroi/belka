@@ -1,0 +1,95 @@
+.\" Copyright (c) 2026 Setsuna Software L.C.
+.\" Created: 2026-11-24
+.\" SPDX-License-Identifier: MIT
+.Dd November 24, 2026
+.Dt TRACEROUTE 1
+.Os Belka
+.Sh NAME
+.Nm traceroute
+.Nd show the routers on the way to a host
+.Sh SYNOPSIS
+.Nm
+.Op Fl dIn
+.Op Fl f Ar first_ttl
+.Op Fl m Ar max_ttl
+.Op Fl p Ar port
+.Op Fl q Ar nqueries
+.Op Fl s Ar src_addr
+.Op Fl t Ar tos
+.Op Fl w Ar waittime
+.Ar host
+.Op Ar packetlen
+.Sh DESCRIPTION
+.Nm
+sends probes to
+.Ar host
+whose time to live rises by one at each hop, from
+.Ar first_ttl ,
+and prints who answers that the time ran out: the routers in turn, and
+at the end the host itself.
+Each hop is a line: its number, the address that answered (with its
+name, unless
+.Fl n
+is given), and the round-trip time of each probe;
+.Ql *
+marks a probe nothing answered within
+.Ar waittime
+seconds.
+A probe is a UDP datagram to a port no one is likely to use, from
+.Ar port
+(33434) upward, which the host answers with port unreachable; with
+.Fl I ,
+an ICMP echo request, which it answers with an echo reply.
+An unreachable other than the host's port unreachable is marked after
+the time:
+.Ql !N
+(network),
+.Ql !H
+(host),
+.Ql !P
+(protocol),
+.Ql !F
+(fragmentation needed),
+.Ql !S
+(source route failed),
+.Ql !X
+(administratively prohibited) or
+.Ql !U
+(other).
+.Pp
+The options:
+.Bl -tag -width Ds
+.It Fl d
+Accepted, and ignored.
+.It Fl f Ar first_ttl
+The first time to live (1).
+.It Fl I
+Send ICMP echo requests, not UDP datagrams.
+.It Fl m Ar max_ttl
+The last time to live (30).
+.It Fl n
+Print addresses, without looking up their names.
+.It Fl p Ar port
+The first UDP probe's port (33434).
+.It Fl q Ar nqueries
+Probes at each hop (3).
+.It Fl s Ar src_addr
+The probes' source address (else IP's choice).
+.It Fl t Ar tos
+The probes' type of service (0).
+.It Fl w Ar waittime
+Seconds to wait for each probe's answer (5).
+.El
+.Pp
+.Ar packetlen
+is the length of each probe in bytes, its IP header included (60).
+.Pp
+.Nm
+needs raw sockets, which are the superuser's: it is set-user-ID root,
+and gives that up once it has opened them.
+.Sh EXIT STATUS
+0 when the hops were tried; 1 on an error, 2 for bad arguments.
+.Sh SEE ALSO
+.Xr ping 8
+.Sh HISTORY
+Belka's own, after Van Jacobson's traceroute of 1988.

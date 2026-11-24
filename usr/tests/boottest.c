@@ -916,15 +916,33 @@ fake_root(int fd, int ms)
                 r[3] = 0;
                 r[6] = r[7] = r[8] = r[9] = r[10] = r[11] = 0;
                 rl = qend;
-                if (type == 1 && qend - 12 - 4 == sizeof(name) &&
+                if (qend - 12 - 4 == sizeof(name) &&
                     strncasecmp((char *)q + 12, (char *)name,
                     sizeof(name)) == 0) {
+                        /* test.belka: its A, MX and SOA; else no data. */
                         static const unsigned char a[] = { 0xc0, 12, 0, 1,
                             0, 1, 0, 0, 0, 60, 0, 4, 10, 20, 30, 40 };
+                        static const unsigned char mx[] = { 0xc0, 12, 0, 15,
+                            0, 1, 0, 0, 0, 60, 0, 4, 0, 10, 0xc0, 12 };
+                        static const unsigned char soa[] = { 0xc0, 12, 0, 6,
+                            0, 1, 0, 0, 0, 60, 0, 35, 0xc0, 12,
+                            10, 'h', 'o', 's', 't', 'm', 'a', 's', 't', 'e',
+                            'r', 0xc0, 12, 0x78, 0xc4, 0x05, 0x91,
+                            0, 0, 0x0e, 0x10, 0, 0, 0x02, 0x58,
+                            0, 1, 0x51, 0x80, 0, 0, 0, 60 };
+                        const unsigned char *rec = type == 1 ? a :
+                            type == 15 ? mx : type == 6 ? soa : NULL;
+                        size_t len = type == 1 ? sizeof(a) : type == 15 ?
+                            sizeof(mx) : sizeof(soa);
 
-                        memcpy(r + rl, a, sizeof(a));
-                        rl += sizeof(a);
-                        found = 1;
+                        if (rec != NULL) {
+                                memcpy(r + rl, rec, len);
+                                rl += len;
+                                r[7] = 1;
+                        }
+                        (void)sendto(fd, r, rl, 0, (struct sockaddr *)&from,
+                            fl);
+                        continue;
                 } else if (type == 12 && qend - 12 - 4 == sizeof(rev) &&
                     strncasecmp((char *)q + 12, (char *)rev,
                     sizeof(rev)) == 0) {
@@ -993,6 +1011,143 @@ run_out(const char *prog, const char *arg, char *out, size_t size)
         return run_out2(prog, arg, NULL, out, size);
 }
 
+/* sh with script and up to three arguments: its output, and status 0. */
+static int
+run_sh(const char *script, const char *a, const char *b, const char *c,
+    char *out, size_t size)
+{
+        char *argv[] = { "/bin/sh", (char *)script, (char *)a, (char *)b,
+            (char *)c, NULL };
+
+        return run_outv(argv, NULL, out, size);
+}
+
+/*
+ * The DNS tools, while test_dns's fake root serves test.belka: host and
+ * dig (and drill), Belka's wrappers over dnsqr; djbdns' dnsmx, dnstxt
+ * and dnsipq; and xdig, without WHOIS or the public resolvers (-W -P),
+ * which are on the Internet. Each also for a name that is not there.
+ */
+static void
+test_dns_tools(void)
+{
+        char out[4096];
+        char *xdig[] = { "/usr/bin/xdig", "-cWP", "test.belka", NULL };
+        char *xnone[] = { "/usr/bin/xdig", "-cWP", "nothere.belka", NULL };
+        char *ipq[] = { "/usr/bin/dnsipq", "test.belka", NULL };
+        int ok;
+
+        CHECK(run_sh("/usr/bin/host", "test.belka", NULL, NULL, out,
+            sizeof(out)) && strcmp(out, "test.belka has address "
+            "10.20.30.40\ntest.belka mail is handled by 10 "
+            "test.belka.\n") == 0);
+        CHECK(run_sh("/usr/bin/host", "10.20.30.40", NULL, NULL, out,
+            sizeof(out)) && strcmp(out, "40.30.20.10.in-addr.arpa domain "
+            "name pointer test.belka.\n") == 0);
+        CHECK(!run_sh("/usr/bin/host", "nothere.belka", NULL, NULL, out,
+            sizeof(out)) && strstr(out, "not found: 3(NXDOMAIN)") != NULL);
+        CHECK(run_sh("/usr/bin/dig", "+short", "test.belka", NULL, out,
+            sizeof(out)) && strcmp(out, "10.20.30.40\n") == 0);
+        CHECK(run_sh("/usr/bin/dig", "test.belka", "a", NULL, out,
+            sizeof(out)) && strstr(out, "status: NOERROR") != NULL &&
+            strstr(out, "ANSWER SECTION:\ntest.belka.\t") != NULL &&
+            strstr(out, "\tIN\tA\t10.20.30.40\n") != NULL);
+        CHECK(run_sh("/usr/bin/dig", "-x", "10.20.30.40", "+short", out,
+            sizeof(out)) && strcmp(out, "test.belka.\n") == 0);
+        CHECK(run_sh("/usr/bin/drill", "nothere.belka", NULL, NULL, out,
+            sizeof(out)) && strstr(out, "status: NXDOMAIN") != NULL);
+        CHECK(run_outv(ipq, NULL, out, sizeof(out)) &&
+            strcmp(out, "test.belka 10.20.30.40 \n") == 0);
+        CHECK(run_out("/usr/bin/dnsmx", "test.belka", out, sizeof(out)) &&
+            strcmp(out, "10 test.belka\n") == 0);
+        CHECK(run_out("/usr/bin/dnstxt", "test.belka", out, sizeof(out)) &&
+            strcmp(out, "\n") == 0);
+        ok = run_outv(xdig, NULL, out, sizeof(out)) &&
+            strstr(out, "Zone: test.belka") != NULL &&
+            strstr(out, "test.belka.\t") != NULL &&
+            strstr(out, "A: 10.20.30.40 [ PTR: test.belka ]") != NULL &&
+            strstr(out, "\tSOA\ttest.belka. hostmaster.test.belka. "
+            "2026112401 ") != NULL &&
+            strstr(out, "MX: 10 test.belka => 10.20.30.40") != NULL;
+        CHECK(ok);
+        if (!ok)
+                printf("%s", out);      /* what it said, to see why */
+        CHECK(!run_outv(xnone, NULL, out, sizeof(out)) &&
+            strstr(out, "does not exist") != NULL);
+}
+
+/*
+ * ping and traceroute, root's and an ordinary user's (they are
+ * set-user-ID root for their raw sockets): to the loopback, and ping to
+ * QEMU's gateway; and whois, against a WHOIS server of our own on the
+ * loopback.
+ */
+static void
+test_ping(void)
+{
+        char *ping[] = { "/usr/bin/ping", "-c", "2", "-i", "0.2",
+            "127.0.0.1", NULL };
+        char *gw[] = { "/usr/bin/ping", "-c", "1", "10.0.2.2", NULL };
+        char *tr[] = { "/usr/bin/traceroute", "-n", "-q", "1", "-w", "2",
+            "127.0.0.1", NULL };
+        char *tri[] = { "/usr/bin/traceroute", "-I", "-n", "-q", "1", "-w",
+            "2", "127.0.0.1", NULL };
+        char *who[] = { "/usr/bin/whois", "-h", "127.0.0.1", "-p", "4343",
+            "test.belka", NULL };
+        struct sockaddr_in sin;
+        char out[4096];
+        int status = -1, l;
+        pid_t pid;
+
+        CHECK(run_outv(ping, NULL, out, sizeof(out)) &&
+            strstr(out, "2 packets received") != NULL);
+        CHECK(run_outv(tr, NULL, out, sizeof(out)) &&
+            strncmp(out, " 1  127.0.0.1  ", 15) == 0);
+        CHECK(run_outv(tri, NULL, out, sizeof(out)) &&
+            strncmp(out, " 1  127.0.0.1  ", 15) == 0);
+        if ((pid = fork()) == 0) {
+                int ok;
+
+                if (setgid(100) != 0 || setuid(100) != 0)
+                        _exit(1);
+                ok = run_outv(gw, NULL, out, sizeof(out)) &&
+                    strstr(out, "1 packets received") != NULL &&
+                    run_outv(tr, NULL, out, sizeof(out)) &&
+                    strncmp(out, " 1  127.0.0.1  ", 15) == 0;
+                _exit(ok ? 0 : 2);
+        }
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+        /* WHOIS: one connection, one canned answer. */
+        memset(&sin, 0, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_port = htons(4343);
+        sin.sin_addr.s_addr = inet4(127, 0, 0, 1);
+        l = socket(AF_INET, SOCK_STREAM, 0);
+        CHECK(l >= 0 && bind(l, (struct sockaddr *)&sin, sizeof(sin)) == 0 &&
+            listen(l, 1) == 0);
+        if ((pid = fork()) == 0) {
+                static const char ans[] = "Domain Name: TEST.BELKA\r\n"
+                    "Registrar: Belka Test Registrar\r\n";
+                char q[256];
+                int a = accept(l, NULL, NULL);
+                ssize_t n;
+
+                if (a < 0 || (n = read(a, q, sizeof(q) - 1)) <= 0)
+                        _exit(1);
+                q[n] = '\0';
+                (void)write(a, ans, sizeof(ans) - 1);
+                close(a);
+                _exit(strncmp(q, "test.belka\r\n", 12) == 0 ? 0 : 3);
+        }
+        close(l);
+        CHECK(run_outv(who, NULL, out, sizeof(out)) &&
+            strstr(out, "Registrar: Belka Test Registrar") != NULL);
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 /*
  * Names, through dnscache (/etc/rc.d/dnscache) on 127.0.0.1: the C
  * library's getaddrinfo and getnameinfo, and djbdns' dnsip and dnsname,
@@ -1059,6 +1214,7 @@ test_dns(void)
             strcmp(out, "10.20.30.40 \n") == 0);
         CHECK(run_out("/usr/bin/dnsname", "10.20.30.40", out,
             sizeof(out)) && strcmp(out, "test.belka\n") == 0);
+        test_dns_tools();
         if (pid > 0) {
                 kill(pid, SIGKILL);
                 (void)reap(pid, 5000);
@@ -1375,6 +1531,7 @@ main(int argc, char **argv)
         test_utilities();
         test_xn_suite();
         test_network();
+        test_ping();
         test_dhcp();
         test_peercred();
         test_dns();

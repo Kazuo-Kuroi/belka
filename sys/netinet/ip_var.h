@@ -104,6 +104,7 @@ struct ip_upper {
         struct ip_upper *iu_next;
         queue_t         *iu_rq;
         int             iu_proto;       /* -1: none bound */
+        int             iu_deaf;        /* IP_DEAF: nothing comes up */
 };
 
 extern struct ip_if *ip_ifs;

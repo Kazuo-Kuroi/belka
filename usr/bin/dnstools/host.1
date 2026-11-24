@@ -1,0 +1,45 @@
+.\" Copyright (c) 2026 Setsuna Software L.C.
+.\" Created: 2026-11-24
+.\" SPDX-License-Identifier: MIT
+.Dd November 24, 2026
+.Dt HOST 1
+.Os Belka
+.Sh NAME
+.Nm host
+.Nd look up names and addresses in the DNS
+.Sh SYNOPSIS
+.Nm
+.Op Fl a
+.Op Fl t Ar type
+.Ar name | address
+.Op Ar server
+.Sh DESCRIPTION
+.Nm
+asks the DNS of
+.Ar name ,
+and prints what it finds as BIND's host prints it: its addresses, an
+alias it is, and the hosts that take its mail.
+An
+.Ar address
+is looked up by its PTR record, under in-addr.arpa.
+.Fl t
+asks for one record type instead (a, ns, mx, ptr, txt, cname, soa, aaaa
+and the rest djbdns knows, or a number);
+.Fl a
+for any.
+The query goes to the resolver
+.Pa /etc/resolv.conf
+names, or to
+.Ar server .
+.Pp
+.Nm
+is a shell script over djbdns'
+.Xr dnsqr 1 ,
+not BIND's host: it has the common forms only.
+.Sh EXIT STATUS
+0 when the name exists; 1 when it does not, or nothing answered.
+.Sh SEE ALSO
+.Xr dig 1 ,
+.Xr dnsip 1 ,
+.Xr dnsname 1 ,
+.Xr dnsqr 1

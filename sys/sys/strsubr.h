@@ -127,6 +127,7 @@ struct stdata {
 void    strhead_init(void);
 int     str_clone(struct strdev *, struct vnode **, int, struct cred *);
 int     str_kopen(const char *, int, struct cred *, struct vnode **);
+int     str_kioctl(struct stdata *, int, const void *, size_t, struct cred *);
 int     str_kputmsg(struct stdata *, mblk_t *, int);
 int     str_kgetmsg(struct stdata *, int, int, int, mblk_t **);
 int     str_kwaitwrite(struct stdata *, int);

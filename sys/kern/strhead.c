@@ -2139,6 +2139,29 @@ str_kopen(const char *name, int flags, struct cred *cr, struct vnode **vpp)
 }
 
 /*
+ * An ioctl on a stream the kernel opened: cmd, with len bytes of data
+ * (copied), answered within STRTIMOUT; the driver's error, or 0.
+ */
+int
+str_kioctl(struct stdata *sd, int cmd, const void *data, size_t len,
+    struct cred *cr)
+{
+        mblk_t *dp = NULL, *reply;
+        int error;
+
+        if (len > 0) {
+                dp = allocb_wait(len);
+                memcpy(dp->b_wptr, data, len);
+                dp->b_wptr += len;
+        }
+        if ((error = str_doioctl(sd, cmd, dp, len, STRTIMOUT, 0, cr, 0,
+            &reply)) != 0)
+                return error;
+        freemsg(reply);
+        return 0;
+}
+
+/*
  * Send mp down the stream, waiting (unless ioflag says not to) while
  * an ordinary message would not fit. mp is the stream's, or freed.
  */

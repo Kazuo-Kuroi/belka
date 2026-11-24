@@ -7,9 +7,10 @@ djbdns 1.05, by D. J. Bernstein, from https://cr.yp.to/djbdns.html
 author placed it in the public domain on 2007-12-28
 (https://cr.yp.to/distributors.html).
 
-Only what Belka builds is here: dnscache, the caching resolver, and four
-of the client tools, dnsip, dnsname, dnsq and dnsqr, with the library
-sources they are linked from. tinydns and the other servers, the -conf
+Only what Belka builds is here: dnscache, the caching resolver, and the
+client tools, dnsip, dnsipq, dnsname, dnsmx, dnstxt, dnsq, dnsqr,
+dnstrace (with dnstracesort.sh) and dnsfilter, with the library sources
+they are linked from. tinydns and the other servers, the -conf
 programs, and djbdns' own build and install are not. Belka builds the
 programs without djbdns' Makefile (see mk/userland.mk): its system
 choices are made there, by copying the variant of each header that fits
@@ -27,6 +28,13 @@ Changed for Belka:
     error.h     <errno.h> for errno, not "extern int errno" (errno is
                 thread-local in mlibc)
     prot.c      <grp.h> and <unistd.h>, for setgroups and setgid
+
+As installed, dnstracesort gives sort its keys in the -k form
+(-k1,2 -k5 -k4,4 -k3,3) for the old +0 -2 +4 +3 -4 +2 -3, which Belka's
+sort does not take; dnstracesort.sh here is as it came.
+
+Belka's host, dig and drill (usr/bin/dnstools) are shell scripts over
+dnsqr and dnsq, and xdig (usr/bin/xdig) a program over this library.
 
 dnscache runs from /etc/rc.d/dnscache, chrooted to /etc/dnscache/root
 as the user dnscache; there is no daemontools, so the script sets its

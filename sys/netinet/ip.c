@@ -37,7 +37,6 @@
 #define ETHERTYPE_ARP   0x0806
 #define IP_ETHERMTU     1500
 #define IP_LOMTU        65535
-#define IP_MAXPACKET    65535
 #define ICMP_ERRRATE    100     /* errors a second, after */
 #define ICMP_ERRBURST   100     /* errors at once */
 
@@ -768,6 +767,8 @@ ip_local(mblk_t *mp, int bcast)
                         continue;
                 if (iu->iu_proto == proto)
                         taken = 1;      /* raw (255) streams only listen */
+                if (iu->iu_deaf)
+                        continue;
                 if (!canputnext(iu->iu_rq) || (dp = dupmsg(mp)) == NULL)
                         continue;       /* full: dropped */
                 (void)putnext(iu->iu_rq, dp);
@@ -1436,6 +1437,21 @@ ip_ioctl(queue_t *q, mblk_t *mp)
                         error = EINVAL;
                 else
                         iu->iu_proto = proto;
+                break;
+        }
+        case IP_DEAF: {
+                int32_t on;
+
+                /* Anyone's, on their own stream: it only gives up. */
+                if ((data = ip_iocdata(mp, sizeof(on))) == NULL) {
+                        error = EINVAL;
+                        break;
+                }
+                memcpy(&on, data, sizeof(on));
+                if (on != 1)
+                        error = EINVAL;
+                else
+                        iu->iu_deaf = 1;
                 break;
         }
         default:

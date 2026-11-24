@@ -36,7 +36,6 @@
 #define IP_REASSMAXFRAG 64              /* fragments of one datagram */
 #define IP_REASSMAXMEM  (256 * 1024)    /* bytes held, in all */
 #define IP_TIMXCEED_REASS 1
-#define IP_MAXPACKET    65535
 
 struct ip_reass {
         struct ip_reass *rq_next;

@@ -87,9 +87,23 @@ install_prog mksh usr/bin/mksh
 install_prog tcsh usr/bin/tcsh
 # djbdns' caching resolver and its client tools (contrib/djbdns).
 install_prog dnscache usr/sbin/dnscache
-for prog in dnsip dnsname dnsq dnsqr; do
+for prog in dnsip dnsname dnsq dnsqr dnsmx dnstxt dnsipq dnstrace dnsfilter \
+    xdig; do
         install_prog $prog usr/bin/$prog
 done
+# dnstracesort, djbdns' script, with sort's keys in -k form, which
+# Belka's sort takes (it has not the old +pos -pos form).
+{ echo "#!/bin/sh"; sed "s/sort -t: +0 -2 +4 +3 -4 +2 -3/sort -t: -k1,2 -k5 -k4,4 -k3,3/" \
+    contrib/djbdns/dnstracesort.sh; } > "$src/usr/bin/dnstracesort"
+# host, dig and drill: Belka's wrappers over dnsqr (usr/bin/dnstools).
+cp usr/bin/dnstools/host.sh "$src/usr/bin/host"
+cp usr/bin/dnstools/dig.sh "$src/usr/bin/dig"
+ln "$src/usr/bin/dig" "$src/usr/bin/drill"
+# ping (NetBSD's) and traceroute (Belka's), set-user-ID root below for
+# their raw sockets; whois (NetBSD's).
+install_prog ping usr/bin/ping
+install_prog traceroute usr/bin/traceroute
+cp "$sys/whois" "$src/usr/bin/whois"
 mkdir -p "$src/usr/share/licenses/djbdns"
 cp contrib/djbdns/README.belka "$src/usr/share/licenses/djbdns/"
 # dhcpcd, NetBSD's DHCP client (contrib/dhcpcd), its state and licence.
@@ -218,6 +232,11 @@ sed -e 's/@PACKAGE_VERSION@/6.24.16/g' \
     > "$src/usr/share/man/man1/tcsh.1"
 cp usr/sbin/accounts/accounts.8 "$src/usr/share/man/man8/useradd.8"
 cp usr/sbin/netcfg/netcfg.8 "$src/usr/share/man/man8/netcfg.8"
+cp contrib/netbsd/sbin/ping/ping.8 "$src/usr/share/man/man8/ping.8"
+cp contrib/netbsd/usr.bin/whois/whois.1 usr/bin/traceroute/traceroute.1 \
+    usr/bin/xdig/xdig.1 usr/bin/dnstools/host.1 usr/bin/dnstools/dig.1 \
+    "$src/usr/share/man/man1/"
+ln "$src/usr/share/man/man1/dig.1" "$src/usr/share/man/man1/drill.1"
 for name in usermod userdel groupadd groupmod groupdel acctrecover; do
         ln "$src/usr/share/man/man8/useradd.8" "$src/usr/share/man/man8/$name.8"
 done
@@ -361,7 +380,8 @@ $FAKEROOT sh -c '
         chmod 0755 "$src"/sbin/* "$src"/usr/libexec/* \
             "$src"/usr/bin/* "$src"/usr/sbin/* "$src"/etc/rc.d/*
         chmod 4555 "$src/usr/bin/login" "$src/usr/bin/passwd" \
-            "$src/usr/bin/su" "$src/usr/bin/chsh"
+            "$src/usr/bin/su" "$src/usr/bin/chsh" \
+            "$src/usr/bin/ping" "$src/usr/bin/traceroute"
         chmod 0400 "$src/etc/shadow"
         chmod 1777 "$src/tmp" "$src/var/tmp" "$src/var/tmp/vi.recover"
         chmod 0700 "$src/adm"

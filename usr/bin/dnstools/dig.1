@@ -1,0 +1,59 @@
+.\" Copyright (c) 2026 Setsuna Software L.C.
+.\" Created: 2026-11-24
+.\" SPDX-License-Identifier: MIT
+.Dd November 24, 2026
+.Dt DIG 1
+.Os Belka
+.Sh NAME
+.Nm dig ,
+.Nm drill
+.Nd ask a DNS server, and show its answer
+.Sh SYNOPSIS
+.Nm
+.Op @ Ns Ar server
+.Op Fl t Ar type
+.Op Fl x Ar address
+.Op Ar name
+.Op Ar type
+.Op Cm +short
+.Op Cm +norecurse
+.Sh DESCRIPTION
+.Nm
+asks for the records of
+.Ar type
+(A) for
+.Ar name
+(the root, if none) and prints the reply as BIND's dig does: its
+status, and its answer, authority and additional records, names with
+their final dots.
+.Fl x
+asks for an address's PTR record.
+.Cm +short
+prints only the answers' data.
+.Cm +norecurse
+asks
+.Ar server
+without recursion, as djbdns'
+.Xr dnsq 1
+does; else the query is recursive, as
+.Xr dnsqr 1 .
+The server is the resolver
+.Pa /etc/resolv.conf
+names unless
+.Ar server ,
+an address or a name, is given.
+Other options of dig's are accepted and passed over.
+Types djbdns does not decode are shown as their number and their bytes
+(TXT and AAAA are decoded).
+.Pp
+.Nm drill
+is the same.
+Both are a shell script over djbdns, not BIND's dig or ldns' drill.
+.Sh EXIT STATUS
+0 when a reply came, whatever it said; 1 for bad arguments; 9 when no
+server answered.
+.Sh SEE ALSO
+.Xr host 1 ,
+.Xr xdig 1 ,
+.Xr dnsq 1 ,
+.Xr dnsqr 1

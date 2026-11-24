@@ -44,12 +44,15 @@
 #include <sys/vnode.h>
 
 #include <netinet/in.h>
+#include <netinet/ip.h>
+#include <sys/ipconf.h>
 
 #define TPI_REQSZ       64      /* request blocks, big enough for replies */
 #define TPI_MAXDGRAM    (65535 - 20 - 8)
 #define TPI_CHUNK       16384   /* a stream's writes, a message apiece */
 #define TPI_MAXBACKLOG  128
 #define TPI_OPTMAX      16      /* an option's value, at most */
+#define TPI_RAWBUF      65536   /* a raw socket's buffers, as reported */
 
 /* The providers, by the family, type and protocol that name them. */
 static const struct tpiproto {
@@ -62,6 +65,9 @@ static const struct tpiproto {
         { AF_INET, SOCK_STREAM, IPPROTO_TCP, "tcp" },
 };
 
+/* Raw sockets: IP's own upper streams, bound to their protocol. */
+static const struct tpiproto rawproto = { AF_INET, SOCK_RAW, 0, "ip" };
+
 struct tpisock {
         struct specattr ts_attr;        /* first, for the spec operations */
         struct vnode    ts_vnode;
@@ -69,7 +75,7 @@ struct tpisock {
         struct stdata   *ts_sd;
         struct mutex    ts_rdlock;      /* a stream's one reader */
         struct mutex    ts_lock;        /* one request at a time; below */
-        int             ts_type;        /* SOCK_DGRAM, SOCK_STREAM */
+        int             ts_type;        /* SOCK_DGRAM, SOCK_STREAM, SOCK_RAW */
         int             ts_bound;
         int             ts_conn;
         int             ts_connecting;  /* T_CONN_CON or T_DISCON_IND due */
@@ -80,6 +86,12 @@ struct tpisock {
         int             ts_wrshut;
         int             ts_soerror;     /* SO_ERROR: pending, said once */
         int             ts_broadcast;   /* SO_BROADCAST, as set */
+        int             ts_proto;       /* raw: the protocol bound */
+        int             ts_hdrincl;     /* raw: IP_HDRINCL */
+        int             ts_ttl;         /* raw: IP_TTL; 0, IP's default */
+        int             ts_tos;         /* raw: IP_TOS */
+        int             ts_rcvbuf;      /* raw: SO_RCVBUF, SO_SNDBUF, as set */
+        int             ts_sndbuf;
         struct sockaddr_in ts_local;
         struct sockaddr_in ts_peer;
 };
@@ -94,6 +106,8 @@ tpi_sock(struct vnode *vp)
 
 static int tpi_sconnect(struct tpisock *, const struct sockaddr_in *, int);
 static void tpi_tidy(struct tpisock *);
+static int tpi_rawopen(struct tpisock *, int);
+static int tpi_rawdeaf(struct tpisock *);
 
 int
 tpisock_is(const struct vnode *vp)
@@ -327,6 +341,14 @@ tpisock_bind(struct vnode *vp, uint64_t uaddr, uint64_t len)
         if ((error = tpi_addrin(uaddr, len, &sin, NULL)) != 0)
                 return error;
         mutex_lock(&ts->ts_lock);
+        if (ts->ts_type == SOCK_RAW) {
+                /* The source of the headers made here; there is no port. */
+                sin.sin_port = 0;
+                ts->ts_local = sin;
+                ts->ts_bound = 1;
+                mutex_unlock(&ts->ts_lock);
+                return 0;
+        }
         error = ts->ts_bound ? EINVAL : tpi_bind(ts, &sin, 0);
         mutex_unlock(&ts->ts_lock);
         return error;
@@ -347,6 +369,17 @@ tpisock_connect(struct file *fp, uint64_t uaddr, uint64_t len)
 
         if ((error = tpi_addrin(uaddr, len, &sin, &unspec)) != 0)
                 return error;
+        if (ts->ts_type == SOCK_RAW) {
+                /* The default destination, and the only source heard. */
+                if (!unspec && sin.sin_addr.s_addr == INADDR_ANY)
+                        sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                sin.sin_port = 0;
+                mutex_lock(&ts->ts_lock);
+                ts->ts_peer = sin;
+                ts->ts_conn = !unspec;
+                mutex_unlock(&ts->ts_lock);
+                return 0;
+        }
         if (!unspec && sin.sin_port == 0)
                 return EINVAL;
         if (sin.sin_addr.s_addr == INADDR_ANY)
@@ -888,6 +921,18 @@ tpisock_shutdown(struct vnode *vp, int how)
 
         if (how != SHUT_RD && how != SHUT_WR && how != SHUT_RDWR)
                 return EINVAL;
+        if (ts->ts_type == SOCK_RAW) {
+                /* No connection needed: each side shuts by itself. */
+                if (how != SHUT_WR && (error = tpi_rawdeaf(ts)) != 0)
+                        return error;
+                mutex_lock(&ts->ts_lock);
+                if (how != SHUT_WR)
+                        ts->ts_rdshut = 1;
+                if (how != SHUT_RD)
+                        ts->ts_wrshut = 1;
+                mutex_unlock(&ts->ts_lock);
+                return 0;
+        }
         mutex_lock(&ts->ts_lock);
         if (!ts->ts_conn && !ts->ts_connecting) {
                 error = ENOTCONN;
@@ -1049,6 +1094,210 @@ tpi_recv(struct tpisock *ts, struct uio *uio, int flags, int fflag,
         return error;
 }
 
+/* --- Raw sockets. --- */
+
+/*
+ * A raw socket is an upper stream of IP's (/dev/ip) bound to its
+ * protocol (IP_BINDPROTO): what goes down is a whole datagram, and what
+ * comes up every datagram of that protocol for this host, header and
+ * all, as the BSDs give them. IPPROTO_RAW sends any protocol and hears
+ * nothing; a shut read side hears nothing more (IP_DEAF).
+ */
+static int
+tpi_rawopen(struct tpisock *ts, int proto)
+{
+        int32_t v = proto;
+        int error;
+
+        ts->ts_proto = proto;
+        error = str_kioctl(ts->ts_sd, IP_BINDPROTO, &v, sizeof(v), CRED());
+        if (error == 0 && proto == IPPROTO_RAW) {
+                v = 1;
+                error = str_kioctl(ts->ts_sd, IP_DEAF, &v, sizeof(v), CRED());
+                ts->ts_rdshut = 1;
+        }
+        return error;
+}
+
+/* SHUT_RD: IP sends up nothing more, and what is waiting is dropped. */
+static int
+tpi_rawdeaf(struct tpisock *ts)
+{
+        int32_t on = 1;
+        mblk_t *mp;
+        int error;
+
+        if ((error = str_kioctl(ts->ts_sd, IP_DEAF, &on, sizeof(on),
+            CRED())) != 0)
+                return error;
+        while (str_kgetmsg(ts->ts_sd, 0, IO_NONBLOCK, 0, &mp) == 0 &&
+            mp != NULL)
+                freemsg(mp);
+        return 0;
+}
+
+/*
+ * A datagram to the address (if uaddr) or the peer: uio's bytes after
+ * a header made here, from the socket's TTL, TOS and address, or, with
+ * IP_HDRINCL (always, for IPPROTO_RAW), the caller's own header. IP
+ * fills in the length, identification and checksums either way, and
+ * the source if it is 0.0.0.0.
+ */
+static int
+tpi_rawsend(struct tpisock *ts, struct uio *uio, int flags, int fflag,
+    uint64_t uaddr, uint64_t len)
+{
+        size_t n = (size_t)uio->uio_resid, hlen;
+        struct sockaddr_in sin;
+        int hdrincl, error;
+        struct ip *ip;
+        mblk_t *mp;
+
+        if (uaddr != 0) {
+                if ((error = tpi_addrin(uaddr, len, &sin, NULL)) != 0)
+                        return error;
+                if (sin.sin_addr.s_addr == INADDR_ANY)
+                        sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        }
+        mutex_lock(&ts->ts_lock);
+        if (uaddr == 0)
+                sin = ts->ts_peer;
+        error = ts->ts_wrshut ? EPIPE : uaddr == 0 && !ts->ts_conn ?
+            EDESTADDRREQ : sin.sin_addr.s_addr == INADDR_BROADCAST &&
+            !ts->ts_broadcast ? EACCES : 0;
+        hdrincl = ts->ts_hdrincl || ts->ts_proto == IPPROTO_RAW;
+        mutex_unlock(&ts->ts_lock);
+        if (error != 0)
+                return error;
+        hlen = hdrincl ? 0 : IP_MINHLEN;
+        if (n > IP_MAXPACKET - hlen)
+                return EMSGSIZE;
+        if (hdrincl && n < IP_MINHLEN)
+                return EINVAL;
+        mp = allocb_wait(hlen + n);
+        ip = (struct ip *)mp->b_rptr;
+        if (!hdrincl) {
+                memset(ip, 0, IP_MINHLEN);
+                ip->ip_vhl = 0x45;
+                ip->ip_tos = (uint8_t)ts->ts_tos;
+                ip->ip_ttl = (uint8_t)ts->ts_ttl;
+                ip->ip_p = (uint8_t)ts->ts_proto;
+                ip->ip_src = ts->ts_local.sin_addr.s_addr;
+                ip->ip_dst = sin.sin_addr.s_addr;
+        }
+        if (n > 0 && (error = uiomove(mp->b_wptr + hlen, n, UIO_WRITE,
+            uio)) != 0) {
+                freemsg(mp);
+                return error;
+        }
+        mp->b_wptr += hlen + n;
+        if (hdrincl && (IP_VERSION(ip) != 4 || IP_HLEN(ip) < IP_MINHLEN ||
+            IP_HLEN(ip) > n || (ts->ts_proto != IPPROTO_RAW &&
+            ip->ip_p != ts->ts_proto))) {
+                freemsg(mp);
+                return EINVAL;
+        }
+        return str_kputmsg(ts->ts_sd, mp, tpi_ioflag(flags, fflag));
+}
+
+/* What a peek passed over, taken off the head: not the socket's. */
+static void
+tpi_rawdrop(struct tpisock *ts)
+{
+        mblk_t *mp;
+
+        if (str_kgetmsg(ts->ts_sd, 0, IO_NONBLOCK, 0, &mp) == 0)
+                freemsg(mp);
+}
+
+/*
+ * The next datagram into uio, its header and all, and its source into
+ * *from; when connected, only those from the peer. *total is its length.
+ * A shut read side, or IPPROTO_RAW, reads the end (0 bytes).
+ */
+static int
+tpi_rawrecv(struct tpisock *ts, struct uio *uio, int flags, int fflag,
+    struct sockaddr_in *from, size_t *total)
+{
+        int peek = (flags & MSG_PEEK) != 0, error;
+        mblk_t *mp;
+
+        *total = 0;
+        memset(from, 0, sizeof(*from));
+        from->sin_family = AF_INET;
+        for (;;) {
+                in_addr_t src;
+                int conn, rdshut;
+
+                mutex_lock(&ts->ts_lock);
+                conn = ts->ts_conn;
+                rdshut = ts->ts_rdshut;
+                mutex_unlock(&ts->ts_lock);
+                if (rdshut)
+                        return 0;
+                if ((error = str_kgetmsg(ts->ts_sd, 0, tpi_ioflag(flags,
+                    fflag), peek, &mp)) != 0)
+                        return error;
+                if (mp == NULL)
+                        return 0;
+                if (DB_TYPE(mp) != M_DATA || !pullupmsg(mp, IP_MINHLEN) ||
+                    (conn && ((struct ip *)mp->b_rptr)->ip_src !=
+                    ts->ts_peer.sin_addr.s_addr)) {
+                        freemsg(mp);
+                        if (peek)       /* take it off, not just look */
+                                tpi_rawdrop(ts);
+                        continue;
+                }
+                src = ((struct ip *)mp->b_rptr)->ip_src;
+                from->sin_addr.s_addr = src;
+                break;
+        }
+        error = 0;
+        for (mblk_t *bp = mp; bp != NULL; bp = bp->b_cont) {
+                size_t n = MBLKL(bp);
+
+                *total += n;
+                if (n > (size_t)uio->uio_resid)
+                        n = (size_t)uio->uio_resid;
+                if (n > 0 && error == 0)
+                        error = uiomove(bp->b_rptr, n, UIO_READ, uio);
+        }
+        freemsg(mp);                    /* the rest of it is discarded */
+        return error;
+}
+
+/* A raw socket's options: its own, at levels IPPROTO_IP and SOL_SOCKET. */
+static int *
+tpi_rawopt(struct tpisock *ts, int level, int name, int *lo, int *hi)
+{
+        *lo = 0;
+        *hi = 1;
+        if (level == IPPROTO_IP) {
+                switch (name) {
+                case IP_HDRINCL:
+                        return &ts->ts_hdrincl;
+                case IP_TTL:
+                        *hi = 255;
+                        return &ts->ts_ttl;
+                case IP_TOS:
+                        *hi = 255;
+                        return &ts->ts_tos;
+                }
+        } else if (level == SOL_SOCKET) {
+                switch (name) {
+                case SO_BROADCAST:
+                        return &ts->ts_broadcast;
+                case SO_RCVBUF:
+                        *hi = INT32_MAX;
+                        return &ts->ts_rcvbuf;
+                case SO_SNDBUF:
+                        *hi = INT32_MAX;
+                        return &ts->ts_sndbuf;
+                }
+        }
+        return NULL;
+}
+
 int
 tpisock_sendto(struct file *fp, const uint64_t *args, uint64_t *rv)
 {
@@ -1064,6 +1313,14 @@ tpisock_sendto(struct file *fp, const uint64_t *args, uint64_t *rv)
         if (iov.iov_len > INT64_MAX)
                 return EINVAL;
         uio.uio_resid = (ssize_t)iov.iov_len;
+        if (ts->ts_type == SOCK_RAW) {
+                uio_prefault(iov.iov_base, iov.iov_len, UIO_WRITE);
+                error = tpi_rawsend(ts, &uio, flags, fp->f_flag, args[4],
+                    args[5]);
+                if (error == 0)
+                        *rv = args[2];
+                return error;
+        }
         if (ts->ts_type == SOCK_STREAM) {
                 size_t done;
 
@@ -1100,6 +1357,17 @@ tpisock_recvfrom(struct file *fp, const uint64_t *args, uint64_t *rv)
                 return EINVAL;
         uio.uio_resid = (ssize_t)iov.iov_len;
         uio_prefault(iov.iov_base, iov.iov_len, UIO_READ);
+        if (ts->ts_type == SOCK_RAW) {
+                if ((error = tpi_rawrecv(ts, &uio, flags, fp->f_flag, &from,
+                    &total)) != 0)
+                        return error;
+                if (args[4] != 0)
+                        error = sockaddr_out(&from, total != 0 ?
+                            sizeof(from) : 0, args[4], args[5]);
+                *rv = (flags & MSG_TRUNC) != 0 ? total :
+                    args[2] - (uint64_t)uio.uio_resid;
+                return error;
+        }
         if (ts->ts_type == SOCK_STREAM) {
                 if ((flags & MSG_TRUNC) != 0)
                         return EOPNOTSUPP;
@@ -1265,6 +1533,24 @@ tpisock_setsockopt(struct vnode *vp, int level, int name, uint64_t uval,
         if (n > 0 && (error = copyin((const void *)(uintptr_t)uval, val,
             n)) != 0)
                 return error;
+        if (ts->ts_type == SOCK_RAW) {
+                int *opt, lo, hi;
+
+                /* IP is no TPI provider: a raw socket keeps its own. */
+                if ((opt = tpi_rawopt(ts, level, name, &lo, &hi)) == NULL)
+                        return ENOPROTOOPT;
+                if (n < sizeof(v))
+                        return EINVAL;
+                memcpy(&v, val, sizeof(v));
+                if (hi == 1)
+                        v = v != 0;
+                if (v < lo || v > hi)
+                        return EINVAL;
+                mutex_lock(&ts->ts_lock);
+                *opt = v;
+                mutex_unlock(&ts->ts_lock);
+                return 0;
+        }
         error = tpi_option(ts, T_NEGOTIATE, level, name, val, n, NULL, NULL);
         if (error == 0 && level == SOL_SOCKET && name == SO_BROADCAST &&
             n >= sizeof(v)) {
@@ -1293,6 +1579,20 @@ tpisock_getsockopt(struct vnode *vp, int level, int name, uint64_t uval,
                         tpi_tidy(ts);   /* an error waiting at the head */
                         v = tpi_takeerror(ts);
                 }
+                return sockopt_out(&v, sizeof(v), uval, ulen);
+        }
+        if (ts->ts_type == SOCK_RAW) {
+                int *opt, lo, hi;
+
+                if ((opt = tpi_rawopt(ts, level, name, &lo, &hi)) == NULL)
+                        return ENOPROTOOPT;
+                mutex_lock(&ts->ts_lock);
+                v = *opt;
+                mutex_unlock(&ts->ts_lock);
+                /* Unset, the buffers say what the stream head holds. */
+                if (v == 0 && level == SOL_SOCKET &&
+                    (name == SO_RCVBUF || name == SO_SNDBUF))
+                        v = TPI_RAWBUF;
                 return sockopt_out(&v, sizeof(v), uval, ulen);
         }
         memset(out, 0, sizeof(out));
@@ -1340,6 +1640,8 @@ tpi_read(struct vnode *vp, struct uio *uio, int ioflag,
         struct tpisock *ts = tpi_sock(vp);
         int fflag = (ioflag & IO_NONBLOCK) != 0 ? FNONBLOCK : 0;
 
+        if (ts->ts_type == SOCK_RAW)
+                return tpi_rawrecv(ts, uio, 0, fflag, &from, &total);
         if (ts->ts_type == SOCK_STREAM)
                 return tpi_srecv(ts, uio, 0, fflag);
         return tpi_recv(ts, uio, 0, fflag, &from, &hasfrom, &total);
@@ -1353,6 +1655,8 @@ tpi_write(struct vnode *vp, struct uio *uio, int ioflag,
         int fflag = (ioflag & IO_NONBLOCK) != 0 ? FNONBLOCK : 0;
         size_t done;
 
+        if (ts->ts_type == SOCK_RAW)
+                return tpi_rawsend(ts, uio, 0, fflag, 0, 0);
         if (ts->ts_type == SOCK_STREAM)
                 return tpi_ssend(ts, uio, 0, fflag, &done);
         return tpi_send(ts, uio, 0, fflag, 0, 0);
@@ -1396,6 +1700,8 @@ tpi_poll(struct vnode *vp, short events, short *revents,
                 if (ts->ts_eof && ts->ts_wrshut)
                         ready |= POLLHUP;
         }
+        if (ts->ts_type == SOCK_RAW && ts->ts_rdshut)
+                ready |= POLLIN | POLLRDNORM;   /* reads find the end */
         if (ts->ts_soerror != 0)
                 ready |= POLLERR;
         mutex_unlock(&ts->ts_lock);
@@ -1420,8 +1726,22 @@ tpisock_socket(int family, int type, int proto, int fflag, struct file **fpp)
 {
         const struct tpiproto *tp = NULL;
         struct tpisock *ts;
-        int known = 0;
+        int known = 0, error;
 
+        /* Raw: the superuser's, for any protocol IP can be bound to. */
+        if (family == AF_INET && type == SOCK_RAW) {
+                if (!CRED_ISROOT(CRED()))
+                        return EACCES;
+                if (proto <= 0 || proto > IPPROTO_RAW)
+                        return EPROTONOSUPPORT;
+                if ((error = tpi_new(&rawproto, fflag, fpp, &ts)) != 0)
+                        return error;
+                if ((error = tpi_rawopen(ts, proto)) != 0) {
+                        frele(*fpp);
+                        *fpp = NULL;
+                }
+                return error;
+        }
         for (size_t i = 0; i < sizeof(tpiprotos) / sizeof(tpiprotos[0]);
             i++) {
                 if (tpiprotos[i].tp_family != family)

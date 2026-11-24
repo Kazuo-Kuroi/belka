@@ -70,6 +70,12 @@ The paths are NetBSD's.
                                 California's advertising clause, which
                                 the University withdrew in 1999
     external/bsd/nvi/usr.bin/nvi/   NetBSD's configuration of it
+    sbin/ping/                 ping(8): ping.c, prog_ops.h, ping_hostops.c
+                                and its page; built with CRUNCHOPS (the
+                                system's calls, not rump's), without IPsec;
+                                Belka's sockaddr_in has no sin_len (two
+                                lines, marked)
+    usr.bin/whois/              whois(1)
 
 They are built over mlibc with Belka's compat library (usr/lib/compat),
 which supplies the BSD interfaces mlibc lacks; see mk/userland.mk.
@@ -78,7 +84,9 @@ marked in the file.
 
 Not imported: NetBSD's bcrypt and its helpers in libcrypt, and
 libcurses's inchstr.c and instr.c, and rcorder, which carry a
-four-clause licence with an advertising clause.
+four-clause licence with an advertising clause. Nor traceroute,
+whose Lawrence Berkeley Laboratory licence has one too (Belka has its
+own, usr/bin/traceroute).
 
 
 Additional utility port details (2026-11-17):

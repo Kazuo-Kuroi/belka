@@ -109,6 +109,11 @@ says, and `/etc/rc.d/staticroute` adds the routes in
 chrooted, as the resolver `/etc/resolv.conf` names (resolving from the
 root servers, or forwarding to the ones the leases offer), which
 `boottest` checks through fake servers of its own.
+The network tools are NetBSD's ping and whois, Belka's traceroute, djbdns'
+client tools with Belka's `host` and `dig` (and `drill`) over them, and
+`xdig`, which reports all DNS and WHOIS say of a domain; ping and
+traceroute use raw sockets (`SOCK_RAW`), the superuser's, and are
+set-user-ID root.
 Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU

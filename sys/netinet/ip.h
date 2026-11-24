@@ -33,6 +33,7 @@ struct ip {
 #define IP_OFFMASK      0x1fff
 #define IP_DEFTTL       64
 #define IP_MINHLEN      20
+#define IP_MAXPACKET    65535
 
 struct icmp {
         uint8_t         icmp_type;

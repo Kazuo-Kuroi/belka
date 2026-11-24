@@ -456,6 +456,32 @@ $(SYS_OBJ)/su/%.o: $(NB)/usr.bin/su/%.c $(NB)/usr.bin/su/suutil.h \
 $(SYS_DIR)/su: $(SU_OBJS) $(SYS_DYNDEPS)
 	$(call SYS_DYNLINK,$(SU_OBJS))
 
+# ping: NetBSD's, over a raw ICMP socket, without IPsec or rump
+# (CRUNCHOPS: the system's own calls). traceroute: Belka's own
+# (usr/bin/traceroute), NetBSD's having LBL's advertising clause. Both
+# set-user-ID root, for their raw sockets, and so linked statically.
+# whois: NetBSD's, dynamic.
+$(SYS_OBJ)/ping.o: $(NB)/sbin/ping/ping.c $(NB)/sbin/ping/prog_ops.h \
+                $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -DCRUNCHOPS -c -o $@ $<
+$(SYS_DIR)/ping: $(SYS_OBJ)/ping.o $(SYS_DEPS)
+	$(call SYS_LINK,$(SYS_OBJ)/ping.o)
+$(SYS_OBJ)/traceroute.o: usr/bin/traceroute/traceroute.c $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -c -o $@ $<
+$(SYS_DIR)/traceroute: $(SYS_OBJ)/traceroute.o $(SYS_DEPS)
+	$(call SYS_LINK,$(SYS_OBJ)/traceroute.o)
+$(SYS_OBJ)/whois.o: $(NB)/usr.bin/whois/whois.c $(COMPAT_HDRS) $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(IMPORT_CFLAGS) -c -o $@ $<
+$(SYS_DIR)/whois: $(SYS_OBJ)/whois.o $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(SYS_OBJ)/whois.o)
+
+net-progs: $(SYS_DIR)/ping $(SYS_DIR)/traceroute $(SYS_DIR)/whois
+
+.PHONY: net-progs
+
 # sed, grep and awk: NetBSD's, linked dynamically. grep has no gzip,
 # bzip2 or message catalogues; egrep and fgrep are links to it. awk is
 # the One True AWK, with the parser its dist ships (ytab.c, proctab.c),
@@ -922,7 +948,8 @@ $(SYS_DIR)/ps: $(SYS_OBJ)/ps.o $(MLIBC_SHARED) $(PROGRAM_BEGIN) $(PROGRAM_END) \
 # programs' main files goes in one library. Dynamic, like the utilities.
 DJB             := contrib/djbdns
 DJB_OBJ         := $(SYS_OBJ)/djbdns
-DJB_MAINS       := dnscache dnsip dnsname dnsq dnsqr
+DJB_MAINS       := dnscache dnsip dnsname dnsq dnsqr dnsmx dnstxt dnsipq \
+                   dnstrace dnsfilter
 DJB_LIBSRCS     := $(filter-out $(DJB_MAINS),$(basename $(notdir \
                    $(wildcard $(DJB)/*.c))))
 DJB_GEN         := $(addprefix $(DJB_OBJ)/,uint32.h uint64.h iopause.h \
@@ -956,7 +983,15 @@ $(DJB_LIB): $(patsubst %,$(DJB_OBJ)/%.o,$(DJB_LIBSRCS))
 $(DJB_PROGS): $(SYS_DIR)/%: $(DJB_OBJ)/%.o $(DJB_LIB) $(SYS_DYNDEPS)
 	$(call SYS_DYNLINK,$< $(DJB_LIB))
 
-dns-progs: $(DJB_PROGS)
+# xdig: Belka's (usr/bin/xdig), over djbdns' DNS library.
+$(SYS_OBJ)/xdig.o: usr/bin/xdig/xdig.c $(DJB_GEN) $(wildcard $(DJB)/*.h) \
+                $(MLIBC)
+	@mkdir -p $(dir $@)
+	$(LIBC_CC) $(OWN_CFLAGS) -I$(DJB_OBJ) -I$(DJB) -c -o $@ $<
+$(SYS_DIR)/xdig: $(SYS_OBJ)/xdig.o $(DJB_LIB) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(SYS_OBJ)/xdig.o $(DJB_LIB))
+
+dns-progs: $(DJB_PROGS) $(SYS_DIR)/xdig
 
 .PHONY: dns-progs
 
@@ -1018,6 +1053,8 @@ ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    build/native-libc-sdk/*.stamp build/native-object-sdk/*.stamp \
                    build/native-gcc-source-sdk/*.stamp) $(SYS_PROGS) $(SYS_DIR)/ps $(DJB_PROGS) $(SYS_DIR)/dhcpcd \
+                   $(SYS_DIR)/ping $(SYS_DIR)/traceroute $(SYS_DIR)/whois \
+                   $(SYS_DIR)/xdig \
                    $(TERM_PROGS) $(XN_BINS) \
 	           $(SYS_DIR)/sdk.stamp usr/share/mk/sys.mk usr/bin/ranlib/ranlib.sh \
                    contrib/mlibc/LICENSE \
@@ -1050,6 +1087,10 @@ ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    contrib/dhcpcd/LICENSE contrib/dhcpcd/README.belka \
                    contrib/dhcpcd/src/dhcpcd.8 contrib/dhcpcd/src/dhcpcd.conf.5 \
                    usr/sbin/dhcpcd/dhcpcd-run-hooks \
+                   contrib/djbdns/dnstracesort.sh contrib/netbsd/sbin/ping/ping.8 \
+                   contrib/netbsd/usr.bin/whois/whois.1 usr/bin/traceroute/traceroute.1 \
+                   usr/bin/xdig/xdig.1 usr/bin/dnstools/host.1 usr/bin/dnstools/dig.1 \
+                   usr/bin/dnstools/host.sh usr/bin/dnstools/dig.sh \
                    contrib/zlib/README usr/bin/chsh/chsh.1 usr/sbin/accounts/accounts.8 \
                    usr/sbin/netcfg/netcfg.8) \
                    $(wildcard etc/* etc/defaults/* etc/rc.d/* etc/routed/* etc/dnscache/* etc/dnscache/root/*/* \

@@ -161,6 +161,24 @@ mode_t getmode(const void *, mode_t);
         ((a)->tv_sec == (b)->tv_sec ? (a)->tv_nsec op (b)->tv_nsec : \
         (a)->tv_sec op (b)->tv_sec)
 #endif
+#ifndef timespecadd
+#define timespecadd(a, b, r) do {                                       \
+        (r)->tv_sec = (a)->tv_sec + (b)->tv_sec;                        \
+        (r)->tv_nsec = (a)->tv_nsec + (b)->tv_nsec;                     \
+        if ((r)->tv_nsec >= 1000000000L) {                              \
+                (r)->tv_sec++;                                          \
+                (r)->tv_nsec -= 1000000000L;                            \
+        }                                                               \
+} while (0)
+#define timespecsub(a, b, r) do {                                       \
+        (r)->tv_sec = (a)->tv_sec - (b)->tv_sec;                        \
+        (r)->tv_nsec = (a)->tv_nsec - (b)->tv_nsec;                     \
+        if ((r)->tv_nsec < 0) {                                         \
+                (r)->tv_sec--;                                          \
+                (r)->tv_nsec += 1000000000L;                            \
+        }                                                               \
+} while (0)
+#endif
 
 /*
  * <sys/statvfs.h>: NetBSD's names for System V's fields and flags.
@@ -176,6 +194,9 @@ mode_t getmode(const void *, mode_t);
  * refuses 0, so a handler for it is never installed. */
 #ifndef SIGINFO
 #define SIGINFO         0
+#endif
+#ifndef SA_NOKERNINFO
+#define SA_NOKERNINFO   0       /* nor the kernel's own line for it */
 #endif
 
 /* <util.h>: a written date (parsedate.c, a small subset of NetBSD's). */

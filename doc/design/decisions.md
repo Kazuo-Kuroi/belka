@@ -3208,3 +3208,64 @@ says what moved and what is still to do:
   `/var/run` tmpfs, and nologin; `test-console` checks root's PATH and
   that its login starts in `/adm`; `utiltest` that `useradd -m` makes
   the home in `/usr/people`.
+
+## Raw sockets, and the network tools (2026-11-24)
+
+- **Raw sockets:** `socket(AF_INET, SOCK_RAW, proto)`, the superuser's
+  (`EACCES` otherwise), for any protocol 1 to 255. One is an upper
+  stream of IP's (`/dev/ip`) bound to its protocol (`IP_BINDPROTO`,
+  issued from the kernel by the new `str_kioctl`), in `sock_tpi.c`
+  beside the TPI sockets. A send is a whole datagram: a header made
+  from the socket's `IP_TTL` (0: IP's default), `IP_TOS` and bound
+  address, or with `IP_HDRINCL` (always, for `IPPROTO_RAW`) the
+  caller's own, whose protocol must be the socket's unless it is
+  `IPPROTO_RAW`. IP fills in the length, identification and checksums,
+  UDP's and TCP's included, and the source if it is 0.0.0.0. A receive
+  is every datagram of the protocol for this host, header and all, its
+  source from the header; `connect` gives a default destination and
+  hears only that source; `bind` gives the source of the headers made.
+  `IPPROTO_RAW` sockets, and any after `shutdown(SHUT_RD)`, hear
+  nothing: IP's new `IP_DEAF` ioctl stops a stream's deliveries.
+  `SO_BROADCAST`, `SO_RCVBUF` and `SO_SNDBUF` are kept, the others not
+  offered (`ENOPROTOOPT`). `IP_TOS`, `IP_TTL`, `IP_HDRINCL` and
+  `SOCK_RAW` take Linux's numbers, as mlibc has them; abicheck checks
+  them, `IP_DEAF`, `IPPROTO_ICMP` and `IPPROTO_RAW`.
+- **ping** is NetBSD's (`contrib/netbsd/sbin/ping`), in `/usr/bin`,
+  set-user-ID root and linked statically. Its BSD ICMP names, `n_long`,
+  `IP_MAXPACKET`, `MAXTTL`, `timespecadd` and `SA_NOKERNINFO` come from
+  the compat headers (`usr/lib/compat/include/netinet`, `compat.h`),
+  over mlibc's with `#include_next`.
+- **traceroute** is Belka's own (`usr/bin/traceroute`, MIT), as
+  NetBSD's, and its `ifaddrlist.c`, have Lawrence Berkeley Laboratory's
+  advertising clause. UDP probes to rising ports, or ICMP echo requests
+  (`-I`), go out on an `IPPROTO_RAW` socket with their own TTL; the
+  answers come on a raw ICMP socket, and only those quoting one of our
+  probes count. Set-user-ID root, it gives that up once both sockets are
+  open.
+- **whois** is NetBSD's (`contrib/netbsd/usr.bin/whois`), with its own
+  default servers.
+- **DNS tools:** djbdns' dnsmx, dnstxt, dnsipq, dnstrace (with
+  dnstracesort) and dnsfilter join dnsip, dnsname, dnsq and dnsqr.
+  `host`, `dig` and `drill` (one script) are Belka's shell scripts over
+  `dnsqr` (and `dnsq` for `+norecurse`), with the common forms of BIND's
+  host and dig and their output's layout; not BIND's, nor ldns'.
+- **xdig** (`usr/bin/xdig`) is the C form of the user's 2011 script,
+  over djbdns' library: the domain's level, root domain and zone; a
+  quick WHOIS from whois.iana.org along its referrals; the zone's
+  records asked for type by type (servers no longer answer `ANY`); what
+  Google's, Cloudflare's and Quad9's resolvers have, with the zone's
+  serial at each; and where web and mail go, with PTRs and the owners
+  of the addresses. `-W` and `-P` leave out WHOIS and the public
+  resolvers, which are on the Internet.
+- **Scripts:** Belka's kernel runs no `#!` scripts, so `host` and `dig`
+  are run by a shell, as the shells and `execvp` do for a file the
+  kernel refuses.
+- **Testing:** `udptest` checks raw sockets (an echo to the loopback
+  and its reply, header and all; the options; a UDP datagram with our
+  own header taken by a UDP socket; `IPPROTO_RAW` and a shut read side
+  hearing nothing; an ordinary user refused). `boottest` runs ping and
+  traceroute (UDP and ICMP) to the loopback and ping to QEMU's gateway,
+  as root and as an ordinary user, whois against a server of its own,
+  and host, dig, drill, the djbdns tools and `xdig -W -P` against its
+  fake root, which now answers test.belka's A, MX and SOA, and no data
+  (not NXDOMAIN) for its other types.

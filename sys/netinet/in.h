@@ -38,6 +38,11 @@ struct sockaddr_in {
 #define IPPROTO_UDP     17
 #define IPPROTO_RAW     255
 
+/* Options, at level IPPROTO_IP (numbered as Linux numbers them). */
+#define IP_TOS          1
+#define IP_TTL          2
+#define IP_HDRINCL      3       /* raw sockets: the caller writes the header */
+
 static inline uint16_t
 in_bswap16(uint16_t x)
 {

@@ -28,6 +28,7 @@
 #include <sys/ipconf.h>
 #include <sys/socket.h>
 #include <sys/tihdr.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int failures;
@@ -167,6 +168,112 @@ through(int w, int r, uint16_t port, int count)
             (ssize_t)sizeof(dg))
                 got++;
         return got;
+}
+
+/* The Internet checksum of len bytes. */
+static uint16_t
+cksum(const void *buf, size_t len)
+{
+        const uint8_t *p = buf;
+        uint32_t sum = 0;
+
+        for (; len > 1; p += 2, len -= 2)
+                sum += (uint32_t)(p[0] << 8 | p[1]);
+        if (len == 1)
+                sum += (uint32_t)(p[0] << 8);
+        while (sum >> 16)
+                sum = (sum & 0xffff) + (sum >> 16);
+        return htons((uint16_t)~sum);
+}
+
+/*
+ * Raw sockets: an echo request to the loopback over IPPROTO_ICMP, and
+ * its reply, header and all, from 127.0.0.1; their options; a UDP
+ * datagram whose header we write (IPPROTO_RAW), which a UDP socket
+ * takes, so IP made its checksum; IPPROTO_RAW and a shut read side
+ * hearing nothing; and an ordinary user refused one.
+ */
+static void
+test_raw(void)
+{
+        uint8_t req[16] = { 8, 0, 0, 0, 0x12, 0x34, 0, 1, 'b', 'e', 'l', 'k',
+            'a', 'r', 'a', 'w' }, buf[512], dg[20 + 8 + 3];
+        struct sockaddr_in from, to = sin_of(LOOPBACK, 0);
+        socklen_t len, flen;
+        int ic, rw, u, v, ok = 0, status = -1;
+        uint16_t sum;
+        pid_t pid;
+
+        ic = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+        CHECK(ic >= 0);
+        len = sizeof(v);
+        CHECK(getsockopt(ic, SOL_SOCKET, SO_TYPE, &v, &len) == 0 &&
+            v == SOCK_RAW);
+        v = 7;
+        CHECK(setsockopt(ic, IPPROTO_IP, IP_TTL, &v, sizeof(v)) == 0);
+        v = 0;
+        len = sizeof(v);
+        CHECK(getsockopt(ic, IPPROTO_IP, IP_TTL, &v, &len) == 0 && v == 7);
+        v = 300;
+        CHECK(setsockopt(ic, IPPROTO_IP, IP_TTL, &v, sizeof(v)) == -1 &&
+            errno == EINVAL);
+        v = 64;
+        CHECK(setsockopt(ic, IPPROTO_IP, IP_TTL, &v, sizeof(v)) == 0);
+
+        sum = cksum(req, sizeof(req));
+        memcpy(req + 2, &sum, 2);
+        CHECK(sendto(ic, req, sizeof(req), 0, (struct sockaddr *)&to,
+            sizeof(to)) == (ssize_t)sizeof(req));
+        /* Our own request comes by too, on the loopback: pass it over. */
+        for (int i = 0; i < 4 && !ok && readable(ic, 2000); i++) {
+                ssize_t n;
+
+                flen = sizeof(from);
+                n = recvfrom(ic, buf, sizeof(buf), 0,
+                    (struct sockaddr *)&from, &flen);
+                ok = n == 20 + (ssize_t)sizeof(req) && buf[0] == 0x45 &&
+                    buf[9] == IPPROTO_ICMP && buf[20] == 0 &&
+                    memcmp(buf + 24, req + 4, sizeof(req) - 4) == 0 &&
+                    from.sin_addr.s_addr == htonl(LOOPBACK);
+        }
+        CHECK(ok);
+
+        u = udp_socket();
+        CHECK(u >= 0 && bind_to(u, LOOPBACK, 5300) == 0);
+        rw = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+        CHECK(rw >= 0);
+        memset(dg, 0, sizeof(dg));
+        dg[0] = 0x45;
+        dg[8] = 64;
+        dg[9] = IPPROTO_UDP;
+        memcpy(dg + 16, &to.sin_addr.s_addr, 4);
+        dg[20] = 5300 >> 8;             /* from port 5300 too */
+        dg[21] = 5300 & 0xff;
+        dg[22] = 5300 >> 8;
+        dg[23] = 5300 & 0xff;
+        dg[25] = 8 + 3;
+        memcpy(dg + 28, "raw", 3);
+        CHECK(sendto(rw, dg, sizeof(dg), 0, (struct sockaddr *)&to,
+            sizeof(to)) == (ssize_t)sizeof(dg));
+        CHECK(readable(u, 2000) && recv(u, buf, sizeof(buf), 0) == 3 &&
+            memcmp(buf, "raw", 3) == 0);
+        CHECK(recv(rw, buf, sizeof(buf), MSG_DONTWAIT) == 0);
+        CHECK(sendto(rw, dg, 10, 0, (struct sockaddr *)&to, sizeof(to)) ==
+            -1 && errno == EINVAL);
+
+        CHECK(shutdown(ic, SHUT_RD) == 0);
+        CHECK(sendto(ic, req, sizeof(req), 0, (struct sockaddr *)&to,
+            sizeof(to)) == (ssize_t)sizeof(req));
+        CHECK(recv(ic, buf, sizeof(buf), 0) == 0);
+
+        if ((pid = fork()) == 0)
+                _exit(setuid(100) == 0 && socket(AF_INET, SOCK_RAW,
+                    IPPROTO_ICMP) == -1 && errno == EACCES ? 0 : 1);
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        close(u);
+        close(rw);
+        close(ic);
 }
 
 /* SO_REUSEADDR, SO_BROADCAST, SO_RCVBUF and SO_SNDBUF; and the socket's. */
@@ -387,6 +494,7 @@ main(void)
         close(raw);
 
         test_options();
+        test_raw();
 
         /* Unlinked: datagrams go nowhere. */
         CHECK(ioctl(ctl, I_PUNLINK, MUXID_ALL) == 0);
