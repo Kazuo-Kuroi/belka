@@ -24,6 +24,7 @@
 #include <sys/errno.h>
 #include <sys/random.h>
 #include <sys/spinlock.h>
+#include <sys/sysent.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
 
@@ -319,4 +320,25 @@ rnd_selftest(void)
                     (uint32_t)(4 * i + 2) << 16 | (uint32_t)(4 * i + 3) << 24;
         chacha_block(key, 1 | (uint64_t)0x09000000 << 32, 0x4a000000, out);
         return memcmp(out, want, sizeof(want)) == 0;
+}
+
+/*
+ * getentropy(void *buf, size_t len), Belka's 255, as OpenBSD has it: len
+ * bytes (256 at most) of random numbers into buf. It needs no file, so
+ * it works where /dev/urandom cannot be opened (a chroot, no
+ * descriptors left), and it never blocks or fails for want of entropy.
+ */
+int
+sys_getentropy(const uint64_t *args, uint64_t *rv __unused)
+{
+        uint8_t buf[GETENTROPY_MAX];
+        size_t len = (size_t)args[1];
+        int error;
+
+        if (len > sizeof(buf))
+                return EINVAL;
+        rnd_get(buf, len);
+        error = copyout(buf, (void *)(uintptr_t)args[0], len);
+        rnd_zero(buf, len);
+        return error;
 }

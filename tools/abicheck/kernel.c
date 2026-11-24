@@ -19,6 +19,7 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
+#include <sys/random.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>

@@ -175,7 +175,8 @@
 #define SYS_shutdown    252
 #define SYS_setsockopt  253
 #define SYS_getsockopt  254
+#define SYS_getentropy  255     /* as OpenBSD's */
 
-#define NSYSCALL        255     /* table size: UnixWare's 210, and Belka's */
+#define NSYSCALL        256     /* table size: UnixWare's 210, and Belka's */
 
 #endif /* _SYS_SYSCALL_H_ */

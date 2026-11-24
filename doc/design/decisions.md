@@ -2953,7 +2953,8 @@ heap bookkeeping with address-space-owned heap state.
   source.
 - **`/dev/random` and `/dev/urandom`** (devfs, the memory devices'
   major, minors 8 and 9, mode 0666) both read it and both add to it
-  when written. `getentropy` is POSIX 2024's and is not offered yet.
+  when written. `getentropy` is POSIX 2024's and is not offered yet
+  (superseded: see [getentropy](#getentropy-2026-11-23)).
 - **`rnd_lock`** is a spin lock (interrupts add to the pool); keystream
   is made under it 256 bytes at a time, and copied out without it.
 - **Testing:** the device self-test checks the block function against
@@ -3020,3 +3021,23 @@ heap bookkeeping with address-space-owned heap state.
   dnscache answers itself, is 127.0.0.1. `boottest` also checks that a
   chrooted process sees only its root, and that an ordinary user may
   not chroot.
+
+## getentropy (2026-11-23)
+
+Supersedes the note under [Random numbers](#random-numbers-2026-11-23)
+that `getentropy` is not offered.
+
+- **`getentropy(buf, len)`** (POSIX 2024, approved for Belka) is a
+  system call, Belka's 255 (`SYS_getentropy`; `NSYSCALL` is now 256),
+  as OpenBSD made it rather than a read of `/dev/urandom`: it needs no
+  file, so it works in a chroot without `/dev` and with every
+  descriptor in use. It fills `buf` from the kernel generator
+  (`rnd_get`), at most `GETENTROPY_MAX` (256) bytes, else `EINVAL`; a
+  bad buffer is `EFAULT`. It never blocks: the generator is seeded
+  before the first process runs.
+- **mlibc** already had `getentropy` in `<unistd.h>` and
+  `GETENTROPY_MAX` in `<limits.h>`; Belka's sysdeps add `GetEntropy`.
+  `abicheck` checks `GETENTROPY_MAX` against `<sys/random.h>`.
+- **Testing:** `boottest`, inside a chroot with no `/dev`: two 256-byte
+  draws differ, 257 bytes is `EINVAL`, a bad pointer `EFAULT`, zero
+  bytes succeeds.

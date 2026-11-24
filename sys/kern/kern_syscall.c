@@ -188,6 +188,7 @@ static sy_call_t *const sysent[NSYSCALL] = {
         [SYS_shutdown] = sys_shutdown,
         [SYS_setsockopt] = sys_setsockopt,
         [SYS_getsockopt] = sys_getsockopt,
+        [SYS_getentropy] = sys_getentropy,
         [SYS_exit] = sys_exit,
         [SYS_fork] = sys_fork,
         [SYS_read] = sys_read,

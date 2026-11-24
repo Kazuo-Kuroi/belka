@@ -489,6 +489,9 @@ CONST(MAP_PRIVATE)
 CONST(MAP_FIXED)
 CONST(MAP_ANON)
 
+/* getentropy() (<limits.h>). */
+CONST(GETENTROPY_MAX)
+
 /* uname(). */
 SIZE(struct utsname, struct utsname)
 OFF(struct utsname, nodename, struct utsname, nodename)

@@ -36,6 +36,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -976,6 +977,8 @@ test_dns(void)
 /*
  * chroot(2), in a child: refused to an ordinary user; for root, "/" is
  * then the new root, ".." stops there, and what is outside is gone.
+ * getentropy(), which needs no /dev, still works there: 256 bytes and
+ * no more, different each time.
  */
 static void
 test_chroot(void)
@@ -984,6 +987,7 @@ test_chroot(void)
         pid_t pid;
 
         if ((pid = fork()) == 0) {
+                static unsigned char a[GETENTROPY_MAX], b[GETENTROPY_MAX];
                 struct stat st;
                 int bad = 0;
 
@@ -993,6 +997,13 @@ test_chroot(void)
                 bad |= stat("/../../servers/@", &st) != 0;
                 bad |= stat("/etc/passwd", &st) == 0 || errno != ENOENT;
                 bad |= chdir("..") != 0 || stat("ip/127", &st) != 0;
+                bad |= getentropy(a, sizeof(a)) != 0 ||
+                    getentropy(b, sizeof(b)) != 0 ||
+                    memcmp(a, b, sizeof(a)) == 0;
+                bad |= getentropy(a, GETENTROPY_MAX + 1) != -1 ||
+                    errno != EINVAL;
+                bad |= getentropy((void *)8, 16) != -1 || errno != EFAULT;
+                bad |= getentropy(a, 0) != 0;
                 if (setuid(100) != 0 || chroot("/ip") == 0 || errno != EPERM)
                         bad = 1;
                 _exit(bad ? 2 : 0);

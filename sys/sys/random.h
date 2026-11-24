@@ -9,6 +9,8 @@
 #ifndef _SYS_RANDOM_H_
 #define _SYS_RANDOM_H_
 
+#define GETENTROPY_MAX  256     /* getentropy()'s most, as <limits.h> */
+
 #ifdef _KERNEL
 
 #include <stddef.h>

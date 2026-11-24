@@ -71,5 +71,7 @@ sy_call_t sys_getgid, sys_getgroups, sys_setgroups;
 /* kern_sproc.c */
 sy_call_t sys_sproc, sys_sprocsp, sys_prctl, sys_procblk;
 sy_call_t sys_getmsg, sys_putmsg, sys_getpmsg, sys_putpmsg;
+/* kern_random.c */
+sy_call_t sys_getentropy;
 
 #endif /* _SYS_SYSENT_H_ */
