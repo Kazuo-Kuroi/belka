@@ -18,6 +18,7 @@
 #define MSG_PEEK        0x0002
 #define MSG_TRUNC       0x0020
 #define MSG_DONTWAIT    0x0040
+#define MSG_WAITALL     0x0100
 #define MSG_NOSIGNAL    0x4000
 #define SHUT_RD         0
 #define SHUT_WR         1
@@ -33,6 +34,7 @@
 #define SO_RCVBUF       8
 #define SO_KEEPALIVE    9
 #define SO_LINGER       13
+#define SO_PEERCRED     17      /* struct ucred: a local socket's peer */
 #define SO_ACCEPTCONN   30
 
 #include <stdint.h>
@@ -45,6 +47,13 @@ struct sockaddr_un {
 struct linger {
         int             l_onoff;
         int             l_linger;       /* seconds */
+};
+
+/* SO_PEERCRED's answer: who the peer was when it connected or listened. */
+struct ucred {
+        int32_t         pid;
+        uint32_t        uid;            /* effective */
+        uint32_t        gid;
 };
 
 #ifdef _KERNEL

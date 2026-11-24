@@ -52,6 +52,7 @@
 #include <sys/ipconf.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -873,11 +874,12 @@ fake_root(int fd, int ms)
 }
 
 /*
- * The output of prog with arg into out (size bytes, terminated), and
- * whether it exited 0.
+ * The output of prog with arg and arg2 (NULL: none) into out (size
+ * bytes, terminated), and whether it exited 0.
  */
 static int
-run_out(const char *prog, const char *arg, char *out, size_t size)
+run_out2(const char *prog, const char *arg, const char *arg2, char *out,
+    size_t size)
 {
         int p[2], status = -1;
         ssize_t n, got = 0;
@@ -889,7 +891,7 @@ run_out(const char *prog, const char *arg, char *out, size_t size)
                 dup2(p[1], 1);
                 close(p[0]);
                 close(p[1]);
-                execl(prog, prog, arg, (char *)NULL);
+                execl(prog, prog, arg, arg2, (char *)NULL);
                 _exit(127);
         }
         close(p[1]);
@@ -900,6 +902,12 @@ run_out(const char *prog, const char *arg, char *out, size_t size)
         close(p[0]);
         return pid > 0 && waitpid(pid, &status, 0) == pid &&
             WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static int
+run_out(const char *prog, const char *arg, char *out, size_t size)
+{
+        return run_out2(prog, arg, NULL, out, size);
 }
 
 /*
@@ -974,6 +982,141 @@ test_dns(void)
         }
 }
 
+/* vionet0's address (0: none), and whether a default route is by gw. */
+static in_addr_t
+vionet0_addr(int ipfd, in_addr_t gw, int *routed)
+{
+        struct ip_ifinfo ifs[8];
+        struct ip_route rts[16];
+        in_addr_t addr = 0;
+        int n;
+
+        n = ipstr(ipfd, IP_IFLIST, ifs, sizeof(ifs));
+        for (int i = 0; i < n && i < 8; i++)
+                if (strcmp(ifs[i].ii_name, "vionet0") == 0)
+                        addr = ifs[i].ii_addr;
+        *routed = 0;
+        n = ipstr(ipfd, IP_ROUTELIST, rts, sizeof(rts));
+        for (int i = 0; i < n && i < 16; i++)
+                if (rts[i].rt_dst == 0 && rts[i].rt_mask == 0 &&
+                    rts[i].rt_gateway == gw)
+                        *routed = 1;
+        return addr;
+}
+
+/*
+ * The lease (/etc/rc.d/dhcpcd, from QEMU's DHCP server; test_network
+ * found its address and route): dhcpcd is running and has kept it; its
+ * control socket dumps it (-U); a release (-k) takes the address and
+ * every route by vionet0 away (IP_IFADDR with address 0), and a rebind
+ * (-n) brings them back.
+ */
+static void
+test_dhcp(void)
+{
+        char out[2048], buf[16];
+        struct stat st;
+        int ipfd, fd, routed, ok = 0;
+        ssize_t n;
+        pid_t pid = 0;
+
+        CHECK((fd = open("/var/run/dhcpcd/pid", O_RDONLY)) >= 0);
+        if (fd >= 0) {
+                if ((n = read(fd, buf, sizeof(buf) - 1)) > 0) {
+                        buf[n] = '\0';
+                        pid = (pid_t)strtol(buf, NULL, 10);
+                }
+                close(fd);
+        }
+        CHECK(pid > 1 && kill(pid, 0) == 0);
+        CHECK(stat("/var/db/dhcpcd/vionet0.lease", &st) == 0 &&
+            st.st_size > 0);
+        CHECK(stat("/var/db/dhcpcd/duid", &st) == 0);
+        CHECK(run_out2("/sbin/dhcpcd", "-U", "vionet0", out, sizeof(out)) &&
+            strstr(out, "ip_address=10.0.2.15") != NULL &&
+            strstr(out, "routers=10.0.2.2") != NULL);
+
+        ipfd = open("/dev/ip", O_RDWR);
+        CHECK(ipfd >= 0);
+        CHECK(run_out2("/sbin/dhcpcd", "-k", "vionet0", out, sizeof(out)));
+        for (int i = 0; i < 50 && !ok; i++) {
+                ok = vionet0_addr(ipfd, inet4(10, 0, 2, 2), &routed) == 0 &&
+                    !routed;
+                if (!ok)
+                        usleep(100000);
+        }
+        CHECK(ok);
+        CHECK(run_out2("/sbin/dhcpcd", "-n", "vionet0", out, sizeof(out)));
+        ok = 0;
+        for (int i = 0; i < 150 && !ok; i++) {
+                ok = vionet0_addr(ipfd, inet4(10, 0, 2, 2), &routed) ==
+                    inet4(10, 0, 2, 15) && routed;
+                if (!ok)
+                        usleep(100000);
+        }
+        CHECK(ok);
+        CHECK(ok && ping(inet4(10, 0, 2, 2), 3000));
+        if (ipfd >= 0)
+                close(ipfd);
+}
+
+/*
+ * SO_PEERCRED on local stream sockets: a pair gives its maker; across
+ * a connection, each end gives the other's process and user, the
+ * client the listener's from listen() and the server the client's
+ * from connect(); a socket not connected has none.
+ */
+static void
+test_peercred(void)
+{
+        struct sockaddr_un sun = { .sun_family = AF_UNIX };
+        struct ucred uc;
+        socklen_t len = sizeof(uc);
+        int sv[2], l, a, status = -1;
+        pid_t pid;
+
+        CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+        CHECK(getsockopt(sv[0], SOL_SOCKET, SO_PEERCRED, &uc, &len) == 0 &&
+            len == sizeof(uc) && uc.pid == getpid() && uc.uid == geteuid() &&
+            uc.gid == getegid());
+        close(sv[0]);
+        close(sv[1]);
+
+        snprintf(sun.sun_path, sizeof(sun.sun_path), "/tmp/peercred-%d",
+            (int)getpid());
+        unlink(sun.sun_path);
+        l = socket(AF_UNIX, SOCK_STREAM, 0);
+        len = sizeof(uc);
+        CHECK(l >= 0 && getsockopt(l, SOL_SOCKET, SO_PEERCRED, &uc,
+            &len) == -1 && errno == ENOTCONN);
+        CHECK(bind(l, (struct sockaddr *)&sun, sizeof(sun)) == 0 &&
+            chmod(sun.sun_path, 0666) == 0 && listen(l, 1) == 0);
+        if ((pid = fork()) == 0) {
+                int c = -1, bad;
+
+                if (setgid(100) != 0 || setuid(100) != 0 ||
+                    (c = socket(AF_UNIX, SOCK_STREAM, 0)) < 0 ||
+                    connect(c, (struct sockaddr *)&sun, sizeof(sun)) != 0)
+                        _exit(1);
+                len = sizeof(uc);
+                bad = getsockopt(c, SOL_SOCKET, SO_PEERCRED, &uc, &len) != 0 ||
+                    uc.pid != getppid() || uc.uid != 0 || uc.gid != 0;
+                (void)write(c, "x", 1);
+                _exit(bad ? 2 : 0);
+        }
+        a = accept(l, NULL, NULL);
+        len = sizeof(uc);
+        CHECK(a >= 0 && getsockopt(a, SOL_SOCKET, SO_PEERCRED, &uc,
+            &len) == 0 && uc.pid == pid && uc.uid == 100 && uc.gid == 100);
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        if (a >= 0)
+                close(a);
+        if (l >= 0)
+                close(l);
+        unlink(sun.sun_path);
+}
+
 /*
  * chroot(2), in a child: refused to an ordinary user; for root, "/" is
  * then the new root, ".." stops there, and what is outside is gone.
@@ -1026,6 +1169,8 @@ main(int argc, char **argv)
         test_utilities();
         test_xn_suite();
         test_network();
+        test_dhcp();
+        test_peercred();
         test_dns();
         test_chroot();
         test_login(argv[1], argv[2], argv[3], argv[4]);

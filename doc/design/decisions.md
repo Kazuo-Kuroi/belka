@@ -1877,7 +1877,8 @@ The real-time option is superseded by [Real-time signals](#real-time-signals-202
   identities prevent an old registration from signaling a recycled ID.
 - This local transport uses Belka's existing socket ABI constants.
   Named sockets, STREAMS TPI providers, ancillary messages and
-  `SO_OOBINLINE` remain to be added.
+  `SO_OOBINLINE` remain to be added. (`sendmsg` and `recvmsg`, without
+  ancillary data: see [DHCP](#dhcp-2026-11-23).)
 - [POSIX.1-2001 socket behavior](https://www.gaertner.de/~neitzel/susv3/functions/xsh_chap02_10.html),
   [descriptor ownership](https://www.gaertner.de/~neitzel/susv3/basedefs/fcntl.h.html),
   and [socketpair](https://www.gaertner.de/~neitzel/susv3/functions/socketpair.html).
@@ -2691,7 +2692,8 @@ heap bookkeeping with address-space-owned heap state.
   always (with `network=YES`, the default), then each interface in
   `net_interfaces` whose device exists, with its `ifaddr_<name>`, and
   the default route through `defaultroute`. A missing device is passed
-  over, a failure is an error. There is no DHCP client: the shipped
+  over, a failure is an error. There is no DHCP client (superseded: see
+  [DHCP](#dhcp-2026-11-23)): the shipped
   `/etc/rc.conf` sets up QEMU's user-mode network (`vionet0`,
   10.0.2.15/24, gateway 10.0.2.2), and the normal and test boots now
   have the virtio-net device (`QEMU_ROOT_FLAGS`). The kernel self-test
@@ -3041,3 +3043,60 @@ that `getentropy` is not offered.
 - **Testing:** `boottest`, inside a chroot with no `/dev`: two 256-byte
   draws differ, 257 bytes is `EINVAL`, a bad pointer `EFAULT`, zero
   bytes succeeds.
+
+## DHCP (2026-11-23)
+
+Supersedes "There is no DHCP client" under
+[The network at boot](#the-network-at-boot-2026-11-23).
+
+- **dhcpcd 10.5.2** (`contrib/dhcpcd`, BSD 2-clause), NetBSD's DHCP
+  client, is `/sbin/dhcpcd`: the IPv4 client only (DHCP and ARP
+  address probing; no IPv6, IPv4LL, authentication or privilege
+  separation), built without its configure script or Makefiles. The
+  sources are the upstream release, which NetBSD carries unchanged; its
+  generated option table and manual pages are NetBSD's. OpenBSD has
+  removed `dhclient` and its successor, `dhcpleased`, needs libevent,
+  imsg and routing sockets. What changed is in
+  `contrib/dhcpcd/README.belka`, each under `__belka__`.
+- **Belka's back ends** (`usr/sbin/dhcpcd`): interfaces, addresses and
+  routes by the `/dev/ip` ioctls (`if-belka.c`); and in place of a BPF
+  device, a DLPI stream of dhcpcd's own on `/dev/<interface>`, bound to
+  IPv4 or ARP, which puts an Ethernet header back on each frame and
+  runs dhcpcd's BPF programs over it in user space, checked when set
+  (`bpf-belka.c`). The link stream sees every reply before and after
+  the address is set, so it stays open in every state; unicast renewals
+  go by an ordinary UDP socket on port 68, whose own reads are dropped
+  (and which keeps IP from answering the server with port
+  unreachable). There is no routing socket: dhcpcd reads the routes
+  again whenever it builds them. `arc4random` is `getentropy`.
+- **At boot:** `ifaddr_<name>="DHCP"` in `/etc/rc.conf` leaves the
+  interface without an address in `rc.d/network`, and `rc.d/dhcpcd`
+  (before `NETWORKING`, after `network`; `staticroute` after it) runs
+  one manager (`-M`) for all such interfaces with `/etc/dhcpcd.conf`,
+  waiting up to `dhcpcd_timeout` (30) seconds for a lease before going
+  on in the background. No hook script runs: names stay dnscache's.
+  The shipped `/etc/rc.conf` now leases `vionet0` from QEMU's DHCP
+  server, which gives the address and route it had statically.
+- **`IP_IFADDR` with address 0** (and mask 0) takes an interface's
+  address away: its routes, ARP cache and reassembly queues go with it,
+  and it is no longer up. dhcpcd's back end clears an address only if
+  it is still the one being dropped, as each interface has one.
+- **`SO_PEERCRED`** (Linux's 17, `struct ucred`: pid, effective uid and
+  gid) on local stream sockets: a pair gives its maker, a client the
+  listener as it was at `listen()`, an accepted socket the client as it
+  was at `connect()`; unconnected, `ENOTCONN`. dhcpcd's control socket
+  uses it to tell root from others.
+- **`MSG_WAITALL`** on local stream sockets: reads go on until the
+  request is filled, the peer closes, a signal comes, or the urgent
+  mark. TCP sockets do not take it yet.
+- **`sendmsg` and `recvmsg`** (mlibc's Belka sysdeps) are `sendto` and
+  `recvfrom`, the pieces gathered into one buffer or scattered from it
+  so that a datagram stays whole. Sending ancillary data is
+  `EOPNOTSUPP`; none is received (`msg_controllen` 0, `msg_flags` 0).
+- **Testing:** `boottest` checks the lease through the existing
+  network checks (the address, the default route, a ping), then that
+  dhcpcd is running with its lease and DUID kept, `dhcpcd -U` dumps the
+  lease over its control socket, `-k` releases it (address and routes
+  gone) and `-n` gets it again; and `SO_PEERCRED` across a socket pair
+  and a connection between root and an ordinary user. `libctest` checks
+  `sendmsg`/`recvmsg` over several pieces and `MSG_WAITALL`.

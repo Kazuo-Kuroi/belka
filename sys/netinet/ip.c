@@ -1078,8 +1078,21 @@ ip_ifaddr(const struct ip_ifaddr *ifa)
                 return EBUSY;
         if ((ifp->if_flags & IPIF_LOOPBACK) != 0)
                 return EPERM;
-        if (ifa->ifa_addr == INADDR_ANY || !ip_maskok(ifa->ifa_mask) ||
-            !strnlen_ok(ifa->ifa_name, sizeof(ifa->ifa_name)))
+        if (!strnlen_ok(ifa->ifa_name, sizeof(ifa->ifa_name)))
+                return EINVAL;
+        /* Address 0: take the address away, and every route by it. */
+        if (ifa->ifa_addr == INADDR_ANY) {
+                if (ifa->ifa_mask != 0)
+                        return EINVAL;
+                ip_route_purge(ifp, 0);
+                arp_stop(ifp);
+                ip_reass_flush(ifp);
+                ifp->if_addr = 0;
+                ifp->if_mask = 0;
+                ifp->if_flags &= ~IPIF_UP;
+                return 0;
+        }
+        if (!ip_maskok(ifa->ifa_mask))
                 return EINVAL;
         ip_route_purge(ifp, 1);
         arp_stop(ifp);

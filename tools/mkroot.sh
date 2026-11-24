@@ -13,6 +13,7 @@
 #   /tmp, /root
 #   /usr/sbin/dnscache, /usr/bin/dnsip, dnsname, dnsq, dnsqr (djbdns),
 #   with dnscache's root in /etc/dnscache/root
+#   /sbin/dhcpcd (NetBSD's DHCP client), its state in /var/db/dhcpcd
 #
 # Everything is owned by root, and login is set-user-ID, through
 # fakeroot(1). The password hashes are in /etc/shadow (mode 0400);
@@ -80,6 +81,12 @@ for prog in dnsip dnsname dnsq dnsqr; do
 done
 mkdir -p "$src/usr/share/licenses/djbdns"
 cp contrib/djbdns/README.belka "$src/usr/share/licenses/djbdns/"
+# dhcpcd, NetBSD's DHCP client (contrib/dhcpcd), its state and licence.
+install_prog dhcpcd sbin/dhcpcd
+mkdir -p "$src/usr/share/licenses/dhcpcd" "$src/var/db/dhcpcd" \
+    "$src/var/run/dhcpcd"
+cp contrib/dhcpcd/LICENSE contrib/dhcpcd/README.belka \
+    "$src/usr/share/licenses/dhcpcd/"
 mkdir -p "$src/usr/share/licenses/tcsh"
 cp contrib/tcsh/Copyright contrib/tcsh/NOTICE "$src/usr/share/licenses/tcsh/"
 ln "$src/bin/mksh" "$src/bin/sh"
@@ -175,6 +182,8 @@ cp contrib/netbsd/usr.bin/make/make.1 "$src/usr/share/man/man1/bmake.1"
 cp contrib/samurai/samu.1 "$src/usr/share/man/man1/samu.1"
 ln "$src/usr/share/man/man1/samu.1" "$src/usr/share/man/man1/ninja.1"
 cp contrib/gmake/doc/make.1 "$src/usr/share/man/man1/gmake.1"
+cp contrib/dhcpcd/src/dhcpcd.8 "$src/usr/share/man/man8/"
+cp contrib/dhcpcd/src/dhcpcd.conf.5 "$src/usr/share/man/man5/"
 ln "$src/usr/share/man/man1/gmake.1" "$src/usr/share/man/man1/make.1"
 cp contrib/netbsd/usr.bin/m4/m4.1 contrib/netbsd/usr.bin/tsort/tsort.1 \
     contrib/netbsd/external/bsd/byacc/dist/yacc.1 "$src/usr/share/man/man1/"
@@ -241,7 +250,7 @@ cp contrib/mlibc/LICENSE "$src/usr/share/licenses/mlibc/"
 cp -R contrib/compiler-runtime-licenses/. "$src/usr/share/licenses/compiler-runtime/"
 
 for f in rc rc.conf ttys passwd shadow group shells profile vfstab \
-    hosts resolv.conf services defaults/rc.conf; do
+    hosts resolv.conf services defaults/rc.conf dhcpcd.conf; do
         cp "etc/$f" "$src/etc/$f"
 done
 # The mount table is the kernel's (devfs).

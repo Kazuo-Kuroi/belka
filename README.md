@@ -97,8 +97,9 @@ self-test boot's two more virtio-net devices share a QEMU hub, on which
 `fwdtest` forwards through IP and plays the other hosts, and checks
 reassembly and the ICMP errors that reach the sockets. On a normal
 boot, `/etc/rc.d/network` plumbs the stack with `netcfg(8)` and
-configures `vionet0` as `/etc/rc.conf` says (QEMU's user-mode network),
-and `/etc/rc.d/staticroute` adds the routes in
+attaches `vionet0`, `/etc/rc.d/dhcpcd` leases its address from QEMU's
+DHCP server with NetBSD's dhcpcd (`contrib/dhcpcd`), as `/etc/rc.conf`
+says, and `/etc/rc.d/staticroute` adds the routes in
 `/etc/routed/static_route.conf`, which `boottest` checks;
 `/etc/rc.d/dnscache` starts djbdns' dnscache (`contrib/djbdns`),
 chrooted, as the resolver `/etc/resolv.conf` names, which `boottest`

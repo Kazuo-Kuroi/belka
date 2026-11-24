@@ -19,7 +19,7 @@
 #define IPCONF_NAMELEN  16
 
 #define IP_IFATTACH     (('I' << 8) | 1)        /* struct ip_ifattach */
-#define IP_IFADDR       (('I' << 8) | 2)        /* struct ip_ifaddr */
+#define IP_IFADDR       (('I' << 8) | 2)        /* struct ip_ifaddr; 0: none */
 #define IP_ROUTEADD     (('I' << 8) | 3)        /* struct ip_route */
 #define IP_ROUTEDEL     (('I' << 8) | 4)        /* struct ip_route */
 #define IP_IFLIST       (('I' << 8) | 5)        /* struct ip_ifinfo[] */

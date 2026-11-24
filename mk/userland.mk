@@ -952,6 +952,56 @@ dns-progs: $(DJB_PROGS)
 
 .PHONY: dns-progs
 
+# dhcpcd 10.5.2, NetBSD's DHCP client (contrib/dhcpcd), IPv4 only,
+# without its configure script or Makefiles: usr/sbin/dhcpcd has its
+# config.h, its interface and link back ends for Belka, and the few
+# headers it wants that Belka's C library has not. Not the utilities'
+# compatibility headers: dhcpcd brings its own. GCC's __linux__ is
+# taken away, as dhcpcd would take Belka for Linux, and __unix__ given
+# (Clang's ELF target has none); dhcpcd's few Belka
+# changes are under __belka__ (contrib/dhcpcd/README.belka).
+DHCPCD          := contrib/dhcpcd
+DHCPCD_OBJ      := $(SYS_OBJ)/dhcpcd
+DHCPCD_SRCS     := $(addprefix $(DHCPCD)/src/,arp.c bpf.c common.c control.c \
+                   dhcp-common.c dhcp.c dhcpcd.c dhcpcd-embedded.c duid.c \
+                   eloop.c if-options.c if.c ipv4.c logerr.c route.c sa.c \
+                   script.c) $(DHCPCD)/vendor/rbtree.c \
+                   $(addprefix $(DHCPCD)/compat/,arc4random_uniform.c \
+                   closefrom.c getpeereid.c memset_explicit.c pidfile.c \
+                   progname.c setproctitle.c strtoi.c strtou.c) \
+                   $(addprefix usr/sbin/dhcpcd/,if-belka.c bpf-belka.c \
+                   compat-belka.c)
+DHCPCD_OBJS     := $(patsubst %.c,$(DHCPCD_OBJ)/%.o,$(notdir $(DHCPCD_SRCS)))
+DHCPCD_CFLAGS   := -std=gnu99 -O2 -g -Wall -nostdinc \
+                   -isystem $(SYSROOT)/usr/include -isystem $(CC_INCLUDE) \
+                   -fno-stack-protector -fno-pic -fno-pie \
+                   -U__linux__ -U__linux -Ulinux -U__gnu_linux__ -D__unix__=1 \
+                   -D__belka__ \
+                   -D_GNU_SOURCE -D_DEFAULT_SOURCE -DINET -DARP -DRBLOCAL \
+                   -DPIDFILE_LOCAL -DNDEBUG -Iusr/sbin/dhcpcd \
+                   -Iusr/sbin/dhcpcd/include -I$(DHCPCD) -I$(DHCPCD)/src \
+                   -I$(DHCPCD)/compat -I$(DHCPCD)/vendor -include config.h \
+                   -Werror=implicit-function-declaration -Werror=int-conversion
+DHCPCD_HDRS     := $(wildcard $(DHCPCD)/src/*.h $(DHCPCD)/compat/*.h \
+                   $(DHCPCD)/vendor/*.h usr/sbin/dhcpcd/*.h \
+                   usr/sbin/dhcpcd/*/*.h usr/sbin/dhcpcd/include/*/*.h)
+
+DHCPCD_DIRS     := $(DHCPCD)/src $(DHCPCD)/vendor $(DHCPCD)/compat usr/sbin/dhcpcd
+
+define DHCPCD_RULE
+$(DHCPCD_OBJ)/%.o: $(1)/%.c $(DHCPCD_HDRS) $(MLIBC)
+	@mkdir -p $$(dir $$@)
+	$(LIBC_CC) $(DHCPCD_CFLAGS) -c -o $$@ $$<
+endef
+$(foreach d,$(DHCPCD_DIRS),$(eval $(call DHCPCD_RULE,$(d))))
+
+$(SYS_DIR)/dhcpcd: $(DHCPCD_OBJS) $(SYS_DYNDEPS)
+	$(call SYS_DYNLINK,$(DHCPCD_OBJS))
+
+dhcpcd: $(SYS_DIR)/dhcpcd
+
+.PHONY: dhcpcd
+
 # The root images (tools/mkroot.sh): for "run", kept between boots and
 # made again when what goes in changes; for "test-boot", made afresh
 # for each boot.
@@ -959,7 +1009,7 @@ ROOT_IMG        := build/root-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_TEST_IMG   := build/root-test-$(TOOLCHAIN)$(LDSUFFIX).img
 ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    build/native-libc-sdk/*.stamp build/native-object-sdk/*.stamp \
-                   build/native-gcc-source-sdk/*.stamp) $(SYS_PROGS) $(SYS_DIR)/ps $(DJB_PROGS) \
+                   build/native-gcc-source-sdk/*.stamp) $(SYS_PROGS) $(SYS_DIR)/ps $(DJB_PROGS) $(SYS_DIR)/dhcpcd \
                    $(TERM_PROGS) $(XN_BINS) \
 	           $(SYS_DIR)/sdk.stamp usr/share/mk/sys.mk usr/bin/ranlib/ranlib.sh \
                    contrib/mlibc/LICENSE \
@@ -989,6 +1039,8 @@ ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    contrib/netbsd/external/bsd/less/dist/LICENSE \
                    contrib/netbsd/external/bsd/less/dist/less.1 \
                    contrib/djbdns/README.belka \
+                   contrib/dhcpcd/LICENSE contrib/dhcpcd/README.belka \
+                   contrib/dhcpcd/src/dhcpcd.8 contrib/dhcpcd/src/dhcpcd.conf.5 \
                    contrib/zlib/README usr/bin/chsh/chsh.1 usr/sbin/accounts/accounts.8 \
                    usr/sbin/netcfg/netcfg.8) \
                    $(wildcard etc/* etc/defaults/* etc/rc.d/* etc/routed/* etc/dnscache/root/*/* \

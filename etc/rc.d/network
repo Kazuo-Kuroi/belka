@@ -6,8 +6,9 @@
 #
 # The IPv4 network, by netcfg(8): IP linked under UDP and TCP, then
 # each of net_interfaces whose device there is, with its ifaddr_<name>
-# (address/length), the default route through defaultroute, and IP
-# forwarding as ip_forwarding says. A missing interface is passed over;
+# (address/length; for "DHCP", none: rc.d/dhcpcd leases one), the
+# default route through defaultroute, and IP forwarding as
+# ip_forwarding says. A missing interface is passed over;
 # a configuration that fails is an error. Other static routes are
 # rc.d/staticroute's.
 
@@ -32,7 +33,7 @@ network_start()
                 fi
                 /sbin/netcfg attach $_if || return 1
                 eval _addr=\$ifaddr_$_if
-                if [ -n "$_addr" ]; then
+                if [ -n "$_addr" ] && [ "$_addr" != "DHCP" ]; then
                         /sbin/netcfg addr $_if $_addr || return 1
                         echo "Network: $_if $_addr."
                 fi

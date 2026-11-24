@@ -1,0 +1,56 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-23
+# SPDX-License-Identifier: MIT
+#
+# Leased addresses, by dhcpcd(8): one manager for every interface of
+# net_interfaces whose ifaddr_<name> is "DHCP" and whose device there
+# is (rc.d/network attached it, and gave it no address). dhcpcd waits
+# for a lease up to dhcpcd_timeout seconds before going on in the
+# background, renewing and rebinding there, and keeps trying if none
+# came.
+
+# PROVIDE: dhcpcd
+# REQUIRE: network mountall
+# BEFORE: NETWORKING
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="dhcpcd"
+rcvar=$name
+command="/sbin/dhcpcd"
+pidfile="/var/run/dhcpcd/pid"
+start_cmd="dhcpcd_start"
+stop_cmd="dhcpcd_stop"
+
+dhcpcd_interfaces()
+{
+        _ifs=""
+        for _if in $net_interfaces; do
+                eval _addr=\$ifaddr_$_if
+                if [ "$_addr" = "DHCP" ] && [ -c /dev/$_if ]; then
+                        _ifs="$_ifs $_if"
+                fi
+        done
+        echo $_ifs
+}
+
+dhcpcd_start()
+{
+        _ifs=$(dhcpcd_interfaces)
+        if [ -z "$_ifs" ]; then
+                return 0
+        fi
+        $command -M -t "$dhcpcd_timeout" $dhcpcd_flags $_ifs
+}
+
+dhcpcd_stop()
+{
+        if [ -r "$pidfile" ]; then
+                $command -x
+        fi
+}
+
+load_rc_config $name
+run_rc_command "$1"

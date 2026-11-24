@@ -9,7 +9,7 @@
 # A route that cannot be added is reported, and the rest are added.
 
 # PROVIDE: staticroute
-# REQUIRE: network
+# REQUIRE: network dhcpcd
 # BEFORE: NETWORKING
 
 $_rc_subr_loaded . /etc/rc.subr

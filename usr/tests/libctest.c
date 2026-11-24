@@ -2139,6 +2139,62 @@ test_socket_urgent(void)
         CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
 }
 
+/*
+ * sendmsg and recvmsg, gathered and scattered over several pieces, on
+ * a connected pair: no ancillary data comes back, and sending some is
+ * refused.
+ */
+static void
+test_msg_calls(int a, int b)
+{
+        static char s1[] = "abc", s2[] = "defgh";
+        char one[3], two[5], ctl[16];
+        struct iovec out[2] = { { s1, 3 }, { s2, 5 } };
+        struct iovec in[2] = { { one, sizeof(one) }, { two, sizeof(two) } };
+        struct msghdr m;
+
+        memset(&m, 0, sizeof(m));
+        m.msg_iov = out;
+        m.msg_iovlen = 2;
+        CHECK(sendmsg(a, &m, 0) == 8);
+        memset(&m, 0, sizeof(m));
+        m.msg_iov = in;
+        m.msg_iovlen = 2;
+        m.msg_control = ctl;
+        m.msg_controllen = sizeof(ctl);
+        m.msg_flags = -1;
+        CHECK(recvmsg(b, &m, 0) == 8 && memcmp(one, "abc", 3) == 0 &&
+            memcmp(two, "defgh", 5) == 0 && m.msg_controllen == 0 &&
+            m.msg_flags == 0);
+        memset(&m, 0, sizeof(m));
+        m.msg_iov = out;
+        m.msg_iovlen = 1;
+        m.msg_control = ctl;
+        m.msg_controllen = sizeof(ctl);
+        CHECK(sendmsg(a, &m, 0) == -1 && errno == EOPNOTSUPP);
+
+        /* MSG_WAITALL waits for all four bytes, written in two parts;
+         * with MSG_DONTWAIT it gives what is there. */
+        {
+                char w[4];
+                int status = -1;
+                pid_t pid;
+
+                CHECK(write(a, "wx", 2) == 2);
+                CHECK(recv(b, w, 4, MSG_WAITALL | MSG_DONTWAIT) == 2 &&
+                    memcmp(w, "wx", 2) == 0);
+                CHECK(write(a, "wx", 2) == 2);
+                if ((pid = fork()) == 0) {
+                        usleep(100000);
+                        _exit(write(a, "yz", 2) == 2 ? 0 : 1);
+                }
+                CHECK(recv(b, w, 4, MSG_WAITALL) == 4 &&
+                    memcmp(w, "wxyz", 4) == 0);
+                CHECK(pid > 0 && waitpid(pid, &status, 0) == pid &&
+                    WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        }
+}
+
 static void
 test_named_socket(const char *prefix)
 {
@@ -2184,6 +2240,7 @@ test_named_socket(const char *prefix)
                 CHECK(read(accepted, buf, 2) == 2 && memcmp(buf, "ok", 2) == 0);
                 CHECK(send(accepted, "go", 2, 0) == 2);
                 CHECK(recv(client, buf, 2, 0) == 2 && memcmp(buf, "go", 2) == 0);
+                test_msg_calls(client, accepted);
                 close(accepted);
                 CHECK(read(client, buf, sizeof(buf)) == 0);
         }

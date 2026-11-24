@@ -35,6 +35,7 @@ struct sockend {
         struct sockowner se_owner;
         struct pollhead se_poll;
         struct pollhead *se_notify;    /* connected pathname socket's head */
+        struct ucred    se_peercred;    /* SO_PEERCRED: fixed before use */
         struct sv       se_wait;
         size_t          se_head;
         size_t          se_count;
@@ -71,6 +72,7 @@ struct localsock {
         struct sockpending *ls_last;
         unsigned int    ls_backlog;
         unsigned int    ls_pending;
+        struct ucred    ls_cred;        /* the listener, at listen() */
 };
 
 static const struct vnodeops sock_ops, local_ops;
@@ -203,7 +205,7 @@ sock_inactive(struct vnode *vp, struct cred *cr __unused)
 }
 
 static int
-sock_read_data(struct sockend *end, struct uio *uio, int flags)
+sock_read_once(struct sockend *end, struct uio *uio, int flags)
 {
         size_t n, pos;
         int error;
@@ -248,6 +250,27 @@ sock_read_data(struct sockend *end, struct uio *uio, int flags)
                 }
                 sock_wakeup(end->se_peer);
         }
+        return error;
+}
+
+/*
+ * A read; with MSG_WAITALL, more reads until the request is filled, or
+ * the peer has closed, a signal came, or the urgent mark is reached
+ * (what was read is then returned, as POSIX allows).
+ */
+static int
+sock_read_data(struct sockend *end, struct uio *uio, int flags)
+{
+        ssize_t before;
+        int error;
+
+        do {
+                before = uio->uio_resid;
+                error = sock_read_once(end, uio, flags);
+        } while (error == 0 && (flags & MSG_WAITALL) != 0 &&
+            (flags & (MSG_PEEK | MSG_OOB)) == 0 && uio->uio_resid > 0 &&
+            uio->uio_resid < before && !(end->se_marked &&
+            end->se_before == 0));
         return error;
 }
 
@@ -383,6 +406,19 @@ sock_type(const uint64_t *args)
         return 0;
 }
 
+/* The calling process, as SO_PEERCRED gives it. */
+static void
+sock_cred_here(struct ucred *uc)
+{
+        uc->pid = curproc->p_pid;
+        uc->uid = CRED()->cr_uid;
+        uc->gid = CRED()->cr_gid;
+}
+
+/*
+ * A new pair's ends each give the caller as their peer (socketpair's);
+ * a connection's are set again before either end is published.
+ */
 static int
 sock_make_pair(int status, struct file *files[2])
 {
@@ -397,6 +433,7 @@ sock_make_pair(int status, struct file *files[2])
 
                 end->se_pair = pair;
                 end->se_peer = &pair->sp_end[1 - i];
+                sock_cred_here(&end->se_peercred);
                 sv_init(&end->se_wait, "socket");
                 pollhead_init(&end->se_poll);
                 specattr_init(&end->se_attr, 0600, CRED()->cr_uid,
@@ -441,7 +478,7 @@ sock_sys_rw(const uint64_t *args, uint64_t *rv, enum uio_rw rw)
             .uio_segflg = UIO_USERSPACE, .uio_rw = rw, .uio_limit = UIO_NOLIMIT };
         int flags = (int)args[3], error;
         int valid = MSG_OOB | MSG_DONTWAIT |
-            (rw == UIO_READ ? MSG_PEEK : MSG_NOSIGNAL);
+            (rw == UIO_READ ? MSG_PEEK | MSG_WAITALL : MSG_NOSIGNAL);
 
         if (fp == NULL)
                 return EBADF;
@@ -643,6 +680,25 @@ sys_getsockopt(const uint64_t *args, uint64_t *rv __unused)
                 }
         } else if (name == SO_SNDBUF || name == SO_RCVBUF) {
                 v = SOCK_BUFSIZE;
+        } else if (name == SO_PEERCRED) {
+                struct ucred uc;
+                struct vnode *end = vp;
+
+                if (vp->v_op == &local_ops) {
+                        struct localsock *local = vp->v_data;
+
+                        mutex_lock(&local_lock);
+                        end = local->ls_connection != NULL ?
+                            local->ls_connection->f_vnode : NULL;
+                        mutex_unlock(&local_lock);
+                }
+                if (end == NULL) {
+                        frele(fp);
+                        return ENOTCONN;
+                }
+                uc = sock_end(end)->se_peercred;
+                frele(fp);
+                return sockopt_out(&uc, sizeof(uc), args[3], args[4]);
         } else {
                 error = ENOPROTOOPT;
         }
@@ -912,9 +968,11 @@ sys_listen(const uint64_t *args, uint64_t *rv __unused)
         mutex_lock(&local_lock);
         if (local->ls_name == NULL || local->ls_connection != NULL)
                 error = EINVAL;
-        else
+        else {
                 local->ls_backlog = backlog < 1 ? 1 : backlog > 4096 ? 4096 :
                     (unsigned int)backlog;
+                sock_cred_here(&local->ls_cred);
+        }
         mutex_unlock(&local_lock);
         frele(fp);
         return error;
@@ -946,6 +1004,8 @@ local_connect(struct localsock *client, struct vnode *name)
                 kmem_free(pending, sizeof(*pending));
                 return error;
         }
+        /* The client's peer is the listener; the accepted end's, the client. */
+        sock_end(files[0]->f_vnode)->se_peercred = server->ls_cred;
         client->ls_connection = files[0];
         sock_end(files[0]->f_vnode)->se_notify = &client->ls_poll;
         pending->sk_file = files[1];

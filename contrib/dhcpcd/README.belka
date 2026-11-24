@@ -1,0 +1,54 @@
+dhcpcd
+======
+
+dhcpcd 10.5.2, by Roy Marples, NetBSD's DHCP client (NetBSD's
+src/external/bsd/dhcpcd/dist is this release, unchanged). BSD 2-clause
+licence: LICENSE, and the notice at the head of each file.
+
+The sources are from the release, dhcpcd-10.5.2.tar.xz
+(https://github.com/NetworkConfiguration/dhcpcd/releases/tag/v10.5.2,
+SHA-256 3e476657fdb6eeb38b277da3a48d0ac0113ecce5858ebdcddff2b629faed52b4).
+NetBSD's copy differs from it only in having its generated files, and
+these four are NetBSD's, from its trunk on 2026-11-23, so that none of
+dhcpcd's generators runs here:
+
+    src/dhcpcd-embedded.c, .h   the built-in option definitions
+    src/dhcpcd.8, dhcpcd.conf.5 the manual pages, their paths filled in
+
+Only what Belka builds is here: the IPv4 client (DHCP and ARP), with
+dhcpcd's own sample configuration (src/dhcpcd.conf), and the portable
+pieces it uses where the C library has none (compat/, and vendor/'s
+red-black tree and queue.h). Not here: DHCPv6 and IPv6 router
+solicitation, IPv4LL, authentication, privilege separation, the BSD,
+Linux and Solaris back ends, the hook scripts, and dhcpcd's configure
+and Makefiles.
+
+Belka builds dhcpcd without them (mk/userland.mk). Belka's own pieces
+are in usr/sbin/dhcpcd: config.h in place of configure's; the
+interface back end (if-belka.c: interfaces, addresses and routes by
+/dev/ip's ioctls); the link back end (bpf-belka.c: a DLPI stream bound
+to IPv4 or ARP, which runs dhcpcd's BPF programs itself); arc4random
+from getentropy(2) (compat-belka.c); and the headers dhcpcd wants that
+Belka has not (include/: getifaddrs' struct, sockaddr_ll, the BPF
+instruction set, two empty BSD ones).
+
+Changed for Belka, each under __belka__:
+
+    src/dhcp.c      no raw IP socket: a unicast message goes by the UDP
+                    socket on bootpc (dhcp_sendudp), which is opened
+                    in every mode and whose reads are dropped
+                    (dhcp_readudp, dhcp_openudp: no IP_RECVPKTINFO);
+                    the link stream stays open once bound, since it
+                    sees every reply (dhcp_bound); and a read that
+                    found nothing for the filter ends the loop
+                    (dhcp_readbpf)
+    src/if.c        the interface MTU from the back end (if_mtu_os), as
+                    on Solaris: Belka has no SIOCGIFMTU
+    src/ipv4.c      no loopback route for an address of ours: Belka
+                    delivers to its own addresses without one
+    src/script.c    a hook script is run by fork and execve, not
+                    posix_spawn
+
+dhcpcd runs from /etc/rc.d/dhcpcd, for the interfaces whose
+ifaddr_<name> is "DHCP" in /etc/rc.conf, with /etc/dhcpcd.conf. Its
+state is in /var/db/dhcpcd and /var/run/dhcpcd.
