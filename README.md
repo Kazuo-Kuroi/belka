@@ -12,10 +12,10 @@ Design decisions are recorded in
 
 Requirements: GNU make, GCC or Clang, GNU binutils, GNU m4, `xorriso`,
 `curl`, QEMU, and OVMF; for the C library, muon (0.7 or later) and
-samurai. See [doc/qemu-setup.md](doc/qemu-setup.md). Run `git
-submodule update --init` first: the link-editor, the C library and the
-utilities are submodules (the utilities' repository is reached over
-ssh).
+samurai. See [doc/qemu-setup.md](doc/qemu-setup.md), the guide to running
+Belka under QEMU. Run `git submodule update --init` first: the
+link-editor, the C library and the utilities are submodules (the
+utilities' repository is reached over ssh).
 
 ```sh
 make                    # build build/amd64-gcc/belka
