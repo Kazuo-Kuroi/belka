@@ -2997,7 +2997,8 @@ heap bookkeeping with address-space-owned heap state.
   named under `root/ip/` (`127`: this host), and it starts from the
   servers in `root/servers/@`: the root servers, from IANA's list, or
   with `dnscache_forwardonly` servers that resolve for it, which DHCP
-  will set later.
+  will set later (superseded: see
+  [Name servers from leases](#name-servers-from-leases-2026-11-23)).
 - **`/etc/resolv.conf`** names 127.0.0.1, for the C library and djbdns'
   tools; `/etc/hosts` has localhost, and `/etc/services` the common
   services, `domain` among them.
@@ -3074,7 +3075,9 @@ Supersedes "There is no DHCP client" under
   (before `NETWORKING`, after `network`; `staticroute` after it) runs
   one manager (`-M`) for all such interfaces with `/etc/dhcpcd.conf`,
   waiting up to `dhcpcd_timeout` (30) seconds for a lease before going
-  on in the background. No hook script runs: names stay dnscache's.
+  on in the background. No hook script runs: names stay dnscache's
+  (superseded: see
+  [Name servers from leases](#name-servers-from-leases-2026-11-23)).
   The shipped `/etc/rc.conf` now leases `vionet0` from QEMU's DHCP
   server, which gives the address and route it had statically.
 - **`IP_IFADDR` with address 0** (and mask 0) takes an interface's
@@ -3088,7 +3091,8 @@ Supersedes "There is no DHCP client" under
   uses it to tell root from others.
 - **`MSG_WAITALL`** on local stream sockets: reads go on until the
   request is filled, the peer closes, a signal comes, or the urgent
-  mark. TCP sockets do not take it yet.
+  mark. TCP sockets do not take it yet (superseded: see
+  [Name servers from leases](#name-servers-from-leases-2026-11-23)).
 - **`sendmsg` and `recvmsg`** (mlibc's Belka sysdeps) are `sendto` and
   `recvfrom`, the pieces gathered into one buffer or scattered from it
   so that a datagram stays whole. Sending ancillary data is
@@ -3100,3 +3104,42 @@ Supersedes "There is no DHCP client" under
   gone) and `-n` gets it again; and `SO_PEERCRED` across a socket pair
   and a connection between root and an ordinary user. `libctest` checks
   `sendmsg`/`recvmsg` over several pieces and `MSG_WAITALL`.
+
+## Name servers from leases (2026-11-23)
+
+Supersedes, in [Name resolution](#name-resolution-2026-11-23), that
+DHCP would set dnscache's servers later, and in
+[DHCP](#dhcp-2026-11-23), that no hook script runs and that TCP sockets
+do not take `MSG_WAITALL`.
+
+- **dhcpcd's hook** is Belka's own, `/libexec/dhcpcd-run-hooks` (a
+  shell script, from `usr/sbin/dhcpcd`). It keeps the name servers a
+  lease offers in `/var/db/dhcpcd/<interface>.dns`, one to a line, and
+  removes the file when the lease goes (expiry, release, stop). It does
+  nothing else: dhcpcd sets the address, routes and host name itself,
+  and `/etc/resolv.conf` keeps naming dnscache.
+- **`dnscache_forwarders`** (in `rc.conf`, replacing
+  `dnscache_forwardonly`) says whom dnscache forwards to: empty (the
+  default), nobody, and it resolves from the root servers; a list of
+  addresses; or `DHCP`, the servers the leases offer (the roots while
+  there are none). `rc.d/dnscache` writes `root/servers/@` at each
+  start, from those or from the root servers' list, now
+  `/etc/dnscache/roots`, and sets `FORWARDONLY` when it forwards. With
+  `DHCP`, the hook starts dnscache again when a lease's servers change.
+- **No `#!`:** Belka's kernel does not run scripts; mlibc's
+  PATH-searching `exec` calls give one to `/bin/sh`. dhcpcd runs its
+  hook by `execve`, so Belka's change to it does the same on `ENOEXEC`.
+- **`MSG_WAITALL` on TCP sockets:** a read goes on waiting after the
+  first data until the request is filled, the peer's data ends, it
+  disconnects, or a signal comes. UDP sockets take the flag and ignore
+  it.
+- **`netcfg addr <interface> none`** takes an interface's address away
+  (`IP_IFADDR` with address 0), and every route by it.
+- **Testing:** `boottest` checks that the hook kept QEMU's name server
+  (10.0.2.3) at boot, dropped it on a release and kept it again on the
+  rebind; then, with `dnscache_forwarders="DHCP"`, that the hook told of
+  a lease naming 127.0.0.54 starts dnscache forwarding there and names
+  resolve through a fake server on that address alone, the roots being
+  gone; and that `netcfg addr vionet0 none` takes the address and routes
+  away. `tcptest` checks `MSG_WAITALL` across two writes 100 ms apart
+  and at the end of the peer's data.

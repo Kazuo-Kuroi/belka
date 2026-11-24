@@ -47,7 +47,8 @@ Changed for Belka, each under __belka__:
     src/ipv4.c      no loopback route for an address of ours: Belka
                     delivers to its own addresses without one
     src/script.c    a hook script is run by fork and execve, not
-                    posix_spawn
+                    posix_spawn, and by /bin/sh when execve says
+                    ENOEXEC (Belka has no #!), as execvp would
 
 dhcpcd runs from /etc/rc.d/dhcpcd, for the interfaces whose
 ifaddr_<name> is "DHCP" in /etc/rc.conf, with /etc/dhcpcd.conf. Its

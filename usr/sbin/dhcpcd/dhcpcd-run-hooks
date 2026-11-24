@@ -1,0 +1,62 @@
+#!/bin/sh
+#
+# Copyright (c) 2026 Setsuna Software L.C.
+# Created: 2026-11-23
+# SPDX-License-Identifier: MIT
+#
+# dhcpcd(8)'s hook on Belka (its script, /libexec/dhcpcd-run-hooks),
+# run for each event with $reason, $interface and the lease's options
+# in the environment. It keeps the name servers a lease offers in
+# /var/db/dhcpcd/<interface>.dns, one to a line, and drops the file
+# when the lease goes. When they change and dnscache forwards to them
+# (dnscache_forwarders="DHCP" in /etc/rc.conf), it starts dnscache
+# again, which reads them (/etc/rc.d/dnscache). Nothing else: the
+# address, routes and host name are dhcpcd's own.
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+dns=/var/db/dhcpcd/$interface.dns
+
+case "$interface" in
+""|*/*|.*)
+        exit 0
+        ;;
+esac
+
+case "$reason" in
+BOUND|RENEW|REBIND|REBOOT|INFORM|STATIC|TIMEOUT)
+        new=
+        for s in $new_domain_name_servers; do
+                new="$new$s
+"
+        done
+        ;;
+EXPIRE|FAIL|RELEASE|STOP|NAK|NOCARRIER|DEPARTED|STOPPED)
+        new=
+        ;;
+*)
+        exit 0
+        ;;
+esac
+
+old=
+if [ -r "$dns" ]; then
+        old=$(cat "$dns")
+        old="$old
+"
+fi
+[ "$new" = "$old" ] && exit 0
+if [ -n "$new" ]; then
+        printf '%s' "$new" > "$dns.new" && mv -f "$dns.new" "$dns"
+else
+        rm -f "$dns"
+fi
+
+$_rc_subr_loaded . /etc/rc.subr
+load_rc_config dnscache
+if [ "$dnscache_forwarders" = "DHCP" ] && checkyesno dnscache &&
+    [ -r /var/run/dnscache.pid ]; then
+        /bin/sh /etc/rc.d/dnscache restart >/dev/null
+fi
+exit 0

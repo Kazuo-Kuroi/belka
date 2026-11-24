@@ -102,8 +102,9 @@ DHCP server with NetBSD's dhcpcd (`contrib/dhcpcd`), as `/etc/rc.conf`
 says, and `/etc/rc.d/staticroute` adds the routes in
 `/etc/routed/static_route.conf`, which `boottest` checks;
 `/etc/rc.d/dnscache` starts djbdns' dnscache (`contrib/djbdns`),
-chrooted, as the resolver `/etc/resolv.conf` names, which `boottest`
-checks through a fake root server of its own.
+chrooted, as the resolver `/etc/resolv.conf` names (resolving from the
+root servers, or forwarding to the ones the leases offer), which
+`boottest` checks through fake servers of its own.
 Everything is linked by the illumos link-editor, from the
 `contrib/illumos-ld` submodule, which the build compiles for the host
 first (`build/tools/illumos-ld/ld`); `LINKER=gnu` uses the host's GNU

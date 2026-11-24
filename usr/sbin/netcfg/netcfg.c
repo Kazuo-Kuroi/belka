@@ -11,6 +11,7 @@
  *      netcfg plumb                    link IP under UDP and TCP
  *      netcfg attach if                an interface from /dev/if
  *      netcfg addr if a.b.c.d/len      its address and subnet
+ *      netcfg addr if none             no address (nor routes by it)
  *      netcfg route add dest gw        a route (dest: a.b.c.d/len or
  *      netcfg route delete dest [gw]       default)
  *      netcfg forwarding [on|off]      forward, or not; or say which
@@ -40,7 +41,7 @@ usage(void)
         fprintf(stderr,
             "usage: %s plumb\n"
             "       %s attach interface\n"
-            "       %s addr interface address/length\n"
+            "       %s addr interface address/length | none\n"
             "       %s route add destination gateway\n"
             "       %s route delete destination [gateway]\n"
             "       %s forwarding [on | off]\n"
@@ -206,11 +207,13 @@ cmd_addr(const char *name, const char *net)
         struct ip_ifaddr ifa;
         int ipfd, failed = 0;
 
+        /* "none": address 0, which takes it away. */
         memset(&ifa, 0, sizeof(ifa));
-        if (strlen(name) >= IPCONF_NAMELEN || strchr(net, '/') == NULL ||
-            parse_net(net, 0, &ifa.ifa_addr, &ifa.ifa_mask) != 0) {
+        if (strlen(name) >= IPCONF_NAMELEN || (strcmp(net, "none") != 0 &&
+            (strchr(net, '/') == NULL ||
+            parse_net(net, 0, &ifa.ifa_addr, &ifa.ifa_mask) != 0))) {
                 fprintf(stderr, "%s: %s %s: not an interface and "
-                    "address/length\n", prog, name, net);
+                    "address/length, or none\n", prog, name, net);
                 return 1;
         }
         strcpy(ifa.ifa_name, name);

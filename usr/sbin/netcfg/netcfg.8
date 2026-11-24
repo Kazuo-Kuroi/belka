@@ -18,6 +18,10 @@
 .Ar interface
 .Ar address Ns / Ns Ar length
 .Nm
+.Cm addr
+.Ar interface
+.Cm none
+.Nm
 .Cm route add
 .Ar destination
 .Ar gateway
@@ -60,6 +64,8 @@ linking it twice under IP, once for IPv4 and once for ARP.
 Give the interface its address, with a subnet mask of
 .Ar length
 bits, and a route to the subnet.
+.It Cm addr Ar interface Cm none
+Take the interface's address away, and every route by way of it.
 .It Cm route add Ar destination Ar gateway
 Add a route to
 .Ar destination ,

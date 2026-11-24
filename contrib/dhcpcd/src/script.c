@@ -80,7 +80,9 @@ if_printoptions(void)
 /*
  * Belka: posix_spawn is not offered, so fork and exec, putting the
  * signals dhcpcd handles or ignores back to their defaults and
- * unblocking all of them, as the attributes below would.
+ * unblocking all of them, as the attributes below would. A script the
+ * kernel will not run (ENOEXEC: Belka has no #!) goes to /bin/sh, as
+ * execvp would give it.
  */
 pid_t
 script_exec(char *const *argv, char *const *env)
@@ -103,6 +105,18 @@ script_exec(char *const *argv, char *const *env)
 	}
 #endif
 	execve(argv[0], argv, env);
+	if (errno == ENOEXEC) {
+		size_t n = 0;
+		char **sh;
+
+		while (argv[n] != NULL)
+			n++;
+		if ((sh = calloc(n + 2, sizeof(*sh))) != NULL) {
+			sh[0] = UNCONST("sh");
+			memcpy(sh + 1, argv, n * sizeof(*sh));
+			execve("/bin/sh", sh, env);
+		}
+	}
 	_exit(127);
 }
 #else

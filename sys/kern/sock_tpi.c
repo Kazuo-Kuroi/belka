@@ -640,13 +640,16 @@ tpi_ssend(struct tpisock *ts, struct uio *uio, int flags, int fflag,
 
 /*
  * Bytes from a stream socket: what is there, waiting only if nothing
- * is. 0 bytes and no error at the end of the peer's data.
+ * is (with MSG_WAITALL, until the request is filled, the peer's data
+ * ends, it disconnects, or a signal comes). 0 bytes and no error at
+ * the end of the peer's data.
  */
 static int
 tpi_srecv(struct tpisock *ts, struct uio *uio, int flags, int fflag)
 {
         ssize_t start = uio->uio_resid;
         int error = 0, got = 0;
+        int waitall = (flags & (MSG_WAITALL | MSG_PEEK)) == MSG_WAITALL;
 
         mutex_lock(&ts->ts_lock);
         if (ts->ts_soerror != 0) {
@@ -669,8 +672,8 @@ tpi_srecv(struct tpisock *ts, struct uio *uio, int flags, int fflag)
 
                 if (ts->ts_eof)
                         break;
-                error = str_kgetmsg(ts->ts_sd, 0, got ? IO_NONBLOCK :
-                    tpi_ioflag(flags, fflag), peek, &mp);
+                error = str_kgetmsg(ts->ts_sd, 0, got && !waitall ?
+                    IO_NONBLOCK : tpi_ioflag(flags, fflag), peek, &mp);
                 if (error != 0) {
                         if (got)
                                 error = 0;
@@ -1090,7 +1093,8 @@ tpisock_recvfrom(struct file *fp, const uint64_t *args, uint64_t *rv)
         struct sockaddr_in from;
         size_t total;
 
-        if ((flags & ~(MSG_DONTWAIT | MSG_PEEK | MSG_TRUNC)) != 0)
+        if ((flags & ~(MSG_DONTWAIT | MSG_PEEK | MSG_TRUNC |
+            MSG_WAITALL)) != 0)
                 return EOPNOTSUPP;
         if (iov.iov_len > INT64_MAX)
                 return EINVAL;

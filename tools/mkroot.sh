@@ -13,6 +13,7 @@
 #   /tmp, /root
 #   /usr/sbin/dnscache, /usr/bin/dnsip, dnsname, dnsq, dnsqr (djbdns),
 #   with dnscache's root in /etc/dnscache/root
+#   /libexec/dhcpcd-run-hooks (Belka's hook for dhcpcd)
 #   /sbin/dhcpcd (NetBSD's DHCP client), its state in /var/db/dhcpcd
 #
 # Everything is owned by root, and login is set-user-ID, through
@@ -83,6 +84,9 @@ mkdir -p "$src/usr/share/licenses/djbdns"
 cp contrib/djbdns/README.belka "$src/usr/share/licenses/djbdns/"
 # dhcpcd, NetBSD's DHCP client (contrib/dhcpcd), its state and licence.
 install_prog dhcpcd sbin/dhcpcd
+mkdir -p "$src/libexec"
+cp usr/sbin/dhcpcd/dhcpcd-run-hooks "$src/libexec/dhcpcd-run-hooks"
+chmod 755 "$src/libexec/dhcpcd-run-hooks"
 mkdir -p "$src/usr/share/licenses/dhcpcd" "$src/var/db/dhcpcd" \
     "$src/var/run/dhcpcd"
 cp contrib/dhcpcd/LICENSE contrib/dhcpcd/README.belka \
@@ -265,6 +269,7 @@ mkdir -p "$src/etc/routed"
 cp etc/routed/static_route.conf "$src/etc/routed/static_route.conf"
 # dnscache's root: the clients it serves, and where it starts from.
 cp -R etc/dnscache "$src/etc/dnscache"
+mkdir -p "$src/etc/dnscache/root/servers"
 
 if [ $test -eq 1 ]; then
         install_prog boottest usr/tests/boottest
@@ -304,7 +309,7 @@ if [ $test -eq 1 ]; then
         printf '10.77.0.0/16\t10.0.2.2\t# boottest\n' \
             >> "$src/etc/routed/static_route.conf"
         # dnscache's root server: boottest's own, on the loopback.
-        echo 127.0.0.53 > "$src/etc/dnscache/root/servers/@"
+        echo 127.0.0.53 > "$src/etc/dnscache/roots"
         cat > "$src/etc/rc.local" <<'EOF'
 # The boot test: in the background, so that init goes on to multi-user.
 /usr/tests/boottest test belka-test 100 /home/test &

@@ -874,12 +874,11 @@ fake_root(int fd, int ms)
 }
 
 /*
- * The output of prog with arg and arg2 (NULL: none) into out (size
- * bytes, terminated), and whether it exited 0.
+ * The output of argv[0] with argv, in envp (NULL: this environment),
+ * into out (size bytes, terminated), and whether it exited 0.
  */
 static int
-run_out2(const char *prog, const char *arg, const char *arg2, char *out,
-    size_t size)
+run_outv(char *const argv[], char *const envp[], char *out, size_t size)
 {
         int p[2], status = -1;
         ssize_t n, got = 0;
@@ -891,7 +890,10 @@ run_out2(const char *prog, const char *arg, const char *arg2, char *out,
                 dup2(p[1], 1);
                 close(p[0]);
                 close(p[1]);
-                execl(prog, prog, arg, arg2, (char *)NULL);
+                if (envp != NULL)
+                        execve(argv[0], argv, envp);
+                else
+                        execv(argv[0], argv);
                 _exit(127);
         }
         close(p[1]);
@@ -902,6 +904,16 @@ run_out2(const char *prog, const char *arg, const char *arg2, char *out,
         close(p[0]);
         return pid > 0 && waitpid(pid, &status, 0) == pid &&
             WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+/* prog with arg and arg2 (NULL: none). */
+static int
+run_out2(const char *prog, const char *arg, const char *arg2, char *out,
+    size_t size)
+{
+        char *argv[] = { (char *)prog, (char *)arg, (char *)arg2, NULL };
+
+        return run_outv(argv, NULL, out, size);
 }
 
 static int
@@ -982,6 +994,24 @@ test_dns(void)
         }
 }
 
+/* Whether the file holds exactly what (at most 255 bytes). */
+static int
+file_is(const char *path, const char *what)
+{
+        char buf[256];
+        ssize_t n = -1;
+        int fd;
+
+        if ((fd = open(path, O_RDONLY)) >= 0) {
+                n = read(fd, buf, sizeof(buf) - 1);
+                close(fd);
+        }
+        if (n < 0)
+                return 0;
+        buf[n] = '\0';
+        return strcmp(buf, what) == 0;
+}
+
 /* vionet0's address (0: none), and whether a default route is by gw. */
 static in_addr_t
 vionet0_addr(int ipfd, in_addr_t gw, int *routed)
@@ -1038,6 +1068,25 @@ test_dhcp(void)
 
         ipfd = open("/dev/ip", O_RDWR);
         CHECK(ipfd >= 0);
+        CHECK(file_is("/var/db/dhcpcd/vionet0.dns", "10.0.2.3\n"));
+
+        /* netcfg takes the address away, and puts it back. */
+        {
+                char *none[] = { "/sbin/netcfg", "addr", "vionet0", "none",
+                    NULL };
+                char *addr[] = { "/sbin/netcfg", "addr", "vionet0",
+                    "10.0.2.15/24", NULL };
+                char *route[] = { "/sbin/netcfg", "route", "add", "default",
+                    "10.0.2.2", NULL };
+
+                CHECK(run_outv(none, NULL, out, sizeof(out)) &&
+                    vionet0_addr(ipfd, inet4(10, 0, 2, 2), &routed) == 0 &&
+                    !routed);
+                CHECK(run_outv(addr, NULL, out, sizeof(out)) &&
+                    run_outv(route, NULL, out, sizeof(out)) &&
+                    vionet0_addr(ipfd, inet4(10, 0, 2, 2), &routed) ==
+                    inet4(10, 0, 2, 15) && routed);
+        }
         CHECK(run_out2("/sbin/dhcpcd", "-k", "vionet0", out, sizeof(out)));
         for (int i = 0; i < 50 && !ok; i++) {
                 ok = vionet0_addr(ipfd, inet4(10, 0, 2, 2), &routed) == 0 &&
@@ -1046,6 +1095,8 @@ test_dhcp(void)
                         usleep(100000);
         }
         CHECK(ok);
+        CHECK(stat("/var/db/dhcpcd/vionet0.dns", &st) == -1 &&
+            errno == ENOENT);
         CHECK(run_out2("/sbin/dhcpcd", "-n", "vionet0", out, sizeof(out)));
         ok = 0;
         for (int i = 0; i < 150 && !ok; i++) {
@@ -1056,6 +1107,7 @@ test_dhcp(void)
         }
         CHECK(ok);
         CHECK(ok && ping(inet4(10, 0, 2, 2), 3000));
+        CHECK(file_is("/var/db/dhcpcd/vionet0.dns", "10.0.2.3\n"));
         if (ipfd >= 0)
                 close(ipfd);
 }
@@ -1118,6 +1170,88 @@ test_peercred(void)
 }
 
 /*
+ * dnscache forwarding to the name servers a lease offers: with
+ * dnscache_forwarders="DHCP", dhcpcd's hook, told of a lease that names
+ * 127.0.0.54, starts dnscache again forwarding there (servers/@), and
+ * names resolve through a fake server on 127.0.0.54 alone (the root,
+ * 127.0.0.53, is not there now). Then everything is put back: the
+ * setting taken out, the lease's own server (10.0.2.3) told to the
+ * hook again, and dnscache resolving from the roots.
+ */
+static void
+test_dns_forward(void)
+{
+        static const char conf[] = "\ndnscache_forwarders=\"DHCP\"\n";
+        char *bound[] = { "reason=BOUND", "interface=vionet0",
+            "new_domain_name_servers=127.0.0.54", NULL };
+        char *again[] = { "reason=RENEW", "interface=vionet0",
+            "new_domain_name_servers=10.0.2.3", NULL };
+        char *hook[] = { "/bin/sh", "/libexec/dhcpcd-run-hooks", NULL };
+        char *restart[] = { "/bin/sh", "/etc/rc.d/dnscache", "restart",
+            NULL };
+        struct addrinfo hints, *ai = NULL;
+        struct sockaddr_in sin;
+        char out[512], saved[4096];
+        ssize_t len = -1;
+        int fd, ok = 0;
+        pid_t pid;
+
+        if ((fd = open("/etc/rc.conf", O_RDWR | O_APPEND)) >= 0) {
+                len = pread(fd, saved, sizeof(saved), 0);
+                CHECK(len > 0 && len < (ssize_t)sizeof(saved) &&
+                    write(fd, conf, sizeof(conf) - 1) ==
+                    (ssize_t)sizeof(conf) - 1);
+                close(fd);
+        }
+        CHECK(fd >= 0);
+
+        memset(&sin, 0, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_port = htons(53);
+        sin.sin_addr.s_addr = inet4(127, 0, 0, 54);
+        fd = socket(AF_INET, SOCK_DGRAM, 0);
+        CHECK(fd >= 0 && bind(fd, (struct sockaddr *)&sin,
+            sizeof(sin)) == 0);
+        if ((pid = fork()) == 0) {
+                fake_root(fd, 20000);
+                _exit(0);
+        }
+        close(fd);
+
+        CHECK(run_outv(hook, bound, out, sizeof(out)));
+        CHECK(file_is("/var/db/dhcpcd/vionet0.dns", "127.0.0.54\n"));
+        CHECK(file_is("/etc/dnscache/root/servers/@", "127.0.0.54\n"));
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        for (int i = 0; i < 10 && !ok; i++) {
+                int e = getaddrinfo("test.belka", NULL, &hints, &ai);
+
+                ok = e == 0 && ai != NULL &&
+                    ((struct sockaddr_in *)ai->ai_addr)->sin_addr.s_addr ==
+                    inet4(10, 20, 30, 40);
+                if (e == 0)
+                        freeaddrinfo(ai);
+                if (!ok)
+                        sleep(1);
+        }
+        CHECK(ok);
+        if (pid > 0) {
+                kill(pid, SIGKILL);
+                (void)reap(pid, 5000);
+        }
+
+        if (len > 0 && (fd = open("/etc/rc.conf", O_WRONLY | O_TRUNC)) >= 0) {
+                CHECK(write(fd, saved, (size_t)len) == len);
+                close(fd);
+        }
+        CHECK(run_outv(hook, again, out, sizeof(out)));
+        CHECK(file_is("/var/db/dhcpcd/vionet0.dns", "10.0.2.3\n"));
+        CHECK(run_outv(restart, NULL, out, sizeof(out)));
+        CHECK(file_is("/etc/dnscache/root/servers/@", "127.0.0.53\n"));
+}
+
+/*
  * chroot(2), in a child: refused to an ordinary user; for root, "/" is
  * then the new root, ".." stops there, and what is outside is gone.
  * getentropy(), which needs no /dev, still works there: 256 bytes and
@@ -1172,6 +1306,7 @@ main(int argc, char **argv)
         test_dhcp();
         test_peercred();
         test_dns();
+        test_dns_forward();
         test_chroot();
         test_login(argv[1], argv[2], argv[3], argv[4]);
         test_utmpx(argv[1]);

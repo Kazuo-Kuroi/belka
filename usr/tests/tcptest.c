@@ -548,6 +548,33 @@ test_nonblock(int s)
         close(c);
 }
 
+/*
+ * MSG_WAITALL: a read waits for all it asked for, sent in two parts
+ * 100 ms apart; at the end of the peer's data it gives what there was.
+ */
+static void
+test_waitall(int s)
+{
+        char buf[8];
+        int c, a, status = -1;
+        pid_t pid;
+
+        pair_on(s, PORT, &c, &a);
+        CHECK(write(c, "ab", 2) == 2);
+        if ((pid = fork()) == 0) {
+                usleep(100000);
+                _exit(write(c, "cd", 2) == 2 ? 0 : 1);
+        }
+        CHECK(recv(a, buf, 4, MSG_WAITALL) == 4 &&
+            memcmp(buf, "abcd", 4) == 0);
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid &&
+            WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        CHECK(write(c, "e", 1) == 1 && shutdown(c, SHUT_WR) == 0);
+        CHECK(recv(a, buf, 4, MSG_WAITALL) == 1 && buf[0] == 'e');
+        close(a);
+        close(c);
+}
+
 /* What poll says of stream sockets in their states. */
 static void
 test_poll(int s)
@@ -799,6 +826,7 @@ main(void)
         test_keepalive(s);
         test_linger(s);
         test_nonblock(s);
+        test_waitall(s);
         test_poll(s);
 
         close(s);

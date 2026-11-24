@@ -1041,9 +1041,10 @@ ROOT_DEPS       := $(wildcard build/native-compiler-sdk/*.stamp \
                    contrib/djbdns/README.belka \
                    contrib/dhcpcd/LICENSE contrib/dhcpcd/README.belka \
                    contrib/dhcpcd/src/dhcpcd.8 contrib/dhcpcd/src/dhcpcd.conf.5 \
+                   usr/sbin/dhcpcd/dhcpcd-run-hooks \
                    contrib/zlib/README usr/bin/chsh/chsh.1 usr/sbin/accounts/accounts.8 \
                    usr/sbin/netcfg/netcfg.8) \
-                   $(wildcard etc/* etc/defaults/* etc/rc.d/* etc/routed/* etc/dnscache/root/*/* \
+                   $(wildcard etc/* etc/defaults/* etc/rc.d/* etc/routed/* etc/dnscache/* etc/dnscache/root/*/* \
                    contrib/netbsd/etc/rc.subr contrib/netbsd/etc/rc.d/*)
 
 $(ROOT_IMG): $(ROOT_DEPS)
