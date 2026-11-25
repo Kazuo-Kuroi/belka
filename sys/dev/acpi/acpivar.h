@@ -59,4 +59,19 @@ const uint8_t *acpi_find_table(const char *, int, size_t *);
 /* The revision of the RSDP: 0 for ACPI 1.0, 2 or more with an XSDT. */
 int acpi_revision(void);
 
+/* The namespace, through uACPI (acpi_namespace.c), at configure(). */
+void acpi_namespace_init(void);
+int acpi_namespace_ready(void);
+
+/*
+ * The GSI and INTR_ flags of a PCI interrupt pin (1-4) of device dev on
+ * a root bus, from its _PRT; 0, or -1 if ACPI does not say.
+ */
+int acpi_pci_route(unsigned int, unsigned int, unsigned int, uint32_t *,
+    int *);
+
+/* Power off by ACPI S5: prepare (interrupts on; 0, or -1), then do it. */
+int acpi_poweroff_prepare(void);
+void acpi_poweroff(void);
+
 #endif /* _DEV_ACPI_ACPIVAR_H_ */

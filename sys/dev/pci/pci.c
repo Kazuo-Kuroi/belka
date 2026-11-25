@@ -22,6 +22,7 @@
 #include <vm/hat.h>
 #include <vm/kva.h>
 
+#include "dev/acpi/acpivar.h"
 #include "dev/pci/pcireg.h"
 #include "dev/pci/pcivar.h"
 
@@ -343,4 +344,46 @@ pci_msi_establish(struct pci_dev *pd, int flags, int (*fn)(void *),
             pci_conf_read(pd, PCI_COMMAND_STATUS_REG, 2) |
             PCI_COMMAND_INTX_DISABLE);
         return cookie;
+}
+
+/* The bridge whose secondary bus is bus, or NULL. */
+static const struct pci_dev *
+pci_bridge_to(unsigned int bus)
+{
+        for (unsigned int i = 0; i < pci_ndevs; i++) {
+                const struct pci_dev *b = &pci_devs[i];
+
+                if ((b->pd_hdrtype & PCI_HDR_TYPE_MASK) == PCI_HDR_BRIDGE &&
+                    ((pci_conf_read(b, PCI_BRIDGE_BUS_REG, 4) >> 8) & 0xff) ==
+                    bus)
+                        return b;
+        }
+        return NULL;
+}
+
+void *
+pci_intx_establish(struct pci_dev *pd, int flags, int (*fn)(void *),
+    void *arg, const char *name)
+{
+        unsigned int bus = pd->pd_bus, dev = pd->pd_dev, pin = pd->pd_intpin;
+        uint32_t gsi;
+        int iflags;
+
+        if (pin < 1 || pin > 4 || !acpi_namespace_ready())
+                return NULL;
+        /* Up through the bridges until a root bus's _PRT has the pin. */
+        while (acpi_pci_route(bus, dev, pin, &gsi, &iflags) != 0) {
+                const struct pci_dev *b = pci_bridge_to(bus);
+
+                if (b == NULL)
+                        return NULL;
+                pin = (pin - 1 + dev) % 4 + 1;
+                dev = b->pd_dev;
+                bus = b->pd_bus;
+        }
+        pci_conf_write(pd, PCI_COMMAND_STATUS_REG, 2,
+            pci_conf_read(pd, PCI_COMMAND_STATUS_REG, 2) &
+            ~(uint32_t)PCI_COMMAND_INTX_DISABLE);
+        return intr_establish((int)gsi, (flags & INTR_FAST) | iflags, fn, arg,
+            name);
 }

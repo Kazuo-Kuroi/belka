@@ -5,13 +5,14 @@
  */
 
 /*
- * The Intel driver (/dev/e1000g0, QEMU's 82574 "e1000e"), from user
- * mode, against vionet2 on the same QEMU hub. The station address the
- * self-test boot gives it, in DL_INFO_ACK and DL_PHYS_ADDR_ACK; frames
- * of every size each way, padded when short; a broadcast; a frame for
+ * The Intel driver, from user mode, on each device the self-test boot
+ * gives it: /dev/e1000g0, QEMU's 82574 ("e1000e", by MSI-X), and
+ * /dev/e1000g1, its 82540EM ("e1000", by INTx routed by the ACPI _PRT),
+ * against vionet2 on the same QEMU hub. For each, the station address
+ * in DL_INFO_ACK and DL_PHYS_ADDR_ACK; frames of every size each way, padded when short; a broadcast; a frame for
  * another station not delivered, unless the stream is promiscuous; a
  * burst of frames more than the device's rings hold, each way, all in
- * order. Then e1000g0 under /dev/ip as 10.4.0.1/24, with the test
+ * order. Then the device under /dev/ip as 10.4.0.1/24, with the test
  * playing 10.4.0.2 on vionet2: a UDP datagram out, after IP's ARP
  * request is answered, and one in, to a socket. Exits with the number
  * of failed checks.
@@ -38,7 +39,17 @@
 #define ETHERTYPE_TEST  0x88b5          /* IEEE's for local experiments */
 #define BURST           300             /* more than a ring of 128 */
 
-static const uint8_t e1kmac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x59 };
+/* The devices: QEMU's 82574 ("e1000e") and 82540EM ("e1000"). */
+static const struct {
+        const char      *name;
+        const char      *path;
+        uint8_t         mac[6];
+} devs[] = {
+        { "e1000g0", "/dev/e1000g0", { 0x52, 0x54, 0x00, 0x12, 0x34, 0x59 } },
+        { "e1000g1", "/dev/e1000g1", { 0x52, 0x54, 0x00, 0x12, 0x34, 0x5a } },
+};
+static const char *e1kname, *e1kpath;  /* the one under test */
+static const uint8_t *e1kmac;
 static const uint8_t viomac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x58 };
 static const uint8_t other[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
 static const uint8_t broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
@@ -274,7 +285,7 @@ answer_arp(int arp)
         return unitdata(arp, e1kmac, ETHERTYPE_ARP, r, sizeof(r)) == 0;
 }
 
-/* e1000g0 under IP, and UDP each way with the host on vionet2. */
+/* The device under IP, and UDP each way with the host on vionet2. */
 static void
 udp_over_ip(int vip, int varp)
 {
@@ -291,8 +302,8 @@ udp_over_ip(int vip, int varp)
         ipfd = open("/dev/ip", O_RDWR);
         uctl = open("/dev/udp", O_RDWR);
         lfd = open("/dev/ip", O_RDWR);
-        d1 = open("/dev/e1000g0", O_RDWR);
-        d2 = open("/dev/e1000g0", O_RDWR);
+        d1 = open(e1kpath, O_RDWR);
+        d2 = open(e1kpath, O_RDWR);
         CHECK(ipfd >= 0 && uctl >= 0 && lfd >= 0 && d1 >= 0 && d2 >= 0);
         if (ipfd < 0 || uctl < 0 || lfd < 0 || d1 < 0 || d2 < 0)
                 return;
@@ -304,12 +315,12 @@ udp_over_ip(int vip, int varp)
         close(d1);
         close(d2);
         memset(&ia, 0, sizeof(ia));
-        strcpy(ia.ia_name, "e1000g0");
+        strcpy(ia.ia_name, e1kname);
         ia.ia_ipmux = m1;
         ia.ia_arpmux = m2;
         CHECK(istr(ipfd, IP_IFATTACH, &ia, sizeof(ia)) == 0);
         memset(&ifa, 0, sizeof(ifa));
-        strcpy(ifa.ifa_name, "e1000g0");
+        strcpy(ifa.ifa_name, e1kname);
         memcpy(&ifa.ifa_addr, ourip, 4);
         ifa.ifa_mask = htonl(0xffffff00);
         CHECK(istr(ipfd, IP_IFADDR, &ifa, sizeof(ifa)) == 0);
@@ -376,8 +387,9 @@ udp_over_ip(int vip, int varp)
         close(ipfd);
 }
 
-int
-main(void)
+/* The whole test on the device e1kname, against vionet2. */
+static void
+test_device(void)
 {
         dl_phys_addr_req_t phys = { DL_PHYS_ADDR_REQ, DL_CURR_PHYS_ADDR };
         dl_promiscon_req_t pon = { DL_PROMISCON_REQ, DL_PROMISC_PHYS };
@@ -385,15 +397,14 @@ main(void)
         uint8_t buf[64];
         int e1k, vio, vip, varp;
 
-        e1k = open("/dev/e1000g0", O_RDWR);
+        printf("e1000test: %s\n", e1kname);
+        e1k = open(e1kpath, O_RDWR);
         vio = open("/dev/vionet2", O_RDWR);
         vip = open("/dev/vionet2", O_RDWR);
         varp = open("/dev/vionet2", O_RDWR);
         CHECK(e1k >= 0 && vio >= 0 && vip >= 0 && varp >= 0);
-        if (e1k < 0 || vio < 0 || vip < 0 || varp < 0) {
-                printf("e1000test: %d failures\n", failures);
-                return failures;
-        }
+        if (e1k < 0 || vio < 0 || vip < 0 || varp < 0)
+                return;
 
         /* The station address. */
         CHECK(dlreq(e1k, &info, sizeof(info)) == DL_INFO_ACK &&
@@ -442,6 +453,17 @@ main(void)
         udp_over_ip(vip, varp);
         close(vip);
         close(varp);
+}
+
+int
+main(void)
+{
+        for (size_t i = 0; i < sizeof(devs) / sizeof(devs[0]); i++) {
+                e1kname = devs[i].name;
+                e1kpath = devs[i].path;
+                e1kmac = devs[i].mac;
+                test_device();
+        }
         printf("e1000test: %d failures\n", failures);
         return failures;
 }

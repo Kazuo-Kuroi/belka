@@ -21,5 +21,6 @@
 #define AD_HALT         0       /* halt the processors */
 #define AD_BOOT         1       /* reboot */
 #define AD_IBOOT        2       /* reboot, asking for a boot program */
+#define AD_POWEROFF     6       /* halt, then turn the power off (ACPI S5) */
 
 #endif /* _SYS_UADMIN_H_ */

@@ -264,6 +264,21 @@ ENTRY(cpu_curthread)
         ret
 END(cpu_curthread)
 
+/* void outw(uint16_t port, uint16_t value) */
+ENTRY(outw)
+        movl    %edi, %edx
+        movl    %esi, %eax
+        outw    %ax, %dx
+        ret
+END(outw)
+
+/* uint16_t inw(uint16_t port) */
+ENTRY(inw)
+        movl    %edi, %edx
+        inw     %dx, %ax
+        ret
+END(inw)
+
 /* void outl(uint16_t port, uint32_t value) */
 ENTRY(outl)
         movl    %edi, %edx

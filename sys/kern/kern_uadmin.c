@@ -6,7 +6,7 @@
 
 /*
  * uadmin(cmd, fcn, mdep), UnixWare's 55: the superuser stops the
- * system. fcn is AD_HALT, AD_BOOT or AD_IBOOT.
+ * system. fcn is AD_HALT, AD_BOOT, AD_IBOOT or AD_POWEROFF.
  *
  *   A_REBOOT    at once, with nothing written back
  *   A_SHUTDOWN  every other process but init gets SIGKILL and a few
@@ -78,7 +78,8 @@ sys_uadmin(const uint64_t *args, uint64_t *rv __unused)
                 return EPERM;
         if (cmd != A_REBOOT && cmd != A_SHUTDOWN)
                 return EINVAL;
-        if (fcn != AD_HALT && fcn != AD_BOOT && fcn != AD_IBOOT)
+        if (fcn != AD_HALT && fcn != AD_BOOT && fcn != AD_IBOOT &&
+            fcn != AD_POWEROFF)
                 return EINVAL;
         if (cmd == A_SHUTDOWN) {
                 printf("uadmin: shutting down\n");

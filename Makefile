@@ -104,6 +104,17 @@ CFLAGS          := -std=c99 -pedantic $(WARNINGS) -O2 -g \
                    -fno-pic -fno-pie -fno-omit-frame-pointer \
                    -fno-asynchronous-unwind-tables -fno-unwind-tables \
                    $(MD_CFLAGS) $(TC_CFLAGS) $(DEFINES) $(INCLUDES)
+# uACPI and Belka's glue to it: C11 as uACPI is written, with its
+# options (sizes given to frees, printf-style logging) and include path,
+# and without the warnings Belka's own code is held to.
+UACPI_DEFINES   := -DUACPI_SIZED_FREES -DUACPI_FORMATTED_LOGGING
+UACPI_CFLAGS    := $(filter-out -std=c99 -pedantic -Wmissing-prototypes \
+                   -Wstrict-prototypes -Wshadow -Wcast-qual,$(CFLAGS)) \
+                   -std=gnu11 -Isys/external/uacpi/include $(UACPI_DEFINES)
+$(BUILD)/sys/external/uacpi/%.o: CFLAGS := $(UACPI_CFLAGS) \
+                   -Wno-unused-parameter -Wno-sign-compare
+$(BUILD)/sys/dev/acpi/acpi_uacpi.o $(BUILD)/sys/dev/acpi/acpi_namespace.o: \
+                   CFLAGS := $(UACPI_CFLAGS)
 ASFLAGS         := -g -fno-pic -fno-pie $(MD_ASFLAGS) $(TC_CFLAGS) $(DEFINES) $(INCLUDES)
 
 SRCS            := $(MI_SRCS) $(MD_SRCS)
@@ -193,12 +204,13 @@ QEMU_BASE       := -machine q35,accel=kvm:tcg -cpu $(QEMU_CPU) -smp $(SMP) -m $(
 # CD-ROM the ISO is on), a virtio-net device on QEMU's user-mode network (no host privilege), at a
 # station address usr/tests/nettest.c expects, and two more on a hub of
 # their own, for usr/tests/fwdtest.c (the IP interface, and the hosts).
-# An Intel 82574 (QEMU's e1000e) is on that hub too, for
-# usr/tests/e1000test.c.
+# Intel's 82574 (QEMU's e1000e, by MSI-X) and 82540EM (e1000, by INTx)
+# are on that hub too, for usr/tests/e1000test.c.
 TEST_MAC        := 52:54:00:12:34:56
 TEST_MAC1       := 52:54:00:12:34:57
 TEST_MAC2       := 52:54:00:12:34:58
 TEST_MAC3       := 52:54:00:12:34:59
+TEST_MAC4       := 52:54:00:12:34:5a
 QEMU_FLAGS      := $(QEMU_BASE) \
                    -drive file=$(DISK),if=none,id=vd0,format=raw \
                    -device virtio-blk-pci,drive=vd0,disable-legacy=on \
@@ -218,6 +230,8 @@ QEMU_FLAGS      := $(QEMU_BASE) \
                    -device virtio-net-pci,netdev=h2,mac=$(TEST_MAC2),disable-legacy=on \
                    -netdev hubport,id=h3,hubid=1 \
                    -device e1000e,netdev=h3,mac=$(TEST_MAC3) \
+                   -netdev hubport,id=h4,hubid=1 \
+                   -device e1000,netdev=h4,mac=$(TEST_MAC4) \
                    -display none -no-reboot
 # A normal boot: the root image (tools/mkroot.sh) as vd0, and the
 # virtio-net device on QEMU's user-mode network, which /etc/rc.conf

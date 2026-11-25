@@ -5,10 +5,11 @@
  */
 
 /*
- * Intel's PCIe gigabit Ethernet controllers of the e1000 family, as far
- * as e1000g.c uses them: register offsets in BAR 0, their bits, and the
- * legacy receive and transmit descriptors. Written from Intel's 82574
- * family datasheet; the names follow its register mnemonics.
+ * Intel's gigabit Ethernet controllers of the e1000 family, as far as
+ * e1000g.c uses them: register offsets in BAR 0, their bits, and the
+ * legacy receive and transmit descriptors. Written from Intel's 8254x
+ * and 82574 family datasheets; the names follow their register
+ * mnemonics.
  */
 
 #ifndef _DEV_PCI_E1000REG_H_
@@ -17,6 +18,9 @@
 #include <stdint.h>
 
 #define E1000_VENDOR_INTEL      0x8086
+#define E1000_DEV_82540EM       0x100e          /* QEMU's "e1000" */
+#define E1000_DEV_82540EM_LOM   0x1015
+#define E1000_DEV_82545EM       0x100f          /* VMware's */
 #define E1000_DEV_82574L        0x10d3
 #define E1000_DEV_82574LA       0x10f6
 
@@ -77,6 +81,7 @@
 #define  E1000_TCTL_COLD(n)     ((uint32_t)(n) << 12)   /* collision distance */
 #define E1000_TIPG              0x0410
 #define  E1000_TIPG_DEFAULT     (8u | 8u << 10 | 6u << 20)
+#define  E1000_TIPG_8254X       (10u | 8u << 10 | 6u << 20)     /* copper */
 #define E1000_TDBAL             0x3800
 #define E1000_TDBAH             0x3804
 #define E1000_TDLEN             0x3808

@@ -80,6 +80,7 @@ done
 install_prog init sbin/init
 install_prog reboot sbin/reboot
 ln "$src/sbin/reboot" "$src/sbin/halt"
+ln "$src/sbin/reboot" "$src/sbin/poweroff"
 install_prog mount sbin/mount
 install_prog rcorder sbin/rcorder
 install_prog netcfg sbin/netcfg

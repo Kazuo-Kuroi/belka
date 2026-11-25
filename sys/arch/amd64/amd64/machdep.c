@@ -39,6 +39,7 @@
 #include <vm/kva.h>
 #include <vm/page.h>
 
+#include "dev/acpi/acpivar.h"
 #include "dev/ic/ns16550var.h"
 #include "dev/pci/pcivar.h"
 
@@ -728,6 +729,8 @@ void
 configure(void)
 {
         boottime_sec = rtc_time_of_day();
+        /* The namespace first: the PCI drivers need its interrupt routes. */
+        acpi_namespace_init();
         pci_init();
         /* Console input, for the console terminal. */
         (void)ns16550_intr_attach(&console_softc, CONSOLE_IRQ, cons_input,
@@ -807,7 +810,11 @@ void
 mdboot(int fcn, int status)
 {
         static volatile uint32_t reported;
+        int off = 0;
 
+        /* The firmware hears of a power-off while interrupts are on. */
+        if (fcn == AD_POWEROFF && atomic_load_32(&reported) == 0)
+                off = acpi_poweroff_prepare() == 0;
         disable_intr();
         cpu_halt_others();
         if (atomic_swap_32(&reported, 1) != 0)
@@ -823,6 +830,11 @@ mdboot(int fcn, int status)
                 printf("mdboot: reset failed, halting\n");
         }
 
+        if (off) {
+                printf("powering off\n");
+                cnflush();
+                acpi_poweroff();
+        }
         printf("halted\n");
         cnflush();
 

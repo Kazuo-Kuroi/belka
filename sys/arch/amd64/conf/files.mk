@@ -15,6 +15,9 @@ KERNEL_MAP      := sys/arch/amd64/conf/kernel.map
 KERNEL_BEGIN_SRC := sys/arch/amd64/amd64/kernel_begin.S
 KERNEL_END_SRC  := sys/arch/amd64/amd64/kernel_end.S
 
+# uACPI, the AML interpreter (sys/external/uacpi/README.belka).
+UACPI_SRCS      := $(wildcard sys/external/uacpi/source/*.c)
+
 MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/kern_clock.c \
                    sys/kern/kern_cons.c \
@@ -95,6 +98,9 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/vm/vm_segvn.c \
                    sys/vm/vm_mman.c \
                    sys/dev/acpi/acpi.c \
+                   sys/dev/acpi/acpi_namespace.c \
+                   sys/dev/acpi/acpi_uacpi.c \
+                   $(UACPI_SRCS) \
                    sys/dev/pci/pci.c \
                    sys/dev/pci/e1000g.c \
                    sys/dev/pci/nvme.c \

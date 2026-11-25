@@ -111,6 +111,8 @@ can be added with `useradd` and given a password with `passwd`.
 
 - **`halt`** stops the system cleanly, and QEMU exits. **`reboot`**
   also ends the run, since QEMU is started with `-no-reboot`.
+- **`poweroff`** (or `halt -p`) turns the machine off through ACPI, and
+  QEMU exits.
 - **Ctrl-A X** quits QEMU at once, as if the power were cut.
 - **Ctrl-A C** switches between the console and the QEMU monitor. In the
   monitor, `info kvm` says whether KVM is in use.

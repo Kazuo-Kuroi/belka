@@ -100,4 +100,13 @@ int pci_msix_count(const struct pci_dev *);
 void *pci_msi_establish(struct pci_dev *, int, int (*)(void *), void *,
     const char *);
 
+/*
+ * Attach handler fn(arg) to the device's INTx pin, routed by the ACPI
+ * _PRT (the pin swizzled across bridges to a root bus). The line may be
+ * shared: fn must say whether its device raised it. Returns a cookie,
+ * or NULL if the device has no pin or ACPI does not route it.
+ */
+void *pci_intx_establish(struct pci_dev *, int, int (*)(void *), void *,
+    const char *);
+
 #endif /* _DEV_PCI_PCIVAR_H_ */

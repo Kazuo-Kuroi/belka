@@ -308,6 +308,8 @@ Recorded 2026-11-07.
   `_PRT` routing for INTx yet). Each entry gets its own vector and
   interrupt thread through `intr_establish_msi()`, delivered to the
   bootstrap processor.
+  Superseded in part (2026-11-25): INTx is routed by the `_PRT`, through
+  uACPI; see "ACPI through uACPI: INTx, the 82540EM, and power-off".
 - **Drivers** match from a static table for now; the names (match,
   attach, softc) are chosen to grow into the planned NetBSD-style
   autoconfiguration.
@@ -3433,7 +3435,9 @@ target was to be the older 82540EM (QEMU's `e1000`), but that part has
 only INTx interrupts. Belka routes PCI interrupts by MSI-X alone, and
 can't map an INTx line to its GSI without the ACPI `_PRT`, for which it
 has no AML interpreter. The 82574 has the same register model and
-descriptors, with MSI-X.
+descriptors, with MSI-X. (Superseded 2026-11-25: with uACPI, the
+82540EM is driven by INTx too; see "ACPI through uACPI: INTx, the
+82540EM, and power-off".)
 
 - **Rings:** one receive and one transmit ring of 128 legacy
   descriptors, each with its own 2048-byte buffer, two to a page, so
@@ -3504,9 +3508,9 @@ and flushes, from a thread.
   BAR maps: ICH9's is 4 KB.
 - **MSI:** `pci_msi_establish` gives a device without MSI-X its one
   MSI vector, through the same `intr_establish_msi` that MSI-X uses.
-  AHCI uses MSI-X if the HBA has it, else MSI. Nothing yet takes
-  INTx, which needs the ACPI `_PRT` (see "The Ethernet DLPI provider,
-  and Intel's 82574").
+  AHCI uses MSI-X if the HBA has it, else MSI. INTx, which needs the
+  ACPI `_PRT`, came later the same day: see "ACPI through uACPI: INTx,
+  the 82540EM, and power-off".
 - **Not yet:** NCQ and more than one command per AHCI port, more than
   one NVMe I/O queue, timeouts on a command that never completes,
   TRIM/deallocate, hot plug, and port multipliers.
@@ -3523,3 +3527,66 @@ compares with the count at its start instead. By hand, the boot-test
 image boots with its root on NVMe (`root=nvd0`) and on SATA
 (`root=sd0`), with vfstab changed to match. boottest then passes
 everything except utiltest's checks that name `/dev/vd0` as root.
+
+## ACPI through uACPI: INTx, the 82540EM, and power-off (2026-11-25)
+
+Belka now has an AML interpreter: uACPI 7.0.0 (`sys/external/uacpi`,
+MIT, unchanged; `README.belka`). It was chosen over ACPICA for its
+size, its licence, and a kernel interface small enough to provide in
+one file. Without AML, Belka could not read the `_PRT`, so it could
+not route a PCI device's INTx line to its GSI. That left out every
+device without MSI, such as the 82540EM, older controllers, and some
+bridges. It also could not power the machine off.
+
+- **The glue** (`dev/acpi/acpi_uacpi.c`) provides uACPI's kernel services
+  in Belka's terms:
+  - memory through `kva_map_phys` (write-back; the firmware's MTRRs
+    make device memory uncached) and `kmem`, with the size given to
+    frees (`UACPI_SIZED_FREES`);
+  - configuration space by bus, device and function;
+  - port I/O, which needed `inw` and `outw`;
+  - `gethrtime`, `delay` and a spinning stall;
+  - `struct sema` for uACPI's one blocking primitive, with a timed wait
+    that polls with `cpsema` every tick;
+  - spin locks, and `splhi` to disable interrupts;
+  - the SCI through `intr_establish`, on its ISA IRQ as the MADT's
+    overrides route it;
+  - deferred work run in order by one kernel thread, `acpiwork`.
+
+  Waiting for work to complete counts the SCI handlers in flight, then
+  waits for the queue to empty.
+- **At boot** (`dev/acpi/acpi_namespace.c`, from `configure()` before
+  `pci_init()`, in the main thread, which may sleep): load and
+  initialize the namespace, select the I/O APIC model (`\_PIC` 1), turn
+  on the GPEs, and read the `_PRT` of each PCI root bridge (PNP0A03,
+  PNP0A08), with its bus number (`_BBN`). The early table code
+  (`dev/acpi/acpi.c`: MADT, FADT reset register) stays, since the
+  processors and I/O APICs are needed before uACPI can run.
+- **INTx** (`pci_intx_establish`): the pin is swizzled up through
+  PCI-to-PCI bridges, `(pin + device) mod 4` at each, until a root
+  bus's `_PRT` names it. An entry gives a GSI directly (level, active
+  low), or a link device whose current resources (`_CRS`) give the
+  interrupt, its trigger and its polarity. The line may be shared:
+  each handler says whether its device raised it. A bridge's own
+  `_PRT` is not yet consulted.
+- **The 82540EM and 82545EM** (QEMU's `e1000`, VMware's) are driven by
+  e1000g over INTx. Their differences from the 82574: no IVAR, CTRL_EXT
+  bit or TXDCTL bit 22, IPGT 10, no MSI-X causes in IMS, and an ICR
+  that a read clears. QEMU's e1000 batches writes to most of its
+  registers until it must answer an access. So a write that must take
+  effect at once, RCTL (promiscuous mode) or RDT, is followed by a
+  read. Without the read, a frame sent right after promiscuous mode
+  was turned on was filtered every time.
+- **Power-off:** `uadmin(A_SHUTDOWN, AD_POWEROFF)`, with AD_POWEROFF 6
+  as in Solaris. `mdboot` tells the firmware (S5's preparation, `_PTS`)
+  while interrupts are still on, then enters S5. If ACPI cannot do it,
+  it halts. `halt -p` and `/sbin/poweroff` ask for it.
+
+**Testing:** the self-test boot now also has an `e1000` on the hub.
+`e1000test` runs its whole suite on each Intel device, the 82574 by
+MSI-X and the 82540EM by INTx through the `_PRT`: frames of every
+size, filtering and promiscuous mode, bursts, and UDP through IP. The
+boot logs show uACPI's tables, its namespace, and the root bridge's
+128 routing entries. By hand, an image whose `rc.local` ran
+`/sbin/poweroff` shut down, powered off (QEMU exited with status 0),
+and left its root file system clean.

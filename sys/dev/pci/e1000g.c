@@ -5,10 +5,11 @@
  */
 
 /*
- * Intel's PCIe gigabit Ethernet controllers (dev/pci/e1000reg.h): the
- * 82574 for now, which QEMU emulates as "e1000e". Each device is
- * /dev/e1000gN, whose streams are the shared Ethernet DLPI provider's
- * (net/dlether.c). Written from Intel's datasheet.
+ * Intel's gigabit Ethernet controllers of the e1000 family
+ * (dev/pci/e1000reg.h): the PCI 82540EM (QEMU's "e1000") and 82545EM
+ * (VMware's), and the PCIe 82574 (QEMU's "e1000e").
+ * Each device is /dev/e1000gN, whose streams are the shared Ethernet
+ * DLPI provider's (net/dlether.c). Written from Intel's datasheets.
  *
  * One receive and one transmit ring of legacy descriptors, E1000_NDESC
  * each, every descriptor with a 2048-byte buffer of its own, two to a
@@ -17,12 +18,16 @@
  * back on the ring; a frame to send is copied into the next free
  * slot's buffer. The device strips the CRC and pads short frames.
  *
- * Interrupts are MSI-X, all causes on vector 0. The handler (in the
- * vector's interrupt thread) takes the causes from ICR and wakes the
- * device's kernel thread, which drains the receive ring into
- * dlether_input and notes link changes. Transmitted slots are reclaimed
- * as the next frames go out. Group frames all come (MPE); every unicast
- * one too while a stream is promiscuous (UPE).
+ * Interrupts are MSI-X on the 82574, all causes on vector 0 (IVAR), and
+ * INTx on the 8254x, routed by the ACPI _PRT (pci_intx_establish), the
+ * line perhaps shared. The handler (in the interrupt thread) takes the
+ * causes from ICR (a read clears them on the 8254x; the 82574 under
+ * MSI-X has them written back) and wakes the device's kernel thread,
+ * which drains the receive ring into dlether_input and notes link
+ * changes. Transmitted slots are reclaimed as the next frames go out.
+ * Group frames all come (MPE); every unicast one too while a stream is
+ * promiscuous (UPE). A write that must take effect at once (RCTL, RDT)
+ * is followed by a read: QEMU's e1000 batches most register writes.
  *
  * Locks: e1k_intrlock (a spin lock) covers the causes waiting for the
  * thread; e1k_txlock (a spin lock) the transmit ring and RCTL, and may
@@ -56,9 +61,27 @@
 #define E1000_MAXUNITS  8
 #define E1000_REGSIZE   0x20000         /* BAR 0 */
 
+/* The chips taken, and how they differ. */
+struct e1k_chip {
+        uint16_t        ec_device;
+        const char      *ec_name;
+        int             ec_flags;
+};
+#define E1K_82574       0x1             /* MSI-X, IVAR, TXDCTL bit 22 */
+
+static const struct e1k_chip e1k_chips[] = {
+        { E1000_DEV_82540EM, "82540EM", 0 },
+        { E1000_DEV_82540EM_LOM, "82540EM", 0 },
+        { E1000_DEV_82545EM, "82545EM", 0 },
+        { E1000_DEV_82574L, "82574L", E1K_82574 },
+        { E1000_DEV_82574LA, "82574LA", E1K_82574 },
+};
+
 struct e1000g_softc {
         struct dlether  e1k_dl;
         struct pci_dev  *e1k_pd;
+        const struct e1k_chip *e1k_chip;
+        int             e1k_msix;       /* else INTx */
         volatile uint8_t *e1k_regs;
         unsigned int    e1k_unit;
         int             e1k_link;       /* up, as last seen */
@@ -203,6 +226,11 @@ e1k_promisc(struct dlether *de, int on)
         else
                 rctl &= ~E1000_RCTL_UPE;
         e1k_write(sc, E1000_RCTL, rctl);
+        /*
+         * Now: the write may be held back (posted by PCI, or batched by
+         * QEMU's e1000 until it must answer an access) until a read.
+         */
+        (void)e1k_read(sc, E1000_STATUS);
         spin_unlock(&sc->e1k_txlock, s);
 }
 
@@ -236,6 +264,7 @@ e1k_rxdrain(struct e1000g_softc *sc)
         if (last != E1000_NDESC) {
                 membar_producer();
                 e1k_write(sc, E1000_RDT, last);
+                (void)e1k_read(sc, E1000_STATUS);       /* now, as above */
         }
 }
 
@@ -267,7 +296,9 @@ e1k_intr(void *arg)
 
         if (icr == 0)
                 return 0;
-        e1k_write(sc, E1000_ICR, icr);
+        /* Read, ICR is cleared, but for MSI-X: write its bits back. */
+        if (sc->e1k_msix)
+                e1k_write(sc, E1000_ICR, icr);
         s = spin_lock(&sc->e1k_intrlock);
         sc->e1k_causes |= icr;
         sv_signal(&sc->e1k_sv);
@@ -364,19 +395,32 @@ e1k_txinit(struct e1000g_softc *sc)
         e1k_write(sc, E1000_TDH, 0);
         e1k_write(sc, E1000_TDT, 0);
         e1k_write(sc, E1000_TIDV, 0);
-        e1k_write(sc, E1000_TXDCTL,
-            e1k_read(sc, E1000_TXDCTL) | E1000_TXDCTL_COUNT);
-        e1k_write(sc, E1000_TIPG, E1000_TIPG_DEFAULT);
+        if ((sc->e1k_chip->ec_flags & E1K_82574) != 0) {
+                e1k_write(sc, E1000_TXDCTL,
+                    e1k_read(sc, E1000_TXDCTL) | E1000_TXDCTL_COUNT);
+                e1k_write(sc, E1000_TIPG, E1000_TIPG_DEFAULT);
+        } else {
+                e1k_write(sc, E1000_TIPG, E1000_TIPG_8254X);
+        }
         e1k_write(sc, E1000_TCTL, E1000_TCTL_EN | E1000_TCTL_PSP |
             E1000_TCTL_CT(0x0f) | E1000_TCTL_COLD(0x3f));
+}
+
+static const struct e1k_chip *
+e1k_chip(const struct pci_dev *pd)
+{
+        if (pd->pd_vendor != E1000_VENDOR_INTEL)
+                return NULL;
+        for (size_t i = 0; i < sizeof(e1k_chips) / sizeof(e1k_chips[0]); i++)
+                if (e1k_chips[i].ec_device == pd->pd_device)
+                        return &e1k_chips[i];
+        return NULL;
 }
 
 static int
 e1000g_match(const struct pci_dev *pd)
 {
-        return pd->pd_vendor == E1000_VENDOR_INTEL &&
-            (pd->pd_device == E1000_DEV_82574L ||
-            pd->pd_device == E1000_DEV_82574LA);
+        return e1k_chip(pd) != NULL;
 }
 
 static int
@@ -385,19 +429,20 @@ e1000g_attach(struct pci_dev *pd)
         struct e1000g_softc *sc;
         uint32_t ral, rah;
         const char *name;
+        void *ih;
 
         if (e1000g_nunits >= E1000_MAXUNITS) {
                 printf("e1000g: too many devices\n");
                 return -1;
         }
-        if (pd->pd_bar[0].pb_addr == 0 || pd->pd_bar[0].pb_io ||
-            pci_msix_count(pd) == 0) {
-                printf("e1000g %u:%02u.%u: no registers or no MSI-X\n",
+        if (pd->pd_bar[0].pb_addr == 0 || pd->pd_bar[0].pb_io) {
+                printf("e1000g %u:%02u.%u: no registers\n",
                     pd->pd_bus, pd->pd_dev, pd->pd_fn);
                 return -1;
         }
         sc = kmem_zalloc(sizeof(*sc), KM_SLEEP);
         sc->e1k_pd = pd;
+        sc->e1k_chip = e1k_chip(pd);
         sc->e1k_unit = e1000g_nunits;
         snprintf(sc->e1k_dl.de_name, sizeof(sc->e1k_dl.de_name), "e1000g%u",
             sc->e1k_unit);
@@ -435,15 +480,25 @@ e1000g_attach(struct pci_dev *pd)
 
         spinlock_init(&sc->e1k_intrlock, "e1000g");
         sv_init(&sc->e1k_sv, "e1000g");
-        if (pci_msix_establish(pd, 0, 0, e1k_intr, sc, name) == NULL) {
+        /* The 82574 by MSI-X, every cause on vector 0; the 8254x by INTx. */
+        if (pci_msix_count(pd) > 0) {
+                sc->e1k_msix = 1;
+                ih = pci_msix_establish(pd, 0, 0, e1k_intr, sc, name);
+        } else {
+                ih = pci_intx_establish(pd, 0, e1k_intr, sc, name);
+        }
+        if (ih == NULL) {
                 printf("%s: cannot set up its interrupt\n", name);
                 kmem_free(sc, sizeof(*sc));
                 return -1;
         }
-        e1k_write(sc, E1000_IVAR, E1000_IVAR_RXQ0(0) | E1000_IVAR_TXQ0(0) |
-            E1000_IVAR_OTHER(0) | E1000_IVAR_EVERYWB);
-        e1k_write(sc, E1000_CTRL_EXT,
-            e1k_read(sc, E1000_CTRL_EXT) | E1000_CTRL_EXT_PBA);
+        if ((sc->e1k_chip->ec_flags & E1K_82574) != 0) {
+                e1k_write(sc, E1000_IVAR, E1000_IVAR_RXQ0(0) |
+                    E1000_IVAR_TXQ0(0) | E1000_IVAR_OTHER(0) |
+                    E1000_IVAR_EVERYWB);
+                e1k_write(sc, E1000_CTRL_EXT,
+                    e1k_read(sc, E1000_CTRL_EXT) | E1000_CTRL_EXT_PBA);
+        }
 
         e1k_txinit(sc);
         e1k_rxinit(sc);
@@ -458,9 +513,11 @@ e1000g_attach(struct pci_dev *pd)
         (void)kthread_create(e1k_thread, sc, PRI_KERNEL + 5, name);
         e1k_write(sc, E1000_IMS, E1000_INT_TXDW | E1000_INT_LSC |
             E1000_INT_RXDMT0 | E1000_INT_RXO | E1000_INT_RXT0 |
-            E1000_INT_RXQ0 | E1000_INT_TXQ0 | E1000_INT_OTHER);
-        printf("%s: Intel 82574, address %02x:%02x:%02x:%02x:%02x:%02x\n",
-            name, sc->e1k_dl.de_addr[0], sc->e1k_dl.de_addr[1],
+            ((sc->e1k_chip->ec_flags & E1K_82574) != 0 ?
+            E1000_INT_RXQ0 | E1000_INT_TXQ0 | E1000_INT_OTHER : 0));
+        printf("%s: Intel %s, %s, address %02x:%02x:%02x:%02x:%02x:%02x\n",
+            name, sc->e1k_chip->ec_name, sc->e1k_msix ? "MSI-X" : "INTx",
+            sc->e1k_dl.de_addr[0], sc->e1k_dl.de_addr[1],
             sc->e1k_dl.de_addr[2], sc->e1k_dl.de_addr[3],
             sc->e1k_dl.de_addr[4], sc->e1k_dl.de_addr[5]);
         e1k_linkcheck(sc);
