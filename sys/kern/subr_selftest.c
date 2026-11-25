@@ -481,6 +481,9 @@ kmem_round(void)
         return st.ps_free;
 }
 
+/* Large blocks in use before the kmem tests, which drivers keep. */
+static size_t kmem_large_base;
+
 static void
 selftest_kmem(void)
 {
@@ -490,6 +493,7 @@ selftest_kmem(void)
         void *a, *b;
         char *z;
 
+        kmem_large_base = kmem_large_inuse();
         CHECK(kmem_alloc(0, KM_SLEEP) == NULL);
 
         /* Zeroed allocation, small and large. */
@@ -500,9 +504,9 @@ selftest_kmem(void)
         z = kmem_zalloc(3 * PAGESIZE + 5, KM_SLEEP);
         CHECK(((uintptr_t)z & PAGEOFFSET) == 0);
         CHECK(z[0] == 0 && z[3 * PAGESIZE + 4] == 0);
-        CHECK(kmem_large_inuse() == 1);
+        CHECK(kmem_large_inuse() == kmem_large_base + 1);
         kmem_free(z, 3 * PAGESIZE + 5);
-        CHECK(kmem_large_inuse() == 0);
+        CHECK(kmem_large_inuse() == kmem_large_base);
 
         /*
          * Two identical rounds must end with the same free page count:
@@ -511,7 +515,7 @@ selftest_kmem(void)
         free1 = kmem_round();
         free2 = kmem_round();
         CHECK(free1 == free2);
-        CHECK(kmem_large_inuse() == 0);
+        CHECK(kmem_large_inuse() == kmem_large_base);
 
         /* A private zone. */
         kz = kmem_zone_init(40, "selftest");
@@ -655,7 +659,7 @@ selftest_mp(void)
         CHECK(mp_nested_count == n * n);
 
         smp_call_all(mp_kmem_worker, NULL);
-        CHECK(kmem_large_inuse() == 0);
+        CHECK(kmem_large_inuse() == kmem_large_base);
 
         CHECK(mp_failures == 0);
         printf("selftest: %u processors: %ju locked increments, "
