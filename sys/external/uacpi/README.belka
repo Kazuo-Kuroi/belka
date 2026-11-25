@@ -1,0 +1,29 @@
+uACPI
+=====
+
+uACPI 7.0.0, by Daniil Tatianin and its contributors, an ACPI
+implementation with an AML interpreter, from https://github.com/uACPI/uACPI
+(the 7.0.0 release, https://github.com/uACPI/uACPI/archive/refs/tags/7.0.0.tar.gz,
+SHA-256 4ccdb4c06d06c54116920eb861adf3a87efd3285c762e2e6f3529b52c6d20fa5).
+MIT licence: LICENSE.
+
+Only what Belka builds is here: include/ and source/, with LICENSE and
+README.md. Not here: the tests, and the meson and CMake build files
+(source/files.cmake among them). None of the sources is changed.
+
+Belka builds it into the kernel (sys/arch/amd64/conf/files.mk,
+UACPI_SRCS) as C11, without the warnings Belka's own code is held to,
+and with two of its options (Makefile, UACPI_DEFINES):
+
+    UACPI_SIZED_FREES        the size comes with each free, as kmem_free
+                             needs it
+    UACPI_FORMATTED_LOGGING  messages are printf formats, for the
+                             kernel's printf
+
+Belka's side of it is in sys/dev/acpi: acpi_uacpi.c provides the
+kernel services uACPI asks for (<uacpi/kernel_api.h>), and
+acpi_namespace.c loads and initializes the namespace at boot, keeps the
+PCI root bridges' interrupt routing (_PRT) for pci_intx_establish, and
+powers the machine off (S5). The tables Belka read before uACPI came
+(the MADT for the processors and I/O APICs, and the FADT's reset
+register) are still read by sys/dev/acpi/acpi.c, early in boot.
