@@ -31,6 +31,7 @@
 #include <sys/intr.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
+#include <sys/blkdev.h>
 #include <sys/param.h>
 #include <sys/synch.h>
 #include <sys/time.h>
@@ -732,6 +733,8 @@ configure(void)
         /* The namespace first: the PCI drivers need its interrupt routes. */
         acpi_namespace_init();
         pci_init();
+        /* The disks' partitions, once every disk is there. */
+        blkdev_scan_partitions();
         /* Console input, for the console terminal. */
         (void)ns16550_intr_attach(&console_softc, CONSOLE_IRQ, cons_input,
             cons_disconnect);

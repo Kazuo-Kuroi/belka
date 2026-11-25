@@ -47,6 +47,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/sched_rt.c \
                    sys/kern/sched_ts.c \
                    sys/kern/subr_blkdev.c \
+                   sys/kern/subr_gpt.c \
                    sys/kern/sys_generic.c \
                    sys/kern/sys_poll.c \
                    sys/kern/tty.c \
@@ -90,6 +91,7 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/kern/subr_selftest_proc.c \
                    sys/kern/subr_selftest_str.c \
                    sys/libkern/string.c \
+                   sys/libkern/crc32.c \
                    sys/vm/vm_kva.c \
                    sys/vm/vm_page.c \
                    sys/vm/vm_pvn.c \

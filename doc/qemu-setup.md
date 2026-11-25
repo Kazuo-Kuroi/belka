@@ -290,6 +290,9 @@ qemu-system-x86_64 \
   put `root=nvd0` (or `root=sd0`) on the kernel's command line (the
   fourth argument of `tools/mkiso.sh`, which writes the ISO's
   `limine.conf`), and the same device in `/etc/vfstab`.
+- On a disk with a GUID partition table (made with `fdisk`, `sgdisk`, or
+  Belka's `build/tools/mkgpt`), each partition is a device of its own,
+  `nvd0p2` for the second: `root=nvd0p2`, and `/dev/nvd0p2` in vfstab.
 - Run `/sbin/e2fsck -p build/root-gcc.img` first if the last run did
   not end in `halt`.
 

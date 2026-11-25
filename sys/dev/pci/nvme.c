@@ -9,9 +9,9 @@
  * specification. Each namespace with blocks is a block device, nvdN.
  *
  * At attach the controller is reset and enabled with an admin queue
- * pair, through which (polled, as attach cannot sleep) it is
- * identified, asked for one I/O queue pair, and given it. Then the
- * namespaces are identified and registered.
+ * pair, through which (polled) it is identified, asked for one I/O
+ * queue pair, and given it. Then the namespaces are identified and
+ * registered.
  *
  * The I/O queue pair is NVME_QD entries deep. A request takes a
  * command identifier (at most NVME_QD - 1 are out, so the submission
@@ -22,9 +22,19 @@
  * page by PRP1, a second by PRP2, or more by a list in PRP2, each
  * command identifier having room for one. Pages are 4 KB (CC.MPS 0).
  *
- * Locks: nv_sqlock (a spin lock) covers the submission queue's tail and
- * the free command identifiers; nv_cqlock (a spin lock) the completion
- * queue's head and phase. Neither is held with the other.
+ * A request not done in blkdev_timeout ticks is timed out (a callout),
+ * and its requester resets the controller: disabled, every request in
+ * flight failed, then enabled again with fresh queues (nvme_reset). A
+ * controller that does not come back is dead, and fails everything. At
+ * shutdown (uadmin) the controller is told, and waited for.
+ *
+ * Locks: nv_resetlock (an mrlock) is held shared while a request is
+ * submitted, and exclusive by a reset, so that nothing is submitted to
+ * queues being made again. nv_sqlock (a spin lock) covers the
+ * submission queue's tail and the free command identifiers;
+ * nv_cqlock (a spin lock) the completion queue's head and phase and
+ * every request's state, which the handler, the timeout callout and a
+ * reset change under it. Neither spin lock is held with the other.
  */
 
 #include <stddef.h>
@@ -33,6 +43,7 @@
 #include <sys/blkdev.h>
 #include <sys/errno.h>
 #include <sys/kmem.h>
+#include <sys/kthread.h>
 #include <sys/spinlock.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
@@ -55,14 +66,23 @@
 #define NVME_MAXNS      4               /* namespaces taken */
 #define NVME_REGSIZE    0x2000
 
+/* A request's state, under nv_cqlock. */
+#define NR_IDLE         0
+#define NR_PENDING      1               /* with the controller */
+#define NR_DONE         2               /* its completion came */
+#define NR_TIMEDOUT     3               /* its callout came first */
+#define NR_FAILED       4               /* a reset took it away */
+
+struct nvme_softc;
+
 struct nvme_req {
+        struct nvme_softc *nr_sc;
         struct sema     nr_done;
-        volatile uint16_t nr_status;
+        int             nr_state;
+        uint16_t        nr_status;
         uint64_t        *nr_prpl;       /* NVME_PRPMAX entries */
         paddr_t         nr_prplpa;
 };
-
-struct nvme_softc;
 
 struct nvme_ns {
         struct blkdev   ns_bd;
@@ -73,26 +93,35 @@ struct nvme_ns {
 struct nvme_softc {
         struct pci_dev  *nv_pd;
         volatile uint8_t *nv_regs;
+        uint64_t        nv_cap;
         uint32_t        nv_dstrd;
+        uint32_t        nv_iv;          /* the I/O completions' vector */
         int             nv_vwc;         /* a volatile write cache */
+        uint32_t        nv_rtd3e;       /* shutdown latency, us (0: ?) */
         size_t          nv_maxio;
         uint8_t         *nv_id;         /* a page for identify data */
         paddr_t         nv_idpa;
 
-        /* The admin queue pair, used at attach only, by polling. */
+        /* The admin queue pair, polled (attach, reset). */
         volatile struct nvme_sqe *nv_asq;
         volatile struct nvme_cqe *nv_acq;
+        paddr_t         nv_asqpa, nv_acqpa;
         unsigned int    nv_asqt, nv_acqh, nv_aphase;
 
         /* The I/O queue pair. */
+        struct mrlock   nv_resetlock;
+        unsigned int    nv_resets;      /* made so far; under the lock */
+        int             nv_dead;
         struct spinlock nv_sqlock;
         volatile struct nvme_sqe *nv_sq;
+        paddr_t         nv_sqpa;
         unsigned int    nv_sqt;
         uint16_t        nv_free[NVME_QD];
         unsigned int    nv_nfree;
         struct sema     nv_slots;
         struct spinlock nv_cqlock;
         volatile struct nvme_cqe *nv_cq;
+        paddr_t         nv_cqpa;
         unsigned int    nv_cqh, nv_phase;
         struct nvme_req nv_req[NVME_QD];
 
@@ -140,10 +169,11 @@ nv_page(paddr_t *pa)
         return va;
 }
 
-/* Wait until CSTS.RDY is rdy, up to ms; 0, or -1. */
+/* Wait until CSTS.RDY is rdy, as long as CAP.TO allows; 0, or -1. */
 static int
-nv_waitrdy(struct nvme_softc *sc, uint32_t rdy, uint64_t ms)
+nv_waitrdy(struct nvme_softc *sc, uint32_t rdy)
 {
+        uint64_t ms = 500 * ((uint64_t)NVME_CAP_TO(sc->nv_cap) + 1);
         uint64_t end = gethrtime() + ms * 1000000;
 
         while ((nv_read(sc, NVME_CSTS) & NVME_CSTS_RDY) != rdy) {
@@ -183,6 +213,66 @@ nv_admin(struct nvme_softc *sc, struct nvme_sqe *sqe, uint32_t *dw0)
         return NVME_CQE_STATUS(status);
 }
 
+/* Disable the controller, then enable it with empty admin queues. */
+static int
+nv_enable(struct nvme_softc *sc)
+{
+        nv_write(sc, NVME_CC, 0);
+        if (nv_waitrdy(sc, 0) != 0) {
+                printf("nvme: does not stop\n");
+                return -1;
+        }
+        memset((void *)(uintptr_t)sc->nv_asq, 0, PAGESIZE);
+        memset((void *)(uintptr_t)sc->nv_acq, 0, PAGESIZE);
+        sc->nv_asqt = sc->nv_acqh = 0;
+        sc->nv_aphase = 1;
+        nv_write(sc, NVME_AQA, (NVME_AQD - 1) << 16 | (NVME_AQD - 1));
+        nv_write64(sc, NVME_ASQ, sc->nv_asqpa);
+        nv_write64(sc, NVME_ACQ, sc->nv_acqpa);
+        nv_write(sc, NVME_INTMS, 0xffffffff);
+        nv_write(sc, NVME_CC, NVME_CC_EN | NVME_CC_CSS_NVM | NVME_CC_MPS(0) |
+            NVME_CC_IOSQES(6) | NVME_CC_IOCQES(4));
+        if (nv_waitrdy(sc, NVME_CSTS_RDY) != 0) {
+                printf("nvme: does not become ready\n");
+                return -1;
+        }
+        return 0;
+}
+
+/* The I/O queue pair, empty, its completions on vector nv_iv; 0, or -1. */
+static int
+nv_mkqueues(struct nvme_softc *sc)
+{
+        struct nvme_sqe sqe;
+
+        memset((void *)(uintptr_t)sc->nv_sq, 0, PAGESIZE);
+        memset((void *)(uintptr_t)sc->nv_cq, 0, PAGESIZE);
+        sc->nv_sqt = sc->nv_cqh = 0;
+        sc->nv_phase = 1;
+        memset(&sqe, 0, sizeof(sqe));
+        sqe.sqe_opc = NVME_ADM_SET_FEATURES;
+        sqe.sqe_cdw10 = NVME_FEAT_NQUEUES;
+        sqe.sqe_cdw11 = 0;                      /* one of each, less one */
+        if (nv_admin(sc, &sqe, NULL) != 0)
+                return -1;
+        memset(&sqe, 0, sizeof(sqe));
+        sqe.sqe_opc = NVME_ADM_CREATE_CQ;
+        sqe.sqe_prp1 = sc->nv_cqpa;
+        sqe.sqe_cdw10 = (uint32_t)(NVME_QD - 1) << 16 | 1;
+        sqe.sqe_cdw11 = sc->nv_iv << 16 | NVME_CQ_IEN | NVME_QUEUE_PC;
+        if (nv_admin(sc, &sqe, NULL) != 0)
+                return -1;
+        memset(&sqe, 0, sizeof(sqe));
+        sqe.sqe_opc = NVME_ADM_CREATE_SQ;
+        sqe.sqe_prp1 = sc->nv_sqpa;
+        sqe.sqe_cdw10 = (uint32_t)(NVME_QD - 1) << 16 | 1;
+        sqe.sqe_cdw11 = 1u << 16 | NVME_QUEUE_PC;       /* completions: 1 */
+        if (nv_admin(sc, &sqe, NULL) != 0)
+                return -1;
+        nv_write(sc, NVME_INTMC, 0xffffffff);
+        return 0;
+}
+
 /* The I/O completion queue's interrupt. */
 static int
 nvme_intr(void *arg)
@@ -193,6 +283,7 @@ nvme_intr(void *arg)
         for (;;) {
                 volatile struct nvme_cqe *cqe = &sc->nv_cq[sc->nv_cqh];
                 uint16_t status = cqe->cqe_status;
+                struct nvme_req *r;
                 uint16_t cid;
 
                 if (NVME_CQE_PHASE(status) != sc->nv_phase)
@@ -204,15 +295,74 @@ nvme_intr(void *arg)
                         sc->nv_phase ^= 1;
                 }
                 n++;
-                if (cid < NVME_QD) {
-                        sc->nv_req[cid].nr_status = NVME_CQE_STATUS(status);
-                        vsema(&sc->nv_req[cid].nr_done);
-                }
+                if (cid >= NVME_QD)
+                        continue;
+                r = &sc->nv_req[cid];
+                if (r->nr_state != NR_PENDING || blkdev_lose_one())
+                        continue;
+                r->nr_status = NVME_CQE_STATUS(status);
+                r->nr_state = NR_DONE;
+                vsema(&r->nr_done);
         }
         if (n > 0)
                 nv_write(sc, NVME_CQHDBL(1, sc->nv_dstrd), sc->nv_cqh);
         spin_unlock(&sc->nv_cqlock, s);
         return n > 0;
+}
+
+/* A request's callout: blkdev_timeout ticks and no completion. */
+static void
+nvme_timeout(void *arg)
+{
+        struct nvme_req *r = arg;
+        struct nvme_softc *sc = r->nr_sc;
+        int s = spin_lock(&sc->nv_cqlock);
+
+        if (r->nr_state == NR_PENDING) {
+                r->nr_state = NR_TIMEDOUT;
+                vsema(&r->nr_done);
+        }
+        spin_unlock(&sc->nv_cqlock, s);
+}
+
+/*
+ * Reset the controller, unless another reset has come since resets (a
+ * request's own count when it was sent): every request in flight
+ * fails, and the queues are made again. A controller that does not
+ * come back is dead.
+ */
+static void
+nvme_reset(struct nvme_softc *sc, unsigned int resets)
+{
+        int s;
+
+        mrupdate(&sc->nv_resetlock);
+        if (sc->nv_resets != resets || sc->nv_dead) {
+                mrunlock(&sc->nv_resetlock);
+                return;
+        }
+        printf("nvme %u:%02u.%u: a command timed out; resetting\n",
+            sc->nv_pd->pd_bus, sc->nv_pd->pd_dev, sc->nv_pd->pd_fn);
+        nv_write(sc, NVME_CC, 0);
+        (void)nv_waitrdy(sc, 0);
+        /* Nothing more comes from it now: fail what it had. */
+        s = spin_lock(&sc->nv_cqlock);
+        for (int i = 0; i < NVME_QD; i++) {
+                struct nvme_req *r = &sc->nv_req[i];
+
+                if (r->nr_state == NR_PENDING) {
+                        r->nr_state = NR_FAILED;
+                        vsema(&r->nr_done);
+                }
+        }
+        spin_unlock(&sc->nv_cqlock, s);
+        if (nv_enable(sc) != 0 || nv_mkqueues(sc) != 0) {
+                printf("nvme %u:%02u.%u: does not come back; given up\n",
+                    sc->nv_pd->pd_bus, sc->nv_pd->pd_dev, sc->nv_pd->pd_fn);
+                sc->nv_dead = 1;
+        }
+        sc->nv_resets++;
+        mrunlock(&sc->nv_resetlock);
 }
 
 /* PRP1 and PRP2 for len bytes at buf, with r's list if need be. */
@@ -259,8 +409,10 @@ nvme_io(struct nvme_ns *ns, uint8_t opc, uint64_t lba, const void *buf,
         struct nvme_softc *sc = ns->ns_sc;
         struct nvme_sqe sqe;
         struct nvme_req *r;
+        unsigned int resets;
         uint16_t cid, status;
-        int s;
+        int s, state, error;
+        toid_t toid;
 
         memset(&sqe, 0, sizeof(sqe));
         sqe.sqe_opc = opc;
@@ -278,22 +430,44 @@ nvme_io(struct nvme_ns *ns, uint8_t opc, uint64_t lba, const void *buf,
                 sqe.sqe_cdw12 = (uint32_t)(nblk - 1);
         }
         sqe.sqe_cid = cid;
-        r->nr_status = 0xffff;
 
+        mraccess(&sc->nv_resetlock);
+        resets = sc->nv_resets;
+        if (sc->nv_dead) {
+                mrunlock(&sc->nv_resetlock);
+                error = EIO;
+                goto out;
+        }
+        s = spin_lock(&sc->nv_cqlock);
+        r->nr_state = NR_PENDING;
+        r->nr_status = 0xffff;
+        spin_unlock(&sc->nv_cqlock, s);
+        toid = timeout(nvme_timeout, r, blkdev_timeout);
         s = spin_lock(&sc->nv_sqlock);
         memcpy((void *)(uintptr_t)&sc->nv_sq[sc->nv_sqt], &sqe, sizeof(sqe));
         sc->nv_sqt = (sc->nv_sqt + 1) % NVME_QD;
         membar_producer();
         nv_write(sc, NVME_SQTDBL(1, sc->nv_dstrd), sc->nv_sqt);
         spin_unlock(&sc->nv_sqlock, s);
+        mrunlock(&sc->nv_resetlock);
 
         psema(&r->nr_done);
+        (void)untimeout(toid);
+        s = spin_lock(&sc->nv_cqlock);
+        state = r->nr_state;
         status = r->nr_status;
+        r->nr_state = NR_IDLE;
+        spin_unlock(&sc->nv_cqlock, s);
+        if (state == NR_TIMEDOUT)
+                nvme_reset(sc, resets);
+        error = state == NR_DONE && status == 0 ? 0 :
+            state == NR_TIMEDOUT ? ETIMEDOUT : EIO;
+out:
         s = spin_lock(&sc->nv_sqlock);
         sc->nv_free[sc->nv_nfree++] = cid;
         spin_unlock(&sc->nv_sqlock, s);
         vsema(&sc->nv_slots);
-        return status == 0 ? 0 : EIO;
+        return error;
 }
 
 static int
@@ -318,14 +492,50 @@ nvme_flush(struct blkdev *bd)
         return nvme_io(ns, NVME_CMD_FLUSH, 0, NULL, 0);
 }
 
+/*
+ * At shutdown (uadmin, after the file systems are written back): a
+ * normal shutdown, waited for as long as the controller says it takes
+ * (RTD3E), at least a second and at most ten.
+ */
+static void
+nvme_shutdown(void *arg)
+{
+        struct nvme_softc *sc = arg;
+        uint64_t us = sc->nv_rtd3e, end;
+
+        if (sc->nv_dead)
+                return;
+        if (us < 1000000)
+                us = 1000000;
+        if (us > 10000000)
+                us = 10000000;
+        mrupdate(&sc->nv_resetlock);
+        nv_write(sc, NVME_CC, (nv_read(sc, NVME_CC) & ~NVME_CC_SHN_MASK) |
+            NVME_CC_SHN_NORMAL);
+        end = gethrtime() + us * 1000;
+        while ((nv_read(sc, NVME_CSTS) & NVME_CSTS_SHST_MASK) !=
+            NVME_CSTS_SHST_DONE) {
+                if (gethrtime() > end) {
+                        printf("nvme %u:%02u.%u: shutdown not complete\n",
+                            sc->nv_pd->pd_bus, sc->nv_pd->pd_dev,
+                            sc->nv_pd->pd_fn);
+                        break;
+                }
+        }
+        if ((nv_read(sc, NVME_CSTS) & NVME_CSTS_SHST_MASK) ==
+            NVME_CSTS_SHST_DONE)
+                printf("nvme %u:%02u.%u: shut down\n", sc->nv_pd->pd_bus,
+                    sc->nv_pd->pd_dev, sc->nv_pd->pd_fn);
+        sc->nv_dead = 1;                /* no more commands */
+        mrunlock(&sc->nv_resetlock);
+}
+
 /* Identify (cns, nsid) into the identify page; it, or NULL. */
 static uint8_t *
 nv_identify(struct nvme_softc *sc, uint32_t cns, uint32_t nsid)
 {
         struct nvme_sqe sqe;
 
-        if (sc->nv_id == NULL)
-                sc->nv_id = nv_page(&sc->nv_idpa);
         memset(&sqe, 0, sizeof(sqe));
         sqe.sqe_opc = NVME_ADM_IDENTIFY;
         sqe.sqe_nsid = nsid;
@@ -334,61 +544,6 @@ nv_identify(struct nvme_softc *sc, uint32_t cns, uint32_t nsid)
         if (nv_admin(sc, &sqe, NULL) != 0)
                 return NULL;
         return sc->nv_id;
-}
-
-/* The I/O queue pair, its completions on MSI-X vector iv; 0, or -1. */
-static int
-nv_ioqueues(struct nvme_softc *sc, uint32_t iv)
-{
-        struct nvme_sqe sqe;
-        paddr_t sqpa, cqpa, lpa = 0;
-        uint8_t *lists = NULL;
-
-        sc->nv_sq = nv_page(&sqpa);
-        sc->nv_cq = nv_page(&cqpa);
-        sc->nv_phase = 1;
-        spinlock_init(&sc->nv_sqlock, "nvmesq");
-        spinlock_init(&sc->nv_cqlock, "nvmecq");
-        /* The vector first: a queue may only be given an enabled one. */
-        if (pci_msix_establish(sc->nv_pd, (int)iv, 0, nvme_intr, sc,
-            "nvme") == NULL)
-                return -1;
-        memset(&sqe, 0, sizeof(sqe));
-        sqe.sqe_opc = NVME_ADM_SET_FEATURES;
-        sqe.sqe_cdw10 = NVME_FEAT_NQUEUES;
-        sqe.sqe_cdw11 = 0;                      /* one of each, less one */
-        if (nv_admin(sc, &sqe, NULL) != 0)
-                return -1;
-        memset(&sqe, 0, sizeof(sqe));
-        sqe.sqe_opc = NVME_ADM_CREATE_CQ;
-        sqe.sqe_prp1 = cqpa;
-        sqe.sqe_cdw10 = (uint32_t)(NVME_QD - 1) << 16 | 1;
-        sqe.sqe_cdw11 = iv << 16 | NVME_CQ_IEN | NVME_QUEUE_PC;
-        if (nv_admin(sc, &sqe, NULL) != 0)
-                return -1;
-        memset(&sqe, 0, sizeof(sqe));
-        sqe.sqe_opc = NVME_ADM_CREATE_SQ;
-        sqe.sqe_prp1 = sqpa;
-        sqe.sqe_cdw10 = (uint32_t)(NVME_QD - 1) << 16 | 1;
-        sqe.sqe_cdw11 = 1u << 16 | NVME_QUEUE_PC;       /* completions: 1 */
-        if (nv_admin(sc, &sqe, NULL) != 0)
-                return -1;
-
-        sema_init(&sc->nv_slots, NVME_QD - 1, "nvme");
-        for (int i = 0; i < NVME_QD; i++) {
-                struct nvme_req *r = &sc->nv_req[i];
-                size_t off = (size_t)i * NVME_PRPMAX * sizeof(uint64_t) %
-                    PAGESIZE;
-
-                if (off == 0)
-                        lists = nv_page(&lpa);
-                r->nr_prpl = (uint64_t *)(void *)(lists + off);
-                r->nr_prplpa = lpa + off;
-                sema_init(&r->nr_done, 0, "nvmeio");
-                if (i < NVME_QD - 1)
-                        sc->nv_free[sc->nv_nfree++] = (uint16_t)i;
-        }
-        return 0;
 }
 
 /* Trailing blanks off an identify string of len bytes, into out. */
@@ -413,10 +568,9 @@ static int
 nvme_attach(struct pci_dev *pd)
 {
         struct nvme_softc *sc;
-        uint64_t cap;
-        uint32_t nn, iv;
-        paddr_t asqpa, acqpa;
-        uint8_t *idc;
+        uint32_t nn;
+        uint8_t *idc, *lists = NULL;
+        paddr_t lpa = 0;
         char model[41], serial[21];
         int nns = 0;
 
@@ -432,35 +586,44 @@ nvme_attach(struct pci_dev *pd)
         if (sc->nv_regs == NULL)
                 goto fail;
         pci_enable(pd, 0);
-        cap = nv_read(sc, NVME_CAP) | (uint64_t)nv_read(sc, NVME_CAP + 4) << 32;
-        sc->nv_dstrd = NVME_CAP_DSTRD(cap);
-        if (NVME_CAP_MPSMIN(cap) != 0 || NVME_CAP_MQES(cap) < NVME_QD ||
+        sc->nv_cap = nv_read(sc, NVME_CAP) |
+            (uint64_t)nv_read(sc, NVME_CAP + 4) << 32;
+        sc->nv_dstrd = NVME_CAP_DSTRD(sc->nv_cap);
+        if (NVME_CAP_MPSMIN(sc->nv_cap) != 0 ||
+            NVME_CAP_MQES(sc->nv_cap) < NVME_QD ||
             NVME_DOORBELL + 4 * (4u << sc->nv_dstrd) > NVME_REGSIZE) {
                 printf("nvme: unsupported controller (CAP %#jx)\n",
-                    (uintmax_t)cap);
+                    (uintmax_t)sc->nv_cap);
                 goto fail;
         }
 
-        /* Reset, then enable with the admin queues. */
-        nv_write(sc, NVME_CC, 0);
-        if (nv_waitrdy(sc, 0, 500 * (NVME_CAP_TO(cap) + 1)) != 0) {
-                printf("nvme: does not stop\n");
-                goto fail;
-        }
-        sc->nv_asq = nv_page(&asqpa);
-        sc->nv_acq = nv_page(&acqpa);
-        sc->nv_aphase = 1;
-        nv_write(sc, NVME_AQA, (NVME_AQD - 1) << 16 | (NVME_AQD - 1));
-        nv_write64(sc, NVME_ASQ, asqpa);
-        nv_write64(sc, NVME_ACQ, acqpa);
-        nv_write(sc, NVME_INTMS, 0xffffffff);
-        nv_write(sc, NVME_CC, NVME_CC_EN | NVME_CC_CSS_NVM | NVME_CC_MPS(0) |
-            NVME_CC_IOSQES(6) | NVME_CC_IOCQES(4));
-        if (nv_waitrdy(sc, NVME_CSTS_RDY, 500 * (NVME_CAP_TO(cap) + 1)) != 0) {
-                printf("nvme: does not become ready\n");
-                goto fail;
+        /* The queues' and requests' memory, kept across resets. */
+        sc->nv_asq = nv_page(&sc->nv_asqpa);
+        sc->nv_acq = nv_page(&sc->nv_acqpa);
+        sc->nv_sq = nv_page(&sc->nv_sqpa);
+        sc->nv_cq = nv_page(&sc->nv_cqpa);
+        sc->nv_id = nv_page(&sc->nv_idpa);
+        mrinit(&sc->nv_resetlock, "nvmereset");
+        spinlock_init(&sc->nv_sqlock, "nvmesq");
+        spinlock_init(&sc->nv_cqlock, "nvmecq");
+        sema_init(&sc->nv_slots, NVME_QD - 1, "nvme");
+        for (int i = 0; i < NVME_QD; i++) {
+                struct nvme_req *r = &sc->nv_req[i];
+                size_t off = (size_t)i * NVME_PRPMAX * sizeof(uint64_t) %
+                    PAGESIZE;
+
+                if (off == 0)
+                        lists = nv_page(&lpa);
+                r->nr_sc = sc;
+                r->nr_prpl = (uint64_t *)(void *)(lists + off);
+                r->nr_prplpa = lpa + off;
+                sema_init(&r->nr_done, 0, "nvmeio");
+                if (i < NVME_QD - 1)
+                        sc->nv_free[sc->nv_nfree++] = (uint16_t)i;
         }
 
+        if (nv_enable(sc) != 0)
+                goto fail;
         if ((idc = nv_identify(sc, NVME_CNS_CONTROLLER, 0)) == NULL) {
                 printf("nvme: cannot identify the controller\n");
                 goto fail;
@@ -468,19 +631,23 @@ nvme_attach(struct pci_dev *pd)
         nv_string(model, idc + NVME_IDC_MN, 40);
         nv_string(serial, idc + NVME_IDC_SN, 20);
         memcpy(&nn, idc + NVME_IDC_NN, sizeof(nn));
+        memcpy(&sc->nv_rtd3e, idc + NVME_IDC_RTD3E, sizeof(sc->nv_rtd3e));
         sc->nv_vwc = (idc[NVME_IDC_VWC] & 1) != 0;
         sc->nv_maxio = NVME_MAXIO;
         if (idc[NVME_IDC_MDTS] != 0 && idc[NVME_IDC_MDTS] < 16 &&
             ((size_t)PAGESIZE << idc[NVME_IDC_MDTS]) < sc->nv_maxio)
                 sc->nv_maxio = (size_t)PAGESIZE << idc[NVME_IDC_MDTS];
 
-        /* Completions on a vector of their own, if there are two. */
-        iv = pci_msix_count(pd) > 1 ? 1 : 0;
-        if (nv_ioqueues(sc, iv) != 0) {
+        /*
+         * Completions on a vector of their own, if there are two, set up
+         * first: a queue may only be given a vector that is enabled.
+         */
+        sc->nv_iv = pci_msix_count(pd) > 1 ? 1 : 0;
+        if (pci_msix_establish(pd, (int)sc->nv_iv, 0, nvme_intr, sc,
+            "nvme") == NULL || nv_mkqueues(sc) != 0) {
                 printf("nvme: cannot make its I/O queues\n");
                 goto fail;
         }
-        nv_write(sc, NVME_INTMC, 0xffffffff);
         printf("nvme %u:%02u.%u: %s, serial %s, %u namespace%s%s\n",
             pd->pd_bus, pd->pd_dev, pd->pd_fn, model, serial, nn,
             nn == 1 ? "" : "s", sc->nv_vwc ? ", write cache" : "");
@@ -509,6 +676,7 @@ nvme_attach(struct pci_dev *pd)
                 if (blkdev_register(&ns->ns_bd, "nvd") == 0)
                         nns++;
         }
+        (void)shutdown_hook_establish(nvme_shutdown, sc);
         pd->pd_softc = sc;
         return 0;
 fail:

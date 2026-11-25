@@ -178,6 +178,110 @@ out:
         kmem_free(w, 16 * SECSIZE);
 }
 
+
+/*
+ * GPT partitions (kern/subr_gpt.c), on vd3, the test disk with
+ * a table written in by tools/mkgpt.c (Makefile, GPT_PARTS): entries 1,
+ * 2 and 4, so vd3p1, vd3p2 and vd3p4 and no vd3p3; each partition's
+ * sectors are the disk's from its start, in range only; a write to a
+ * partition lands in the disk's sector. With the primary header, or
+ * then the primary entries, broken, the table is read from the backup;
+ * mended, from the primary again.
+ */
+static void
+test_partitions(void)
+{
+        struct blkdev *d = blkdev_lookup("vd3"), *p1 = blkdev_lookup("vd3p1"),
+            *p2 = blkdev_lookup("vd3p2"), *p4 = blkdev_lookup("vd3p4");
+        unsigned char *buf = kmem_alloc(4 * SECSIZE, KM_SLEEP);
+        unsigned char *w = kmem_alloc(SECSIZE, KM_SLEEP);
+        unsigned char *save = kmem_alloc(2 * SECSIZE, KM_SLEEP);
+        int backup = -1;
+
+        CHECK(d != NULL && p1 != NULL && p2 != NULL && p4 != NULL);
+        CHECK(blkdev_lookup("vd3p3") == NULL);
+        if (d == NULL || p1 == NULL || p2 == NULL || p4 == NULL)
+                goto out;
+        CHECK(p1->bd_parent == d && p1->bd_start == 2048 &&
+            p1->bd_nsectors == 2048 && p1->bd_secsize == SECSIZE);
+        CHECK(p2->bd_start == 4096 && p2->bd_nsectors == 8192);
+        CHECK(p4->bd_start == 12288 && p4->bd_nsectors == 16000 - 12288 + 1);
+
+        CHECK(blkdev_read(p1, 0, buf, 4) == 0 && pattern_ok(buf, 2048, 4));
+        CHECK(blkdev_read(p2, 100, buf, 1) == 0 && pattern_ok(buf, 4196, 1));
+        CHECK(blkdev_read(p2, 8190, buf, 2) == 0 &&
+            pattern_ok(buf, 4096 + 8190, 2));
+        CHECK(blkdev_read(p2, 8191, buf, 2) == ENXIO);
+        CHECK(blkdev_read(p1, 2048, buf, 1) == ENXIO);
+
+        /* A write to the partition, read back through the disk. */
+        for (int i = 0; i < SECSIZE; i++)
+                w[i] = (unsigned char)(i * 5 + 1);
+        CHECK(blkdev_write(p4, 3000, w, 1) == 0);
+        CHECK(blkdev_read(d, 12288 + 3000, buf, 1) == 0 &&
+            memcmp(buf, w, SECSIZE) == 0);
+        CHECK(blkdev_flush(p4) == 0);
+
+        /* The backup table, when the primary header or entries are bad. */
+        CHECK(blkdev_gpt_probe(d, &backup) == 3 && backup == 0);
+        CHECK(blkdev_read(d, 1, save, 2) == 0);
+        memset(buf, 0, SECSIZE);
+        CHECK(blkdev_write(d, 1, buf, 1) == 0);
+        CHECK(blkdev_gpt_probe(d, &backup) == 3 && backup == 1);
+        CHECK(blkdev_write(d, 1, save, 1) == 0);
+        memcpy(buf, save + SECSIZE, SECSIZE);
+        buf[0] ^= 0xff;                 /* the first entry's type */
+        CHECK(blkdev_write(d, 2, buf, 1) == 0);
+        CHECK(blkdev_gpt_probe(d, &backup) == 3 && backup == 1);
+        CHECK(blkdev_write(d, 2, save + SECSIZE, 1) == 0);
+        CHECK(blkdev_gpt_probe(d, &backup) == 3 && backup == 0);
+        CHECK(blkdev_gpt_probe(blkdev_lookup("vd0"), &backup) == -1);
+out:
+        kmem_free(buf, 4 * SECSIZE);
+        kmem_free(w, SECSIZE);
+        kmem_free(save, 2 * SECSIZE);
+}
+
+/* CRC-32 (libkern/crc32.c): the check value, and in two pieces. */
+static void
+test_crc32(void)
+{
+        static const char nine[] = "123456789";
+
+        CHECK(crc32(0, nine, 9) == 0xcbf43926u);
+        CHECK(crc32(crc32(0, nine, 4), nine + 4, 5) == 0xcbf43926u);
+        CHECK(crc32(0, nine, 0) == 0);
+}
+
+
+/*
+ * Recovery from a lost completion (blkdev_lose), on the NVMe and AHCI
+ * disks, with the timeout cut to a second: the read times out and the
+ * driver resets the controller or the port; the next read works.
+ */
+static void
+test_recovery(const char *name)
+{
+        struct blkdev *bd = blkdev_lookup(name);
+        unsigned char *buf = kmem_alloc(SECSIZE, KM_SLEEP);
+        long saved = blkdev_timeout;
+        uint64_t start = lbolt;
+
+        CHECK(bd != NULL);
+        if (bd == NULL)
+                goto out;
+        blkdev_timeout = HZ;
+        atomic_store_32(&blkdev_lose, 1);
+        CHECK(blkdev_read(bd, 10, buf, 1) == ETIMEDOUT);
+        CHECK(atomic_load_32(&blkdev_lose) == 0);
+        CHECK(lbolt - start >= HZ);
+        CHECK(blkdev_read(bd, 11, buf, 1) == 0 && pattern_ok(buf, 11, 1));
+        CHECK(blkdev_read(bd, 4000, buf, 1) == 0 && pattern_ok(buf, 4000, 1));
+        blkdev_timeout = saved;
+out:
+        kmem_free(buf, SECSIZE);
+}
+
 /* Several threads reading at once, from different sectors. */
 #define READERS         8
 #define READS           100
@@ -272,10 +376,14 @@ selftest_dev(void)
         test_pci();
         test_random();
         test_siphash();
+        test_crc32();
         /* The same disk image on each kind of disk (Makefile, QEMU_FLAGS). */
         for (size_t i = 0; i < sizeof(disks) / sizeof(disks[0]); i++) {
                 test_block_io(disks[i]);
                 test_concurrent_reads();
         }
+        test_partitions();
+        test_recovery("nvd0");
+        test_recovery("sd0");
         return failures;
 }

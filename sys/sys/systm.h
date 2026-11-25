@@ -38,6 +38,7 @@ int copyin(const void *, void *, size_t);
 int copyout(const void *, void *, size_t);
 int copyinstr(const char *, char *, size_t, size_t *);
 size_t strlen(const char *);
+uint32_t crc32(uint32_t, const void *, size_t);        /* libkern/crc32.c */
 int strcmp(const char *, const char *);
 int strncmp(const char *, const char *, size_t);
 
@@ -87,5 +88,12 @@ int md_selftest(void);
  * failure, and is reported to a test harness when one is attached.
  */
 void mdboot(int, int) __dead;
+
+/*
+ * Run fn(arg) when the system is stopped by uadmin (kern_uadmin.c),
+ * after the file systems are written back: drivers telling their
+ * devices. From thread context; at most SHUTDOWN_NHOOKS. 0, or -1.
+ */
+int shutdown_hook_establish(void (*)(void *), void *);
 
 #endif /* _SYS_SYSTM_H_ */

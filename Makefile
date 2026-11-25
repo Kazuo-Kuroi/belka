@@ -64,6 +64,8 @@ HOSTCC          ?= cc
 DISK            := build/test-disk.img
 DISK_NVME       := build/test-disk-nvme.img
 DISK_SATA       := build/test-disk-sata.img
+DISK_GPT        := build/test-disk-gpt.img
+MKGPT           := build/tools/mkgpt
 MKDISK          := build/tools/mkdisk
 
 # Two ext2 images, rebuilt before every QEMU run because the tests write
@@ -155,7 +157,7 @@ iso: $(ISO)
 
 # mkiso.sh kernel limine-dir timeout cmdline output
 ISO_DEPS        := $(KERNEL) $(LIMINE_DIR)/.stamp tools/mkiso.sh $(DISK) \
-                   $(DISK_NVME) $(DISK_SATA)
+                   $(DISK_NVME) $(DISK_SATA) $(DISK_GPT)
 
 $(ISO): $(ISO_DEPS)
 	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 3 "" $@
@@ -191,6 +193,20 @@ $(MKDISK): tools/mkdisk.c
 $(DISK) $(DISK_NVME) $(DISK_SATA): $(MKDISK)
 	$(MKDISK) $@
 
+$(MKGPT): tools/mkgpt.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -O2 -o $@ tools/mkgpt.c
+
+# The test disk again, partitioned (GPT): entries 1, 2 and 4, in the
+# pattern's sectors, for the partition self-tests. (A copy with its
+# primary header gone would not do for the backup: OVMF mends it from
+# the backup before the kernel boots, so the self-test breaks it.)
+GPT_PARTS       := 2048,4095,efi,ESP 4096,12287,linux,belka-root \
+                   -n 4 12288,16000,swap
+$(DISK_GPT): $(MKDISK) $(MKGPT)
+	$(MKDISK) $@
+	$(MKGPT) $@ $(GPT_PARTS)
+
 # The guest's processor: everything the host offers, with an invariant
 # TSC, which Belka's nanosecond clock needs (QEMU leaves it out of
 # "max"); QEMU_CPU=qemu64 tests the clock-tick fallback.
@@ -218,6 +234,8 @@ QEMU_FLAGS      := $(QEMU_BASE) \
                    -device virtio-blk-pci,drive=vd1,disable-legacy=on \
                    -drive file=$(EXT2_4K),if=none,id=vd2,format=raw \
                    -device virtio-blk-pci,drive=vd2,disable-legacy=on \
+                   -drive file=$(DISK_GPT),if=none,id=vd3,format=raw \
+                   -device virtio-blk-pci,drive=vd3,disable-legacy=on \
                    -drive file=$(DISK_NVME),if=none,id=nv0,format=raw \
                    -device nvme,drive=nv0,serial=belka0 \
                    -drive file=$(DISK_SATA),if=none,id=sd0,format=raw \

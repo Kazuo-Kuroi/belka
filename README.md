@@ -64,7 +64,13 @@ built by `tools/mkdisk.c` with the host compiler (`HOSTCC`, default
 `cc`). Copies of it go on an NVMe controller (`nvd0`,
 `sys/dev/pci/nvme.c`) and on q35's AHCI controller (`sd0`,
 `sys/dev/pci/ahci.c`, beside the CD-ROM it passes over), and the
-block-device self-tests run on all three.
+block-device self-tests run on all three. Both drivers time out a
+command after 30 seconds and recover the device, which the self-tests
+check by losing a completion on purpose. One more copy, `vd3`, has a
+GUID partition table written into it by `tools/mkgpt.c`; its
+partitions (`vd3p1`, `vd3p2`, `vd3p4`: `sys/kern/subr_gpt.c`) are
+checked against the pattern, and against the backup table when the
+primary is broken. Only GPT is read, not MBR partitions or disklabels.
 Two ext2 images are attached as `vd1` (1 KB blocks) and `vd2` (4 KB
 blocks). `tools/mkext2.sh` rebuilds them with `mke2fs` before every
 boot, because the tests write to them. After `make test`, the host

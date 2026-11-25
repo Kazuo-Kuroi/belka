@@ -3513,7 +3513,9 @@ and flushes, from a thread.
   the 82540EM, and power-off".
 - **Not yet:** NCQ and more than one command per AHCI port, more than
   one NVMe I/O queue, timeouts on a command that never completes,
-  TRIM/deallocate, hot plug, and port multipliers.
+  TRIM/deallocate, hot plug, and port multipliers. Timeouts, with
+  partitions and NVMe shutdown, came later the same day: see "GPT
+  partitions, command timeouts, and NVMe shutdown".
 
 **Testing:** the self-test boot gives the test disk image to virtio,
 NVMe and AHCI, each its own copy (`build/test-disk{,-nvme,-sata}.img`).
@@ -3590,3 +3592,68 @@ boot logs show uACPI's tables, its namespace, and the root bridge's
 128 routing entries. By hand, an image whose `rc.local` ran
 `/sbin/poweroff` shut down, powered off (QEMU exited with status 0),
 and left its root file system clean.
+
+## GPT partitions, command timeouts, and NVMe shutdown (2026-11-25)
+
+Three things a real machine's disk needs, after "NVMe and AHCI disks,
+and MSI", whose list of what was not yet done this shortens.
+
+- **Partitions: GPT only** (`kern/subr_gpt.c`). Once the drivers have
+  attached (`blkdev_scan_partitions`, from `configure()`), each disk's
+  GUID partition table is read. The primary is tried first (header in
+  sector 1, then its entry array), else the backup (header in the last
+  sector), each taken whole: the signature, sizes that make sense, and
+  both CRC-32s (`libkern/crc32.c`). Each used entry becomes a block
+  device of its own: the disk's name, `p`, and its entry number from 1
+  (`nvd0p2`, `sd0p1`). Its sectors are the partition's, range-checked,
+  on the disk. MBR partitions, extended partitions and BSD disklabels
+  are not read: a standard GPT layout only. Partitions register after
+  every disk, so the disks keep their devfs minor numbers, and
+  `blkdev_register` counts only names that are a prefix and a number
+  when it numbers a new disk. The table says nothing about what a
+  partition holds beyond its type GUID, which is printed (EFI system,
+  Linux file system and a few others by name). Mounting is by device
+  name (`root=nvd0p2`, vfstab), so XFS, when it comes, needs nothing
+  more from this layer.
+- **Command timeouts** (`blkdev_timeout`, 30 seconds): each command
+  arms a callout, which wakes its requester if no completion has come.
+  On NVMe the requester then resets the controller. The reset disables
+  it, so nothing more is written to memory; fails every request still
+  in flight; enables it again; and makes the I/O queues again. An
+  mrlock keeps submissions out while this runs. Requests remember the
+  reset count when they were sent, so several timeouts lead to one
+  reset. A controller that does not come back is dead and fails
+  everything. On AHCI the port is stopped, its link reset (COMRESET)
+  and started again. The command returns ETIMEDOUT; others in flight
+  on NVMe get EIO.
+- **NVMe shutdown:** drivers may now register a shutdown hook
+  (`shutdown_hook_establish`). uadmin runs the hooks, newest first,
+  after the file systems are written back and before `mdboot`, for
+  A_REBOOT as well as A_SHUTDOWN. The NVMe hook sends a normal
+  shutdown (CC.SHN) and waits for CSTS.SHST to say it is complete. The
+  wait is as long as the controller's RTD3E says, at least one second
+  and at most ten. The controller is then dead to further commands.
+
+**Testing:** `tools/mkgpt.c`, a host program, writes a GPT into an
+image in place: a protective MBR, both headers, both entry arrays.
+util-linux's `sfdisk --verify` accepts what it makes. The self-test
+boot gets a copy of the test disk (`vd3`) with entries 1, 2 and 4.
+The self-tests check:
+
+- each partition's start, size and data through the disk's pattern;
+  the range checks; a write landing in the right sector of the disk;
+  and no `vd3p3`;
+- the backup table, when the self-test has broken the primary header,
+  or then the primary entries (it puts them back after);
+- CRC-32's check value;
+- recovery, on `nvd0` and `sd0` with the timeout cut to a second: a
+  completion the driver is told to lose (`blkdev_lose`) times the read
+  out, and the next reads work.
+
+A copy whose primary header was broken before boot would not test the
+backup: OVMF mends it from the backup first.
+
+By hand, the boot-test image booted as the second partition of a GPT
+NVMe disk (`root=nvd0p2`). boottest then passed all but utiltest's
+checks that name `/dev/vd0`. At its halt the controller reported its
+shutdown complete, and the partition's ext2 came back clean.

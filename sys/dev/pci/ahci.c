@@ -17,7 +17,9 @@
  * sleeps until the interrupt says it is done. At attach, IDENTIFY
  * DEVICE is polled, as attach cannot sleep. Reads and writes are READ
  * and WRITE DMA EXT (48-bit LBAs); a task file error is reported as
- * EIO after the port is stopped and started again.
+ * EIO after the port is stopped and started again. A command not done
+ * in blkdev_timeout ticks (a callout wakes the requester) is ETIMEDOUT,
+ * after the port is stopped, its link reset (COMRESET), and started.
  *
  * Interrupts come by MSI (or MSI-X), one for the HBA: the handler (in
  * the vector's interrupt thread) clears each port's causes and wakes
@@ -25,7 +27,8 @@
  *
  * Locks: ap_lock (a mutex), one per port, covers its command slot and
  * registers while a command runs; ap_intrlock (a spin lock) the causes
- * the handler saw, for the requester.
+ * the handler saw, for the requester, and whether it still waits, which
+ * the handler and the timeout callout change under it.
  */
 
 #include <stddef.h>
@@ -34,6 +37,7 @@
 #include <sys/blkdev.h>
 #include <sys/errno.h>
 #include <sys/kmem.h>
+#include <sys/kthread.h>
 #include <sys/spinlock.h>
 #include <sys/synch.h>
 #include <sys/systm.h>
@@ -70,6 +74,7 @@ struct ahci_port {
         struct spinlock ap_intrlock;
         uint32_t        ap_is;          /* causes for the requester */
         int             ap_waiting;
+        int             ap_timedout;    /* its callout came first */
 };
 
 struct ahci_softc {
@@ -270,22 +275,69 @@ ap_poll(struct ahci_port *ap)
         return ap_result(ap, is);
 }
 
-/* Run it, sleeping until the interrupt; ap_lock held. */
+/* Reset the link (COMRESET), and wait for it to come back. */
+static void
+ap_comreset(struct ahci_port *ap)
+{
+        ap_write(ap, AHCI_PxSCTL, AHCI_SCTL_DET_INIT);
+        ah_spin(2);
+        ap_write(ap, AHCI_PxSCTL, 0);
+        (void)ap_wait(ap, AHCI_PxSSTS, 0xf, 3, 1000);
+        ap_write(ap, AHCI_PxSERR, 0xffffffff);
+}
+
+/* A command timed out: the port stopped, its link reset, started again. */
+static void
+ap_recover(struct ahci_port *ap)
+{
+        printf("%s: a command timed out; resetting the port\n",
+            ap->ap_bd.bd_name);
+        (void)ap_stop(ap);
+        ap_comreset(ap);
+        if (ap_start(ap) != 0)
+                printf("%s: the port stays busy\n", ap->ap_bd.bd_name);
+}
+
+/* A command's callout: blkdev_timeout ticks and no completion. */
+static void
+ahci_timeout(void *arg)
+{
+        struct ahci_port *ap = arg;
+        int s = spin_lock(&ap->ap_intrlock);
+
+        if (ap->ap_waiting) {
+                ap->ap_waiting = 0;
+                ap->ap_timedout = 1;
+                vsema(&ap->ap_done);
+        }
+        spin_unlock(&ap->ap_intrlock, s);
+}
+
+/* Run it, sleeping until the interrupt or the timeout; ap_lock held. */
 static int
 ap_run(struct ahci_port *ap)
 {
         uint32_t is;
-        int s;
+        toid_t toid;
+        int s, timedout;
 
         s = spin_lock(&ap->ap_intrlock);
         ap->ap_is = 0;
         ap->ap_waiting = 1;
+        ap->ap_timedout = 0;
         spin_unlock(&ap->ap_intrlock, s);
+        toid = timeout(ahci_timeout, ap, blkdev_timeout);
         ap_write(ap, AHCI_PxCI, 1);
         psema(&ap->ap_done);
+        (void)untimeout(toid);
         s = spin_lock(&ap->ap_intrlock);
         is = ap->ap_is;
+        timedout = ap->ap_timedout;
         spin_unlock(&ap->ap_intrlock, s);
+        if (timedout) {
+                ap_recover(ap);
+                return ETIMEDOUT;
+        }
         return ap_result(ap, is);
 }
 
@@ -312,7 +364,8 @@ ahci_intr(void *arg)
                 s = spin_lock(&ap->ap_intrlock);
                 ap->ap_is |= pis;
                 if (ap->ap_waiting && ((pis & AHCI_PxI_ERRORS) != 0 ||
-                    (ap_read(ap, AHCI_PxCI) & 1) == 0)) {
+                    (ap_read(ap, AHCI_PxCI) & 1) == 0) &&
+                    !blkdev_lose_one()) {
                         ap->ap_waiting = 0;
                         vsema(&ap->ap_done);
                 }
@@ -402,11 +455,7 @@ ahci_port_attach(struct ahci_softc *sc, unsigned int p)
         ap_write(ap, AHCI_PxCMD, ap_read(ap, AHCI_PxCMD) | AHCI_PxCMD_FRE);
         if (!ap_signature(ap)) {
                 /* None yet: reset the link (COMRESET) and wait again. */
-                ap_write(ap, AHCI_PxSCTL, AHCI_SCTL_DET_INIT);
-                ah_spin(2);
-                ap_write(ap, AHCI_PxSCTL, 0);
-                (void)ap_wait(ap, AHCI_PxSSTS, 0xf, 3, 1000);
-                ap_write(ap, AHCI_PxSERR, 0xffffffff);
+                ap_comreset(ap);
                 if (!ap_signature(ap)) {
                         printf("ahci: port %u: no signature from its "
                             "device\n", p);

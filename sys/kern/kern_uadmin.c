@@ -13,6 +13,10 @@
  *               seconds to go, the file systems are written back and
  *               left clean (vfs_shutdown), and then the same
  *
+ * Either way, the drivers' shutdown hooks then run (newest first), so
+ * that devices hear of it (an NVMe controller is shut down), and then
+ * the machine stops (mdboot).
+ *
  * The caller and init are left as they are: neither runs again.
  */
 
@@ -31,6 +35,24 @@
 #include <sys/vfs.h>
 
 #define SHUTDOWN_WAIT   (5 * HZ)        /* for the killed to exit */
+#define SHUTDOWN_NHOOKS 16
+
+static struct {
+        void    (*sh_fn)(void *);
+        void    *sh_arg;
+} shutdown_hooks[SHUTDOWN_NHOOKS];
+static unsigned int shutdown_nhooks;
+
+int
+shutdown_hook_establish(void (*fn)(void *), void *arg)
+{
+        if (shutdown_nhooks == SHUTDOWN_NHOOKS)
+                return -1;
+        shutdown_hooks[shutdown_nhooks].sh_fn = fn;
+        shutdown_hooks[shutdown_nhooks].sh_arg = arg;
+        shutdown_nhooks++;
+        return 0;
+}
 
 /* Is p one A_SHUTDOWN kills (and waits for)? */
 static int
@@ -91,6 +113,9 @@ sys_uadmin(const uint64_t *args, uint64_t *rv __unused)
                 }
                 vfs_shutdown();
         }
+        /* The devices, in the reverse of their attachment. */
+        for (unsigned int i = shutdown_nhooks; i-- > 0;)
+                shutdown_hooks[i].sh_fn(shutdown_hooks[i].sh_arg);
         mdboot(fcn, 0);
         return 0;
 }

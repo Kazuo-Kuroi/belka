@@ -35,9 +35,13 @@
 #define  NVME_CC_MPS(n)         ((uint32_t)(n) << 7)    /* 4K << n */
 #define  NVME_CC_IOSQES(n)      ((uint32_t)(n) << 16)   /* 2^n bytes */
 #define  NVME_CC_IOCQES(n)      ((uint32_t)(n) << 20)
+#define  NVME_CC_SHN_NORMAL     (1u << 14)      /* shut down, normally */
+#define  NVME_CC_SHN_MASK       (3u << 14)
 #define NVME_CSTS               0x1c
 #define  NVME_CSTS_RDY          (1u << 0)
 #define  NVME_CSTS_CFS          (1u << 1)       /* fatal status */
+#define  NVME_CSTS_SHST_MASK    (3u << 2)
+#define  NVME_CSTS_SHST_DONE    (2u << 2)       /* shutdown complete */
 #define NVME_AQA                0x24            /* sizes less one */
 #define NVME_ASQ                0x28            /* 64 bits */
 #define NVME_ACQ                0x30            /* 64 bits */
@@ -96,6 +100,7 @@ struct nvme_cqe {
 #define NVME_IDC_SN             4               /* serial, 20 bytes */
 #define NVME_IDC_MN             24              /* model, 40 bytes */
 #define NVME_IDC_MDTS           77              /* 2^n minimum pages */
+#define NVME_IDC_RTD3E          88              /* entry latency, us, 4 bytes */
 #define NVME_IDC_NN             516             /* namespaces, 4 bytes */
 #define NVME_IDC_VWC            525             /* volatile write cache */
 #define NVME_IDN_NSZE           0               /* blocks, 8 bytes */
