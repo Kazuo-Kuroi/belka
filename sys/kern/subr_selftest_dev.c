@@ -5,10 +5,11 @@
  */
 
 /*
- * Self-tests for PCI and the virtio block driver, against the test disk
- * that tools/mkdisk.c writes: sector n begins with n (64-bit little
- * endian) and "BELKADSK", followed by (n * 7 + offset) mod 256. Writes
- * go only to the scratch area at the end of the disk.
+ * Self-tests for PCI and the block drivers (virtio, NVMe, AHCI), against
+ * copies of the test disk that tools/mkdisk.c writes: sector n begins
+ * with n (64-bit little endian) and "BELKADSK", followed by
+ * (n * 7 + offset) mod 256. Writes go only to the scratch area at the
+ * end of the disk.
  */
 
 #include <stddef.h>
@@ -98,7 +99,7 @@ test_pci(void)
         CHECK(pci_find_cap(vd, 0x7f, 0) == 0);
 }
 
-static struct blkdev *vd0;
+static struct blkdev *disk;     /* the one under test */
 
 /* A buffer whose pages are not physically adjacent. */
 static void
@@ -124,7 +125,7 @@ test_scattered_buffer(void)
                 (void)hat_kenter(va + (vaddr_t)i * PAGESIZE,
                     page_to_pa(pp[i]), HAT_WRITE);
         CHECK(page_to_pa(pp[1]) != page_to_pa(pp[0]) + PAGESIZE);
-        CHECK(blkdev_read(vd0, 1234, buf, 8) == 0);
+        CHECK(blkdev_read(disk, 1234, buf, 8) == 0);
         CHECK(pattern_ok(buf, 1234, 8));
         hat_kremove(va, 3);
         kva_free(va, 3);
@@ -133,42 +134,45 @@ test_scattered_buffer(void)
 }
 
 static void
-test_block_io(void)
+test_block_io(const char *name)
 {
         unsigned char *big = kmem_alloc(200 * SECSIZE, KM_SLEEP);
         unsigned char *w = kmem_alloc(16 * SECSIZE, KM_SLEEP);
         unsigned char one[SECSIZE];
         uint64_t seed = lbolt;
 
-        vd0 = blkdev_lookup("vd0");
-        CHECK(vd0 != NULL);
-        if (vd0 == NULL)
+        disk = blkdev_lookup(name);
+        CHECK(disk != NULL);
+        if (disk == NULL) {
+                printf("selftest: no disk %s\n", name);
                 goto out;
-        CHECK(vd0->bd_secsize == SECSIZE && vd0->bd_nsectors == DISK_SECTORS);
+        }
+        CHECK(disk->bd_secsize == SECSIZE &&
+            disk->bd_nsectors == DISK_SECTORS);
         CHECK(blkdev_lookup("vd9") == NULL);
 
         for (uint64_t s = 0; s < 32; s++) {
-                CHECK(blkdev_read(vd0, s, one, 1) == 0);
+                CHECK(blkdev_read(disk, s, one, 1) == 0);
                 CHECK(pattern_ok(one, s, 1));
         }
-        CHECK(blkdev_read(vd0, 4000, big, 128) == 0);   /* one 64 KB request */
+        CHECK(blkdev_read(disk, 4000, big, 128) == 0);   /* one 64 KB request */
         CHECK(pattern_ok(big, 4000, 128));
-        CHECK(blkdev_read(vd0, 8100, big, 200) == 0);   /* split in two */
+        CHECK(blkdev_read(disk, 8100, big, 200) == 0);   /* split in two */
         CHECK(pattern_ok(big, 8100, 200));
         test_scattered_buffer();
 
         /* Out of range. */
-        CHECK(blkdev_read(vd0, DISK_SECTORS, one, 1) == ENXIO);
-        CHECK(blkdev_read(vd0, DISK_SECTORS - 2, big, 4) == ENXIO);
+        CHECK(blkdev_read(disk, DISK_SECTORS, one, 1) == ENXIO);
+        CHECK(blkdev_read(disk, DISK_SECTORS - 2, big, 4) == ENXIO);
 
         /* Write, read back, flush. */
         for (int i = 0; i < 16 * SECSIZE; i++)
                 w[i] = (unsigned char)((uint64_t)i * 13 + seed);
-        CHECK(blkdev_write(vd0, SCRATCH_FIRST + 100, w, 16) == 0);
+        CHECK(blkdev_write(disk, SCRATCH_FIRST + 100, w, 16) == 0);
         memset(big, 0, 16 * SECSIZE);
-        CHECK(blkdev_read(vd0, SCRATCH_FIRST + 100, big, 16) == 0);
+        CHECK(blkdev_read(disk, SCRATCH_FIRST + 100, big, 16) == 0);
         CHECK(memcmp(big, w, 16 * SECSIZE) == 0);
-        CHECK(blkdev_flush(vd0) == 0);
+        CHECK(blkdev_flush(disk) == 0);
 out:
         kmem_free(big, 200 * SECSIZE);
         kmem_free(w, 16 * SECSIZE);
@@ -195,7 +199,7 @@ reader_thread(void *arg)
                 n = 1 + (seed >> 8) % 16;
                 seed = seed * 1103515245u + 12345u;
                 sector = (seed >> 8) % (SCRATCH_FIRST - 16);
-                if (blkdev_read(vd0, sector, buf, n) != 0 ||
+                if (blkdev_read(disk, sector, buf, n) != 0 ||
                     !pattern_ok(buf, sector, n))
                         atomic_inc_32_nv(&read_errors);
                 atomic_inc_32_nv(&reads_done);
@@ -209,7 +213,7 @@ test_concurrent_reads(void)
 {
         uint64_t start = lbolt;
 
-        if (vd0 == NULL)
+        if (disk == NULL)
                 return;
         sema_init(&readers_done, 0, "readers");
         read_errors = reads_done = 0;
@@ -220,8 +224,8 @@ test_concurrent_reads(void)
                 psema(&readers_done);
         CHECK(reads_done == READERS * READS);
         CHECK(read_errors == 0);
-        printf("selftest: vd0: %u concurrent reads in %ju ticks, %u bad\n",
-            reads_done, (uintmax_t)(lbolt - start), read_errors);
+        printf("selftest: %s: %u concurrent reads in %ju ticks, %u bad\n",
+            disk->bd_name, reads_done, (uintmax_t)(lbolt - start), read_errors);
 }
 
 /* The random numbers: the cipher is right, and no two draws alike. */
@@ -262,11 +266,16 @@ test_siphash(void)
 int
 selftest_dev(void)
 {
+        static const char *const disks[] = { "vd0", "nvd0", "sd0" };
+
         failures = 0;
         test_pci();
         test_random();
         test_siphash();
-        test_block_io();
-        test_concurrent_reads();
+        /* The same disk image on each kind of disk (Makefile, QEMU_FLAGS). */
+        for (size_t i = 0; i < sizeof(disks) / sizeof(disks[0]); i++) {
+                test_block_io(disks[i]);
+                test_concurrent_reads();
+        }
         return failures;
 }

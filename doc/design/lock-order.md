@@ -42,6 +42,7 @@ object locks below.
 | `a_lock` (mrlock), one per address space (`vm/as.h`) | the segment list and each segment's range | Faults take it shared, layout changes exclusive. A fault may call `VOP_GETPAGE`, so it ranks above a file system's locks. read and write therefore fault their user buffer in before calling the file system (`uio_prefault`), so the copy inside cannot fault into another file's (or the same file's) `VOP_GETPAGE` with that file system's locks held; mapped pages stay until unmapped, so nothing can undo the prefault meanwhile. |
 | `am_lock`, one per anon map (`vm/anon.h`) | the map's anon slots | Held across a fault on the segment, including `VOP_GETPAGE`. |
 | `blkdev_lock` (`kern/subr_blkdev.c`) | the block device registry | Held only while registering or looking up. |
+| `ap_lock`, one per AHCI port (`dev/pci/ahci.c`) | the port's one command slot and its registers while a command runs | Held across the command, while its requester sleeps on `ap_done` for the interrupt; takes `ap_intrlock` briefly. |
 | `intr_mutex` (`arch/amd64/amd64/intr.c`) | the interrupt source table and handler lists, for changes | Held across `smp_call_all()` and `delay()` in `intr_disestablish()`; never taken from an interrupt. |
 
 ## Spin locks
@@ -70,6 +71,9 @@ Listed roughly from outermost to innermost.
 | `vnet_rxlock`, one per virtio-net device (`dev/virtio/vionet.c`) | the received buffers waiting for the device's thread | `vq_lock` | Taken by the receive completion, which wakes the thread on `vnet_rxsv`. The transmit completion frees its buffer (`kmem_free`) under `vq_lock`. |
 | `e1k_intrlock`, one per e1000 device (`dev/pci/e1000g.c`) | the interrupt causes waiting for the device's thread | nothing | Taken by the MSI-X handler, which wakes the thread on `e1k_sv`. Never held with `e1k_txlock`. |
 | `e1k_txlock`, one per e1000 device (`dev/pci/e1000g.c`) | the transmit ring (slots, free count) and RCTL | `de_lock` (a mutex) may be held | Taken by the transmit routine (from a stream's put procedure), by the device's thread to reclaim slots, and by `de_promisc`. Never held across `dlether_input`. |
+| `nv_sqlock`, one per NVMe controller (`dev/pci/nvme.c`) | the I/O submission queue's tail and the free command identifiers | nothing | Never held with `nv_cqlock`, nor while waiting for a command (`nv_slots`, the request's semaphore). |
+| `nv_cqlock`, one per NVMe controller (`dev/pci/nvme.c`) | the I/O completion queue's head and phase | nothing | Taken by the MSI-X handler, which wakes each request (`vsema`) under it. |
+| `ap_intrlock`, one per AHCI port (`dev/pci/ahci.c`) | the interrupt causes saved for the requester, and whether one waits | `ap_lock` (a mutex) may be held | Taken by the MSI handler, which wakes the requester (`vsema`) under it. |
 | `sd_qlock`, one per stream (`kern/strhead.c`) | the stream's `q_next` and back links, for walks of more than one queue | nothing | Plumbing changes the links under it, holding the syncqs too. `canputnext` and back-enabling walk under it and take `q_lock`, then `sq_lock`, inside. |
 | `q_lock`, one per queue (`kern/str_queue.c`) | the queue's messages, counts, bands and flags | `sd_qlock` | Taken from interrupts (`putq`, `qenable`). May allocate a `qband` (`KM_NOSLEEP`) under it. Released before the syncq is touched. |
 | `str_cblock` (`kern/str_queue.c`) | the list of `qtimeout` callbacks | nothing | Held while arming a callout (so `callout_lock` nests inside), and by the firing callout before it takes `sq_lock`. Never held while calling `untimeout()`. |

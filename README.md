@@ -61,7 +61,10 @@ image as root and starts `/sbin/init`.
 Every self-test boot attaches `build/test-disk.img`, an 8 MB disk with
 a known pattern in each sector, as a virtio block device (`vd0`); it is
 built by `tools/mkdisk.c` with the host compiler (`HOSTCC`, default
-`cc`).
+`cc`). Copies of it go on an NVMe controller (`nvd0`,
+`sys/dev/pci/nvme.c`) and on q35's AHCI controller (`sd0`,
+`sys/dev/pci/ahci.c`, beside the CD-ROM it passes over), and the
+block-device self-tests run on all three.
 Two ext2 images are attached as `vd1` (1 KB blocks) and `vd2` (4 KB
 blocks). `tools/mkext2.sh` rebuilds them with `mke2fs` before every
 boot, because the tests write to them. After `make test`, the host

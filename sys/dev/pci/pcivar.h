@@ -93,4 +93,11 @@ void *pci_msix_establish(struct pci_dev *, int, int, int (*)(void *),
     void *, const char *);
 int pci_msix_count(const struct pci_dev *);
 
+/*
+ * Attach handler fn(arg) to the device's one MSI vector, for a device
+ * without MSI-X. Returns an interrupt cookie, or NULL (no MSI).
+ */
+void *pci_msi_establish(struct pci_dev *, int, int (*)(void *), void *,
+    const char *);
+
 #endif /* _DEV_PCI_PCIVAR_H_ */

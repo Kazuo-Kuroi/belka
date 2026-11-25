@@ -3462,3 +3462,64 @@ stream is promiscuous. It sends 300 frames each way, more than a ring
 holds, in order. Then it puts e1000g0 under IP as 10.4.0.1/24 and plays
 10.4.0.2 on vionet2: a UDP datagram goes out after IP's ARP request is
 answered, and one comes in to a socket.
+
+## NVMe and AHCI disks, and MSI (2026-11-25)
+
+Belka could only find its disks through virtio-blk, so it could not
+reach a root file system on a real machine, or under a hypervisor that
+does not offer virtio. It now drives NVMe and AHCI (SATA)
+controllers, the disks of nearly every machine of the last decade.
+Both were written from their public specifications (NVM Express 1.4;
+AHCI 1.3.1 and the ATA command set). Both sit under the existing
+block-device interface (`<sys/blkdev.h>`): synchronous reads, writes
+and flushes, from a thread.
+
+- **nvme** (`dev/pci/nvme.c`, `nvmereg.h`): each namespace with blocks
+  is `nvdN`. Attach resets the controller and enables it with an admin
+  queue pair. Admin commands are polled, as attach cannot sleep:
+  identify the controller, set the number of queues, create one I/O
+  queue pair, identify the namespaces (up to four). The I/O queues are
+  64 deep, so up to 63 commands can be outstanding from any number of
+  threads. Each command has an identifier and a semaphore. The
+  completion queue's MSI-X handler records the status and wakes the
+  requester. Data is described by PRPs, using a list for more than two
+  pages, and each identifier has room for one. Pages are 4 KB (CC.MPS
+  0); a controller whose smallest page is larger is refused. A
+  transfer is 64 KB at most, or less if MDTS is smaller. A flush is
+  sent only if the controller has a volatile write cache. The MSI-X
+  vector must be enabled before the completion queue that names it is
+  created: a controller refuses an unenabled one.
+- **ahci** (`dev/pci/ahci.c`, `ahcireg.h`): each port with an ATA disk
+  is `sdN`; ATAPI devices are passed over (q35's CD-ROM, which the ISO
+  boots from), as are empty ports. Attach resets the HBA. Each port
+  gets one page: its command list, its received-FIS area, and one
+  command table with 32 PRDs. FIS receipt is turned on before the
+  signature is read, because the signature arrives in the device's
+  first register FIS. If no signature comes, the link is reset
+  (COMRESET) once. Each port runs one command at a time, in slot 0,
+  under a mutex, sleeping until the interrupt: READ and WRITE DMA EXT
+  (48-bit LBAs), and FLUSH CACHE EXT. IDENTIFY DEVICE gives the size
+  and logical sector size. A task file error stops and restarts the
+  port and returns EIO. Only as many ports are used as the register
+  BAR maps: ICH9's is 4 KB.
+- **MSI:** `pci_msi_establish` gives a device without MSI-X its one
+  MSI vector, through the same `intr_establish_msi` that MSI-X uses.
+  AHCI uses MSI-X if the HBA has it, else MSI. Nothing yet takes
+  INTx, which needs the ACPI `_PRT` (see "The Ethernet DLPI provider,
+  and Intel's 82574").
+- **Not yet:** NCQ and more than one command per AHCI port, more than
+  one NVMe I/O queue, timeouts on a command that never completes,
+  TRIM/deallocate, hot plug, and port multipliers.
+
+**Testing:** the self-test boot gives the test disk image to virtio,
+NVMe and AHCI, each its own copy (`build/test-disk{,-nvme,-sata}.img`).
+The block-device self-tests (single sectors, 64 KB requests, a
+request split in two, a buffer whose pages are not physically
+adjacent, out-of-range requests, write, read back and flush, and 800
+concurrent reads from eight threads) now run on `vd0`, `nvd0` and
+`sd0`. The kmem self-test counted every large allocation and expected
+none. The NVMe softc is now one that drivers keep, so the test
+compares with the count at its start instead. By hand, the boot-test
+image boots with its root on NVMe (`root=nvd0`) and on SATA
+(`root=sd0`), with vfstab changed to match. boottest then passes
+everything except utiltest's checks that name `/dev/vd0` as root.

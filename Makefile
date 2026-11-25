@@ -62,6 +62,8 @@ OVMF_CODE       ?= /usr/share/OVMF/OVMF_CODE_4M.fd
 # sectors, so the pattern elsewhere survives from run to run.
 HOSTCC          ?= cc
 DISK            := build/test-disk.img
+DISK_NVME       := build/test-disk-nvme.img
+DISK_SATA       := build/test-disk-sata.img
 MKDISK          := build/tools/mkdisk
 
 # Two ext2 images, rebuilt before every QEMU run because the tests write
@@ -141,7 +143,8 @@ $(LIMINE_DIR)/.stamp: tools/fetch-limine.sh
 iso: $(ISO)
 
 # mkiso.sh kernel limine-dir timeout cmdline output
-ISO_DEPS        := $(KERNEL) $(LIMINE_DIR)/.stamp tools/mkiso.sh $(DISK)
+ISO_DEPS        := $(KERNEL) $(LIMINE_DIR)/.stamp tools/mkiso.sh $(DISK) \
+                   $(DISK_NVME) $(DISK_SATA)
 
 $(ISO): $(ISO_DEPS)
 	sh tools/mkiso.sh $(KERNEL) $(LIMINE_DIR) 3 "" $@
@@ -172,7 +175,9 @@ $(MKDISK): tools/mkdisk.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -O2 -o $@ tools/mkdisk.c
 
-$(DISK): $(MKDISK)
+# The test disk, and copies of it for each kind of disk the self-tests
+# drives (NVMe, and SATA on q35's AHCI), as each gets written.
+$(DISK) $(DISK_NVME) $(DISK_SATA): $(MKDISK)
 	$(MKDISK) $@
 
 # The guest's processor: everything the host offers, with an invariant
@@ -183,8 +188,9 @@ QEMU_CPU        ?= max,+invtsc
 QEMU_BASE       := -machine q35,accel=kvm:tcg -cpu $(QEMU_CPU) -smp $(SMP) -m $(MEM) \
                    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
                    -device isa-debug-exit,iobase=0xf4,iosize=0x04
-# The self-test boots: the raw test disk and the two ext2 images, a
-# virtio-net device on QEMU's user-mode network (no host privilege), at a
+# The self-test boots: the raw test disk and the two ext2 images, the
+# test disk again on an NVMe controller and on q35's AHCI (with the
+# CD-ROM the ISO is on), a virtio-net device on QEMU's user-mode network (no host privilege), at a
 # station address usr/tests/nettest.c expects, and two more on a hub of
 # their own, for usr/tests/fwdtest.c (the IP interface, and the hosts).
 # An Intel 82574 (QEMU's e1000e) is on that hub too, for
@@ -200,6 +206,10 @@ QEMU_FLAGS      := $(QEMU_BASE) \
                    -device virtio-blk-pci,drive=vd1,disable-legacy=on \
                    -drive file=$(EXT2_4K),if=none,id=vd2,format=raw \
                    -device virtio-blk-pci,drive=vd2,disable-legacy=on \
+                   -drive file=$(DISK_NVME),if=none,id=nv0,format=raw \
+                   -device nvme,drive=nv0,serial=belka0 \
+                   -drive file=$(DISK_SATA),if=none,id=sd0,format=raw \
+                   -device ide-hd,drive=sd0,bus=ide.0 \
                    -nic none -netdev user,id=n0 \
                    -device virtio-net-pci,netdev=n0,mac=$(TEST_MAC),disable-legacy=on \
                    -netdev hubport,id=h1,hubid=1 \

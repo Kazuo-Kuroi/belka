@@ -28,11 +28,14 @@
 #define PCI_MAXBUSDEPTH 32
 #define PCI_MAXCAPS     48
 
-extern const struct pci_driver virtio_pci_driver, e1000g_pci_driver;
+extern const struct pci_driver virtio_pci_driver, e1000g_pci_driver,
+    nvme_pci_driver, ahci_pci_driver;
 
 static const struct pci_driver *const pci_drivers[] = {
         &virtio_pci_driver,
-        &e1000g_pci_driver
+        &e1000g_pci_driver,
+        &nvme_pci_driver,
+        &ahci_pci_driver
 };
 #define PCI_NDRIVERS    (sizeof(pci_drivers) / sizeof(pci_drivers[0]))
 
@@ -303,6 +306,39 @@ pci_msix_establish(struct pci_dev *pd, int entry, int flags,
         ctl = pci_conf_read(pd, cap + PCI_MSIX_CTL, 2);
         ctl = (ctl | PCI_MSIX_CTL_ENABLE) & ~(uint32_t)PCI_MSIX_CTL_FUNCMASK;
         pci_conf_write(pd, cap + PCI_MSIX_CTL, 2, ctl);
+        pci_conf_write(pd, PCI_COMMAND_STATUS_REG, 2,
+            pci_conf_read(pd, PCI_COMMAND_STATUS_REG, 2) |
+            PCI_COMMAND_INTX_DISABLE);
+        return cookie;
+}
+
+void *
+pci_msi_establish(struct pci_dev *pd, int flags, int (*fn)(void *),
+    void *arg, const char *name)
+{
+        int cap = pci_find_cap(pd, PCI_CAP_MSI, 0);
+        uint32_t ctl, data;
+        uint64_t addr;
+        void *cookie;
+
+        if (cap == 0)
+                return NULL;
+        if ((cookie = intr_establish_msi(flags, fn, arg, name, &addr,
+            &data)) == NULL)
+                return NULL;
+        ctl = pci_conf_read(pd, cap + PCI_MSI_CTL, 2);
+        pci_conf_write(pd, cap + PCI_MSI_CTL, 2, ctl & ~(uint32_t)
+            (PCI_MSI_CTL_ENABLE | PCI_MSI_CTL_MME_MASK));
+        pci_conf_write(pd, cap + PCI_MSI_ADDR_LO, 4, (uint32_t)addr);
+        if ((ctl & PCI_MSI_CTL_64BIT) != 0) {
+                pci_conf_write(pd, cap + PCI_MSI_ADDR_HI, 4,
+                    (uint32_t)(addr >> 32));
+                pci_conf_write(pd, cap + PCI_MSI_DATA_64, 2, data);
+        } else {
+                pci_conf_write(pd, cap + PCI_MSI_DATA_32, 2, data);
+        }
+        pci_conf_write(pd, cap + PCI_MSI_CTL, 2,
+            (ctl & ~(uint32_t)PCI_MSI_CTL_MME_MASK) | PCI_MSI_CTL_ENABLE);
         pci_conf_write(pd, PCI_COMMAND_STATUS_REG, 2,
             pci_conf_read(pd, PCI_COMMAND_STATUS_REG, 2) |
             PCI_COMMAND_INTX_DISABLE);

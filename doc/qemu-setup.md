@@ -282,6 +282,12 @@ qemu-system-x86_64 \
 - For Intel's 82574 rather than virtio-net, give `-device e1000e,netdev=n0`
   instead of the virtio-net device. In `/etc/rc.conf`, name the
   interface `e1000g0` in `net_interfaces` and set `ifaddr_e1000g0`.
+- For the root disk on NVMe or SATA rather than virtio, give
+  `-device nvme,drive=vd0,serial=root` or `-device ide-hd,drive=vd0,bus=ide.0`
+  instead of the virtio-blk device. The disk is then `nvd0` or `sd0`:
+  put `root=nvd0` (or `root=sd0`) on the kernel's command line (the
+  fourth argument of `tools/mkiso.sh`, which writes the ISO's
+  `limine.conf`), and the same device in `/etc/vfstab`.
 - Run `/sbin/e2fsck -p build/root-gcc.img` first if the last run did
   not end in `halt`.
 

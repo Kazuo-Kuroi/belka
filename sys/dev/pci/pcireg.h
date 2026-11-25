@@ -69,4 +69,14 @@
 #define PCI_MSIX_ENTRY_VCTL     0xc
 #define PCI_MSIX_VCTL_MASK      0x00000001
 
+/* The MSI capability. */
+#define PCI_MSI_CTL             0x02    /* 16 bits */
+#define PCI_MSI_CTL_ENABLE      0x0001
+#define PCI_MSI_CTL_MME_MASK    0x0070  /* vectors enabled: one */
+#define PCI_MSI_CTL_64BIT       0x0080
+#define PCI_MSI_ADDR_LO         0x04
+#define PCI_MSI_ADDR_HI         0x08    /* if 64-bit */
+#define PCI_MSI_DATA_32         0x08
+#define PCI_MSI_DATA_64         0x0c
+
 #endif /* _DEV_PCI_PCIREG_H_ */
