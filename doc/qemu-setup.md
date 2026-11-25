@@ -279,6 +279,9 @@ qemu-system-x86_64 \
   `disable-legacy=on`.
 - `-serial mon:stdio` is the console, with the QEMU monitor on Ctrl-A C.
 - `-no-reboot` keeps a triple fault visible rather than letting it loop.
+- For Intel's 82574 rather than virtio-net, give `-device e1000e,netdev=n0`
+  instead of the virtio-net device. In `/etc/rc.conf`, name the
+  interface `e1000g0` in `net_interfaces` and set `ifaddr_e1000g0`.
 - Run `/sbin/e2fsck -p build/root-gcc.img` first if the last run did
   not end in `halt`.
 

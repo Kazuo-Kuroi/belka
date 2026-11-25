@@ -28,10 +28,11 @@
 #define PCI_MAXBUSDEPTH 32
 #define PCI_MAXCAPS     48
 
-extern const struct pci_driver virtio_pci_driver;
+extern const struct pci_driver virtio_pci_driver, e1000g_pci_driver;
 
 static const struct pci_driver *const pci_drivers[] = {
-        &virtio_pci_driver
+        &virtio_pci_driver,
+        &e1000g_pci_driver
 };
 #define PCI_NDRIVERS    (sizeof(pci_drivers) / sizeof(pci_drivers[0]))
 

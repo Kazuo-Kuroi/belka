@@ -32,5 +32,6 @@
 #define DEV_IP_MAJOR            10      /* IPv4 (/dev/ip) clone */
 #define DEV_UDP_MAJOR           11      /* UDP (/dev/udp) clone */
 #define DEV_TCP_MAJOR           12      /* TCP (/dev/tcp) clone */
+#define DEV_E1000G_MAJOR        13      /* Intel e1000 DLPI; unit in the minor */
 
 #endif /* _SYS_MKDEV_H_ */

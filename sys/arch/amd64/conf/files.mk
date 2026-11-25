@@ -96,10 +96,12 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/vm/vm_mman.c \
                    sys/dev/acpi/acpi.c \
                    sys/dev/pci/pci.c \
+                   sys/dev/pci/e1000g.c \
                    sys/dev/virtio/virtio.c \
                    sys/dev/virtio/virtio_pci.c \
                    sys/dev/virtio/vioblk.c \
                    sys/dev/virtio/vionet.c \
+                   sys/net/dlether.c \
                    sys/netinet/arp.c \
                    sys/netinet/ip.c \
                    sys/netinet/ip_reass.c \

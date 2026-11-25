@@ -165,5 +165,6 @@ extern struct strdev strdevsw[];
 extern int nstrdev;
 struct strdev *strdev_register(const char *, struct streamtab *, int,
             unsigned int, unsigned int, mode_t, void *);
+void    *strdev_priv(dev_t);
 
 #endif /* _SYS_STRSUBR_H_ */

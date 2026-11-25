@@ -2523,6 +2523,9 @@ heap bookkeeping with address-space-owned heap state.
   user-mode network, with a fixed station address. `nettest` binds the
   ARP type, asks QEMU's gateway (10.0.2.2) for its address, and checks
   the reply and the DLPI state machine.
+- **Superseded in part (2026-11-24):** the DLPI provider is now shared
+  by every Ethernet driver (`net/dlether.c`); see "The Ethernet DLPI
+  provider, and Intel's 82574" below. What it does is unchanged.
 
 ## ARP and IPv4 (2026-11-22)
 
@@ -3402,3 +3405,60 @@ each id alone and all three at once, keeps a saved group for a later
 EINVAL and EFAULT. `boottest` checks that the shell's parent, sshd,
 runs as the user in an SSH session, and that wtmpx gets the logout's
 record as well as the login's.
+
+## The Ethernet DLPI provider, and Intel's 82574 (2026-11-24)
+
+The DLPI provider that was vionet's (see "virtio-net and DLPI") is now
+shared by every Ethernet driver, in `net/dlether.c` with
+`<sys/dlether.h>`. A driver fills in a `struct dlether` with its name,
+station address and transmit routine, registers it with
+`dlether_register`, and gives each received frame to `dlether_input`.
+The primitives, the state machine and the per-stream filtering are as
+they were. A stream's open finds its device with `strdev_priv`, by
+major number and unit, and each driver keeps its own major
+(`DEV_VIONET_MAJOR` 9, `DEV_E1000G_MAJOR` 13). What is new:
+
+- **`de_promisc`:** an optional hook, called as the first stream turns
+  `DL_PROMISC_PHYS` on or the last one turns it off (or closes). Hardware
+  that filters unicast frames itself needs it. QEMU's virtio-net takes
+  every frame, which had hidden the need.
+- **Frames are built by the provider** (header, data, padding to 60
+  bytes) and handed to the driver whole. vionet copies them after its
+  virtio header.
+
+**e1000g** (`dev/pci/e1000g.c`, `dev/pci/e1000reg.h`) drives Intel's
+82574, which QEMU emulates as `e1000e`. It was written from Intel's
+public datasheet, and named as illumos names the family. The first
+target was to be the older 82540EM (QEMU's `e1000`), but that part has
+only INTx interrupts. Belka routes PCI interrupts by MSI-X alone, and
+can't map an INTx line to its GSI without the ACPI `_PRT`, for which it
+has no AML interpreter. The 82574 has the same register model and
+descriptors, with MSI-X.
+
+- **Rings:** one receive and one transmit ring of 128 legacy
+  descriptors, each with its own 2048-byte buffer, two to a page, so
+  each buffer is physically one piece. Frames are copied in and out.
+  The device strips the CRC and pads short frames.
+- **Interrupts:** every cause goes to MSI-X vector 0 (IVAR). The
+  handler takes the causes from ICR and wakes the device's thread. The
+  thread drains the receive ring, reclaims transmit slots, and reports
+  link changes. The transmit routine reclaims too, when the ring runs
+  short.
+- **Filtering:** broadcast and every multicast frame are taken (BAM,
+  MPE), as DL_ENABMULTI_REQ is not supported. Unicast is the station's
+  own unless a stream is promiscuous (UPE).
+- **Station address:** RAL0/RAH0 as the device loads them from its NVM
+  at reset.
+- **Not yet:** checksum offload, jumbo frames, MSI or INTx (for the
+  8254x and the I217–I219), setting up the PHY (it relies on the
+  PHY's own autonegotiation), and statistics.
+
+**Testing:** the self-test boot puts an `e1000e` on the hub with
+vionet1 and vionet2. `e1000test` checks the station address in
+DL_INFO_ACK and DL_PHYS_ADDR_ACK. It sends frames of 1 to 1500 bytes
+each way to vionet2 (short ones padded with zeros), and a broadcast.
+It checks that a frame for another station is filtered out unless the
+stream is promiscuous. It sends 300 frames each way, more than a ring
+holds, in order. Then it puts e1000g0 under IP as 10.4.0.1/24 and plays
+10.4.0.2 on vionet2: a UDP datagram goes out after IP's ARP request is
+answered, and one comes in to a socket.

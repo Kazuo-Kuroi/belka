@@ -81,3 +81,15 @@ strdev_register(const char *name, struct streamtab *st, int sqlvl,
         nstrdev++;
         return d;
 }
+
+/* A registered device's priv, by its major and STR_UNIT; NULL if none. */
+void *
+strdev_priv(dev_t dev)
+{
+        for (int i = 0; i < nstrdev; i++)
+                if (strdevsw[i].d_major == major(dev) &&
+                    strdevsw[i].d_unit == STR_UNIT(dev) &&
+                    strdevsw[i].d_private != NULL)
+                        return strdevsw[i].d_private;
+        return NULL;
+}
