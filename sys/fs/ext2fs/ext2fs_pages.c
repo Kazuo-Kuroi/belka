@@ -52,8 +52,8 @@ page_io(struct ext2inode *ip, struct page *pp, uint32_t first, uint32_t n,
 {
         struct ext2mount *em = ip->i_mnt;
         char *va = (char *)page_to_kva(pp) + (size_t)first * em->em_bsize;
-        uint64_t sector = (uint64_t)pbn * em->em_bsects;
-        size_t nsec = (size_t)n * em->em_bsects;
+        uint64_t sector = (uint64_t)pbn * em->em_devsects;
+        size_t nsec = (size_t)n * em->em_devsects;
 
         if (writing)
                 return blkdev_write(em->em_dev, sector, va, nsec);

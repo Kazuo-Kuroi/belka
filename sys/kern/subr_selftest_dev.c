@@ -324,6 +324,9 @@ test_concurrent_reads(void)
         for (uintptr_t i = 0; i < READERS; i++)
                 (void)kthread_create(reader_thread, (void *)i, PRI_KERNEL,
                     "reader");
+        /* Flushes meanwhile: on AHCI, each waits for the queue to drain. */
+        for (int i = 0; i < 20; i++)
+                CHECK(blkdev_flush(disk) == 0);
         for (int i = 0; i < READERS; i++)
                 psema(&readers_done);
         CHECK(reads_done == READERS * READS);

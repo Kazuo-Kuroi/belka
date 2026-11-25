@@ -37,7 +37,21 @@
 
 #include "fs/ext2fs/ext2fs.h"
 
-#define EXT2_SB_SECTOR  (EXT2_SBOFF / 512)
+/*
+ * Where the superblock is on dev: the sector holding byte EXT2_SBOFF,
+ * the size of a buffer of whole sectors holding it, and its offset in
+ * that buffer (on a disk of 4 KB sectors, sector 0 and 1024).
+ */
+static void
+ext2fs_sbloc(const struct blkdev *dev, daddr_t *blk, size_t *size,
+    size_t *off)
+{
+        uint32_t ss = dev->bd_secsize;
+
+        *blk = EXT2_SBOFF / ss;
+        *off = EXT2_SBOFF % ss;
+        *size = (*off + EXT2_SBSIZE + ss - 1) / ss * ss;
+}
 
 static int ext2fs_mount(struct vfs *, const void *, struct cred *);
 static int ext2fs_unmount(struct vfs *, struct cred *);
@@ -306,6 +320,8 @@ ext2fs_sbupdate(struct ext2mount *em)
         size_t gdbytes = (size_t)em->em_ngroups * sizeof(struct ext2fs_gd);
         uint32_t gdstart = em->em_sb->s_first_data_block + 1;
         struct buf *bp;
+        size_t sbsize, sboff;
+        daddr_t sbblk;
         int error;
 
         if (em->em_ronly)
@@ -321,9 +337,10 @@ ext2fs_sbupdate(struct ext2mount *em)
                 bdwrite(bp);
         }
         em->em_sb->s_wtime = ext2fs_now();
-        if ((error = bread(em->em_dev, EXT2_SB_SECTOR, EXT2_SBSIZE, &bp)) != 0)
+        ext2fs_sbloc(em->em_dev, &sbblk, &sbsize, &sboff);
+        if ((error = bread(em->em_dev, sbblk, sbsize, &bp)) != 0)
                 return error;
-        memcpy(bp->b_data, em->em_sbraw, EXT2_SBSIZE);
+        memcpy((char *)bp->b_data + sboff, em->em_sbraw, EXT2_SBSIZE);
         bdwrite(bp);
         em->em_dirty = 0;
         return 0;
@@ -339,6 +356,8 @@ ext2fs_mount(struct vfs *vfsp, const void *data, struct cred *cr __unused)
         struct blkdev *dev;
         struct buf *bp;
         uint32_t gdstart;
+        size_t sbsize, sboff;
+        daddr_t sbblk;
         int error;
 
         if (args == NULL || args->ea_dev == NULL)
@@ -354,11 +373,12 @@ ext2fs_mount(struct vfs *vfsp, const void *data, struct cred *cr __unused)
                 if (v->vfs_op == &ext2fs_vfsops &&
                     ((struct ext2mount *)v->vfs_data)->em_dev == dev)
                         return EBUSY;
-        if ((error = bread(dev, EXT2_SB_SECTOR, EXT2_SBSIZE, &bp)) != 0)
+        ext2fs_sbloc(dev, &sbblk, &sbsize, &sboff);
+        if ((error = bread(dev, sbblk, sbsize, &bp)) != 0)
                 return error;
 
         em = kmem_zalloc(sizeof(*em), KM_SLEEP);
-        memcpy(em->em_sbraw, bp->b_data, EXT2_SBSIZE);
+        memcpy(em->em_sbraw, (char *)bp->b_data + sboff, EXT2_SBSIZE);
         brelse(bp);
         em->em_sb = sb = (struct ext2fs_sb *)(void *)em->em_sbraw;
         em->em_dev = dev;
@@ -397,6 +417,13 @@ ext2fs_mount(struct vfs *vfsp, const void *data, struct cred *cr __unused)
 
         em->em_bsize = 1024u << sb->s_log_block_size;
         em->em_bsects = em->em_bsize / 512;
+        if (em->em_bsize < dev->bd_secsize ||
+            em->em_bsize % dev->bd_secsize != 0) {
+                printf("ext2fs: %s: blocks of %u bytes on sectors of %u\n",
+                    dev->bd_name, em->em_bsize, dev->bd_secsize);
+                goto fail;
+        }
+        em->em_devsects = em->em_bsize / dev->bd_secsize;
         em->em_nindir = em->em_bsize / 4;
         em->em_inodesize = sb->s_rev_level >= 1 ? sb->s_inode_size :
             EXT2_GOOD_OLD_INODE_SIZE;

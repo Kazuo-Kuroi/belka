@@ -3657,3 +3657,48 @@ By hand, the boot-test image booted as the second partition of a GPT
 NVMe disk (`root=nvd0p2`). boottest then passed all but utiltest's
 checks that name `/dev/vd0`. At its halt the controller reported its
 shutdown complete, and the partition's ext2 came back clean.
+
+## NCQ, and disks of 4 KB sectors (2026-11-25)
+
+- **NCQ** (`dev/pci/ahci.c`): a port now has as many command slots as
+  both the HBA (CAP.NCS, with CAP.SNCQ) and the disk (IDENTIFY's queue
+  depth, with its NCQ bit) can queue, up to 32, each slot with its own
+  command table. Reads and writes are READ and WRITE FPDMA QUEUED: the
+  sector count goes in the features and the slot's tag in the count,
+  and the command is issued by PxSACT, then PxCI. The handler finishes
+  every active slot that neither register still holds. The issue is
+  made under `ap_intrlock`, which the handler takes, so that a slot is
+  never active before the registers say it is busy. A command that is
+  not queued, FLUSH CACHE EXT, takes the port exclusively and waits for
+  it to drain, as ATA requires. A disk or HBA without NCQ keeps one
+  slot and DMA EXT commands.
+- **Errors under NCQ:** a port error aborts every queued command, so
+  all are failed. The requester that sees it recovers the port, as on
+  a timeout: stopped, the link reset, started. A requester whose
+  command went wrong returns only after the port is stopped, so the
+  HBA can no longer write its buffer. Failed commands are not yet
+  retried, nor is the failing tag found (READ LOG EXT 10h); the block
+  layer gets EIO.
+- **4 KB sectors:** ext2 assumed 512-byte sectors in two places. It
+  read the superblock as sector 2, 1 KB long, which on a disk of 4 KB
+  sectors is a size `getblk` refuses. Now the superblock is read from
+  whichever sector holds byte 1024, in a buffer of whole sectors, at
+  its offset there. And `em_bsects` served both `i_blocks` (always in
+  512-byte units, which is ext2's format) and device addressing. It is
+  now two fields, `em_bsects` and `em_devsects`. A file system whose
+  blocks are smaller than the disk's sectors is refused. GPT
+  (`kern/subr_gpt.c`) and the NVMe driver already worked in the disk's
+  own sector size.
+- **NVMe queues per CPU: not yet.** Belka delivers every MSI-X vector
+  to the bootstrap processor. Queue pairs per processor would only
+  spread the submission lock, while every completion still landed on
+  one CPU, so they wait for interrupt affinity.
+
+**Testing:** the self-test boot's second NVMe controller has 4 KB
+logical blocks (`nvd1`) and a copy of the 4 KB-block ext2 test image.
+The ext2 self-tests run on it as on `vd2`, and the host's `e2fsck`
+finds it clean afterwards. `sd0` runs 32 deep: 800 concurrent reads
+from eight threads take 4 or 5 ticks, against 8 one at a time. The
+concurrent test now also flushes 20 times while the readers run, which
+on AHCI makes each flush wait for the queue to drain. Recovery from a
+lost completion passes as before.

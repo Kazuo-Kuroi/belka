@@ -204,7 +204,8 @@ struct ext2mount {
         uint32_t        em_ngroups;
         uint32_t        em_gdblocks;            /* blocks of descriptors */
         uint32_t        em_bsize;
-        uint32_t        em_bsects;              /* sectors per block */
+        uint32_t        em_bsects;              /* 512-byte units per block */
+        uint32_t        em_devsects;            /* the disk's sectors per block */
         uint32_t        em_ipb;                 /* inodes per block */
         uint32_t        em_inodesize;
         uint32_t        em_nindir;              /* pointers per block */

@@ -672,6 +672,11 @@ selftest_ext2(void)
         CHECK(vfs_mount("ext2fs", "/", NULL) != 0);     /* no device */
         test_filesystem("vd1", "/e1", 1);
         test_filesystem("vd2", "/e4", 0);
+        /* The 4 KB-block image again, on a disk of 4 KB sectors (nvd1). */
+        CHECK(blkdev_lookup("nvd1") != NULL &&
+            blkdev_lookup("nvd1")->bd_secsize == 4096);
+        if (blkdev_lookup("nvd1") != NULL)
+                test_filesystem("nvd1", "/e4n", 0);
         bc_get_stats(&bs);
         printf("selftest: ext2: buffer cache %u buffers, %ju hits, %ju "
             "misses, %ju reads, %ju writes\n", bs.bs_nbuf,

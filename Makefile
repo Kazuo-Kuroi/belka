@@ -72,6 +72,7 @@ MKDISK          := build/tools/mkdisk
 # to them: vd1 with 1 KB blocks and vd2 with 4 KB blocks.
 EXT2_1K         := build/test-ext2-1k.img
 EXT2_4K         := build/test-ext2-4k.img
+EXT2_4KN        := build/test-ext2-4kn.img
 E2FSCK          ?= /sbin/e2fsck
 MKE2FS          ?= /sbin/mke2fs
 DEBUGFS         ?= /sbin/debugfs
@@ -238,6 +239,8 @@ QEMU_FLAGS      := $(QEMU_BASE) \
                    -device virtio-blk-pci,drive=vd3,disable-legacy=on \
                    -drive file=$(DISK_NVME),if=none,id=nv0,format=raw \
                    -device nvme,drive=nv0,serial=belka0 \
+                   -drive file=$(EXT2_4KN),if=none,id=nv1,format=raw \
+                   -device nvme,drive=nv1,serial=belka4k,logical_block_size=4096,physical_block_size=4096 \
                    -drive file=$(DISK_SATA),if=none,id=sd0,format=raw \
                    -device ide-hd,drive=sd0,bus=ide.0 \
                    -nic none -netdev user,id=n0 \
@@ -490,7 +493,8 @@ EXT2_DIRS       = $(LIBC_DIR) usr/lib64=$(LIBC_SODIR) \
 # prerequisite would run only once for all the boots of one make run.
 MKEXT2          = @mkdir -p build && \
                   sh tools/mkext2.sh $(EXT2_1K) 1024 $(EXT2_DIRS) && \
-                  sh tools/mkext2.sh $(EXT2_4K) 4096 $(EXT2_DIRS)
+                  sh tools/mkext2.sh $(EXT2_4K) 4096 $(EXT2_DIRS) && \
+                  cp $(EXT2_4K) $(EXT2_4KN)
 
 ext2-images: $(LIBC_BINS)
 	$(MKEXT2)
@@ -525,6 +529,7 @@ test: $(TEST_ISO) $(LIBC_BINS)
 	@# hold what the self-tests left for us.
 	$(E2FSCK) -fn $(EXT2_1K)
 	$(E2FSCK) -fn $(EXT2_4K)
+	$(E2FSCK) -fn $(EXT2_4KN)
 	sh tools/check-ext2.sh $(DEBUGFS) $(EXT2_1K) $(EXT2_4K)
 
 test-fault: $(FAULT_ISO) $(LIBC_BINS)

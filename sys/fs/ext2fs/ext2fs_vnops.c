@@ -696,7 +696,7 @@ ext2fs_write(struct vnode *vp, struct uio *uio, int ioflag,
                         break;
                 }
                 if (isnew)
-                        binvalblk(em->em_dev, (daddr_t)pbn * em->em_bsects);
+                        binvalblk(em->em_dev, (daddr_t)pbn * em->em_devsects);
                 error = uiomove((char *)page_to_kva(pp) + off % PAGESIZE, n,
                     UIO_WRITE, uio);
                 page_setdirty(pp);

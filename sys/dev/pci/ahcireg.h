@@ -26,6 +26,7 @@
 #define AHCI_CAP                0x00
 #define  AHCI_CAP_NP(c)         (((c) & 0x1f) + 1)      /* ports */
 #define  AHCI_CAP_NCS(c)        ((((c) >> 8) & 0x1f) + 1)       /* slots */
+#define  AHCI_CAP_SNCQ          (1u << 30)      /* native command queueing */
 #define  AHCI_CAP_S64A          (1u << 31)
 #define AHCI_GHC                0x04
 #define  AHCI_GHC_HR            (1u << 0)       /* HBA reset */
@@ -74,6 +75,7 @@
 #define AHCI_PxSCTL             0x2c
 #define  AHCI_SCTL_DET_INIT     0x1             /* COMRESET */
 #define AHCI_PxSERR             0x30
+#define AHCI_PxSACT             0x34            /* NCQ tags outstanding */
 #define AHCI_PxCI               0x38            /* commands issued */
 
 /* A command header: 32 bytes, 32 to a list. */
@@ -108,6 +110,8 @@ struct ahci_prd {
 /* ATA commands. */
 #define ATA_READ_DMA_EXT        0x25
 #define ATA_WRITE_DMA_EXT       0x35
+#define ATA_READ_FPDMA_QUEUED   0x60            /* NCQ */
+#define ATA_WRITE_FPDMA_QUEUED  0x61
 #define ATA_FLUSH_CACHE_EXT     0xea
 #define ATA_IDENTIFY            0xec
 #define ATA_DEV_LBA             0x40
@@ -115,6 +119,9 @@ struct ahci_prd {
 /* IDENTIFY DEVICE data, by 16-bit word. */
 #define ATA_ID_MODEL            27              /* 20 words, swapped */
 #define ATA_ID_LBA28            60              /* 2 words */
+#define ATA_ID_QDEPTH           75              /* queue depth less one */
+#define ATA_ID_SATACAP          76
+#define  ATA_SATACAP_NCQ        (1u << 8)
 #define ATA_ID_CMDSET2          83
 #define  ATA_CMDSET2_LBA48      (1u << 10)
 #define ATA_ID_LBA48            100             /* 4 words */

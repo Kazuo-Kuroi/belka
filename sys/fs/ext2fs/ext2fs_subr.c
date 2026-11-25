@@ -35,7 +35,7 @@ CTASSERT(offsetof(struct ext2fs_direct, e2d_name) == EXT2_DIRENT_HDR);
 int
 ext2fs_bread(struct ext2mount *em, uint32_t bno, struct buf **bpp)
 {
-        return bread(em->em_dev, (daddr_t)bno * em->em_bsects, em->em_bsize,
+        return bread(em->em_dev, (daddr_t)bno * em->em_devsects, em->em_bsize,
             bpp);
 }
 
@@ -43,7 +43,7 @@ ext2fs_bread(struct ext2mount *em, uint32_t bno, struct buf **bpp)
 struct buf *
 ext2fs_getblk(struct ext2mount *em, uint32_t bno)
 {
-        return getblk(em->em_dev, (daddr_t)bno * em->em_bsects, em->em_bsize);
+        return getblk(em->em_dev, (daddr_t)bno * em->em_devsects, em->em_bsize);
 }
 
 enum vtype
