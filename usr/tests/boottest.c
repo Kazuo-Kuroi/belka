@@ -1335,6 +1335,16 @@ test_dhcp(void)
         }
         CHECK(ok);
         CHECK(ok && ping(inet4(10, 0, 2, 2), 3000));
+        /* The hook writes the servers after the address is in: a wait. */
+        ok = 0;
+        for (int i = 0; i < 50 && !ok; i++) {
+                struct stat dst;
+
+                ok = stat("/var/db/dhcpcd/vionet0.dns", &dst) == 0 &&
+                    dst.st_size > 0;
+                if (!ok)
+                        usleep(100000);
+        }
         CHECK(file_is("/var/db/dhcpcd/vionet0.dns", "10.0.2.3\n"));
         if (ipfd >= 0)
                 close(ipfd);
