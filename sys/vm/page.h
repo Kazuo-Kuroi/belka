@@ -75,6 +75,7 @@ struct page {
 
 /* Flags to page_alloc(). */
 #define PA_ZERO         0x0001  /* fill the block with zeroes */
+#define PA_DMA32        0x0002  /* entire block below the 4 GiB DMA limit */
 
 /* Flags to page_seg_add(). */
 #define PSEG_DEFER      0x0001  /* in use until page_release_deferred() */

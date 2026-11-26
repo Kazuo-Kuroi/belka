@@ -231,6 +231,14 @@ selftest_page(void)
         }
         CHECK(page_alloc(PAGE_NORDERS, 0) == NULL);
 
+        /* A 32-bit device must be able to address the entire DMA block. */
+        pp = page_alloc(3, PA_DMA32);
+        CHECK(pp != NULL);
+        if (pp != NULL) {
+                CHECK(page_to_pa(pp) + 8 * PAGESIZE <= (UINT64_C(1) << 32));
+                page_free(pp, 3);
+        }
+
         /* PA_ZERO clears a block that was dirty. */
         pp = page_alloc(2, 0);
         CHECK(pp != NULL);

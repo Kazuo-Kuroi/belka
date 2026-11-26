@@ -61,8 +61,8 @@ static struct page_seg *page_seg_find(pfn_t);
 static void page_list_insert(struct page_node *, struct page *, unsigned int);
 static void page_list_remove(struct page_node *, struct page *, unsigned int);
 static void page_seg_carve(struct page_seg *);
-static int page_recycle_one(void);
-static struct page *page_alloc_buddy(int, unsigned int);
+static int page_recycle_one(pfn_t);
+static struct page *page_alloc_buddy(int, unsigned int, pfn_t);
 
 static struct page_seg *
 page_seg_find(pfn_t pfn)
@@ -335,7 +335,7 @@ page_cache_take(struct page *pp)
  * then unhashed under the vnode's lock, after the node lock is gone.
  */
 static int
-page_recycle_one(void)
+page_recycle_one(pfn_t limit)
 {
         for (int n = 0; n < MAXNODES; n++) {
                 struct page_node *pn = &page_nodes[n];
@@ -345,15 +345,21 @@ page_recycle_one(void)
                 if (pn->pn_ncache == 0)
                         continue;
                 s = spin_lock(&pn->pn_lock);
-                if ((pp = pn->pn_cache_head) == NULL) {
+                for (pp = pn->pn_cache_head; pp != NULL; pp = pp->p_next)
+                        if (pp->p_pfn < limit)
+                                break;
+                if (pp == NULL) {
                         spin_unlock(&pn->pn_lock, s);
                         continue;
                 }
-                pn->pn_cache_head = pp->p_next;
-                if (pn->pn_cache_head != NULL)
-                        pn->pn_cache_head->p_prev = NULL;
+                if (pp->p_prev != NULL)
+                        pp->p_prev->p_next = pp->p_next;
                 else
-                        pn->pn_cache_tail = NULL;
+                        pn->pn_cache_head = pp->p_next;
+                if (pp->p_next != NULL)
+                        pp->p_next->p_prev = pp->p_prev;
+                else
+                        pn->pn_cache_tail = pp->p_prev;
                 pp->p_next = pp->p_prev = NULL;
                 pp->p_flags = PG_RECYCLE;
                 pn->pn_ncache--;
@@ -385,6 +391,8 @@ struct page *
 page_alloc_node(int node, unsigned int order, int flags)
 {
         struct page *pp;
+        pfn_t limit = (flags & PA_DMA32) != 0 ?
+            btop(UINT64_C(1) << 32) : (pfn_t)-1;
 
         if (!page_ready)
                 panic("page_alloc: called before page_init");
@@ -393,8 +401,8 @@ page_alloc_node(int node, unsigned int order, int flags)
         if (node < 0 || node >= MAXNODES)
                 node = 0;
 
-        while ((pp = page_alloc_buddy(node, order)) == NULL) {
-                if (!page_recycle_one())
+        while ((pp = page_alloc_buddy(node, order, limit)) == NULL) {
+                if (!page_recycle_one(limit))
                         return NULL;
         }
         pp->p_vnode = NULL;
@@ -408,7 +416,7 @@ page_alloc_node(int node, unsigned int order, int flags)
 
 /* Take a block from the buddy lists, preferring node, or NULL. */
 static struct page *
-page_alloc_buddy(int node, unsigned int order)
+page_alloc_buddy(int node, unsigned int order, pfn_t limit)
 {
         struct page *pp = NULL;
 
@@ -422,11 +430,14 @@ page_alloc_buddy(int node, unsigned int order)
                         continue;
                 s = spin_lock(&pn->pn_lock);
                 for (o = order; o < PAGE_NORDERS; o++) {
-                        if (pn->pn_free[o] != NULL)
+                        for (pp = pn->pn_free[o]; pp != NULL; pp = pp->p_next)
+                                if (pp->p_pfn < limit)
+                                        break;
+                        if (pp != NULL)
                                 break;
                 }
-                if (o < PAGE_NORDERS) {
-                        pp = pn->pn_free[o];
+                /* The 4 GiB boundary is aligned to every buddy order. */
+                if (pp != NULL) {
                         page_list_remove(pn, pp, o);
 
                         /* Split, returning upper halves to the lists. */
