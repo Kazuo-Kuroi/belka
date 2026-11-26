@@ -50,6 +50,7 @@ void clock(void);
  * Machine-dependent: move the bootstrap processor's exception stacks to
  * guarded KVA stacks, once kernel stacks can be allocated.
  */
+void md_cons_init(void);
 void md_stacks_init(void);
 
 /*

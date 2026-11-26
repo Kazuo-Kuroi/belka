@@ -24,6 +24,7 @@ make TOOLCHAIN=clang    # build with Clang
 make LINKER=gnu         # link with GNU ld instead of the illumos ld
 make run                # boot the root image to a login prompt (root, no
                         # password), serial console on stdio
+make run QEMU_DISPLAY=gtk # also show the framebuffer console
 make run-selftest       # boot the self-tests with the console on stdio
 make test               # boot, run the self-tests, and report PASS/FAIL
 make test-fault         # boot, force a page fault, expect a clean panic
@@ -35,6 +36,10 @@ make test-boot          # boot the test root image: init, rc, getty, login
 make test-console       # type a session at the serial console, as a person
 make test-all           # every test above
 ```
+
+When Limine supplies a supported framebuffer, it mirrors kernel and
+`/dev/console` output after kernel memory setup. Use the serial terminal
+to type. See the QEMU guide for local VNC. [Running under QEMU](doc/qemu-setup.md)
 
 The system programs are built statically against mlibc and put on an
 ext2 root image by `tools/mkroot.sh` (it needs `fakeroot`): NetBSD's

@@ -107,6 +107,18 @@ login: root
 `root` has no password. The shell is mksh (`/bin/sh`). An ordinary user
 can be added with `useradd` and given a password with `passwd`.
 
+### Framebuffer console
+
+Use `make run QEMU_DISPLAY=gtk` to show the console in a QEMU window.
+On a host without a local GUI, use
+`make run QEMU_DISPLAY=vnc=127.0.0.1:0` and connect a VNC viewer to
+127.0.0.1:5900. Type into the serial terminal in either case.
+
+The display mirrors kernel messages after memory setup and the
+`/dev/console` session. It uses an 80×24 ASCII text grid and handles
+basic ANSI cursor movement and erasure. Add `nofb` to the Limine kernel
+command line for serial-only output.
+
 ### Leaving
 
 - **`halt`** stops the system cleanly, and QEMU exits. **`reboot`**
@@ -226,6 +238,7 @@ These go on the make command line (`make run SMP=2`) or in `config.mk`:
 | `OVMF_CODE`       | `/usr/share/OVMF/OVMF_CODE_4M.fd` | the UEFI firmware     |
 | `QEMU`            | `qemu-system-x86_64`  | the QEMU to run                   |
 | `SSH_PORT`        | (none)                | `make run` forwards this host port to Belka's ssh |
+| `QEMU_DISPLAY`    | none                  | `make run` selects a QEMU display backend |
 
 Each toolchain and linker has its own build directory and images, for
 example `build/amd64-clang` and `build/root-clang.img`, so they can sit

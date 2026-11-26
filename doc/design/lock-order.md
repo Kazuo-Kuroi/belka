@@ -95,7 +95,7 @@ Listed roughly from outermost to innermost.
 | `hat_klock` (`arch/amd64/amd64/hat.c`) | the kernel page tables below the PML4, for KVA changes | nothing | Allocates page-table pages, so it is taken before the node locks. Never held across a TLB shootdown. |
 | `page_nodes[n].pn_lock` (`vm/vm_page.c`) | node *n*'s free and cache lists, counters, and `p_flags` of its pages | `hat_klock`, `pc_lock` | Never hold two node locks at once; allocation from a remote node drops the local lock first. Recycling a cache page marks it and holds its vnode's cache under this lock, drops it (keeping interrupts off), and only then takes `pc_lock`. |
 | `ci_act_lock` (`arch/amd64/amd64/intr.c`) | one processor's action queue | nothing | Held only to queue or dequeue; actions run with it released. Never held while waiting for another processor. |
-| `prf_lock` (`kern/subr_prf.c`) | interleaving of `printf` output | any lock | Innermost: `printf` may be called with any lock held. Ignored after a panic. |
+| `prf_lock` (`kern/subr_prf.c`) | interleaving of console output and the framebuffer text state | any lock | Innermost. The framebuffer renderer takes no lock and drains its write-combined stores before returning. Ignored after a panic. |
 
 ## Rules
 

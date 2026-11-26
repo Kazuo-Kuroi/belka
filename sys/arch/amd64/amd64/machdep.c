@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 #include <sys/cons.h>
+#include <sys/fbcons.h>
 #include <sys/smp.h>
 #include <sys/systm.h>
 #include <sys/uadmin.h>
@@ -205,6 +206,49 @@ amd64_init(void)
         }
 
         main();
+}
+
+void
+md_cons_init(void)
+{
+        const struct bootfb *f = &bootinfo.bi_fb;
+        size_t len;
+
+        if (f->bf_pa == 0 || boot_option("nofb"))
+                return;
+        if (f->bf_width > 8192 || f->bf_height > 8192 ||
+            f->bf_pitch > SIZE_MAX / f->bf_height ||
+            f->bf_pitch < f->bf_width * sizeof(uint32_t) ||
+            ((f->bf_pa | f->bf_pitch) & 3) != 0)
+                return;
+        len = (size_t)(f->bf_pitch * f->bf_height);
+        if (len > UINT64_C(128) * 1024 * 1024 ||
+            f->bf_pa > UINT64_MAX - len - PAGEOFFSET)
+                return;
+
+        /* Only map a range the loader reserved for display. */
+        for (uint32_t i = 0; i < bootinfo.bi_nmem; i++) {
+                const struct bootmem *m = &bootinfo.bi_mem[i];
+                uint64_t offset;
+                uint32_t fg, bg;
+                void *pixels;
+
+                if (m->bm_type != BOOTMEM_FRAMEBUFFER || f->bf_pa < m->bm_base)
+                        continue;
+                offset = f->bf_pa - m->bm_base;
+                if (offset > m->bm_length || len > m->bm_length - offset)
+                        continue;
+                pixels = kva_map_phys(f->bf_pa, len, HAT_WRITE | HAT_WCOMBINE);
+                fg = UINT32_C(0xd8) << f->bf_red |
+                    UINT32_C(0xe5) << f->bf_green | UINT32_C(0xf0) << f->bf_blue;
+                bg = UINT32_C(0x10) << f->bf_red |
+                    UINT32_C(0x18) << f->bf_green | UINT32_C(0x20) << f->bf_blue;
+                fbcons_init(pixels, f->bf_width, f->bf_height, f->bf_pitch,
+                    fg, bg);
+                printf("framebuffer: %ju x %ju, 32-bit RGB\n",
+                    (uintmax_t)f->bf_width, (uintmax_t)f->bf_height);
+                return;
+        }
 }
 
 void

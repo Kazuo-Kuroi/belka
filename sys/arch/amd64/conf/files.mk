@@ -119,7 +119,8 @@ MI_SRCS         := sys/kern/init_main.c \
                    sys/netinet/tcp.c \
                    sys/netinet/tpi_opt.c \
                    sys/netinet/udp.c \
-                   sys/dev/ic/ns16550.c
+                   sys/dev/ic/ns16550.c \
+                   sys/dev/fb/fbcons.c
 
 MD_SRCS         := sys/arch/amd64/amd64/locore.S \
                    sys/arch/amd64/amd64/atomic.S \

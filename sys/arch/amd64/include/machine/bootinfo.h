@@ -41,6 +41,16 @@ struct bootmem {
 #define BOOTINFO_NAMELEN 64
 #define BOOTINFO_CMDLEN 256
 
+struct bootfb {
+        uint64_t        bf_pa;
+        uint64_t        bf_width;
+        uint64_t        bf_height;
+        uint64_t        bf_pitch;       /* bytes */
+        uint8_t         bf_red;
+        uint8_t         bf_green;
+        uint8_t         bf_blue;
+};
+
 /*
  * Everything here is copied out of boot loader memory, so it stays valid
  * after that memory is reclaimed.
@@ -53,6 +63,7 @@ struct bootinfo {
         uint64_t        bi_kernel_pa;   /* physical load address */
         uint64_t        bi_kernel_va;   /* virtual load address */
         uint64_t        bi_rsdp;        /* ACPI RSDP physical address, or 0 */
+        struct bootfb   bi_fb;          /* 32-bit RGB888, or bf_pa == 0 */
         uint64_t        bi_ncpu;        /* processors listed, at most MAXCPUS */
         uint64_t        bi_ncpu_dropped; /* processors beyond MAXCPUS */
         uint32_t        bi_bsp_lapic_id;

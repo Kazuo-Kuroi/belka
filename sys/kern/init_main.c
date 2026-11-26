@@ -105,6 +105,7 @@ main(void)
         hat_init();
         kmem_init();
         kva_init();
+        md_cons_init();
         md_stacks_init();
         intr_init();
         rnd_init();

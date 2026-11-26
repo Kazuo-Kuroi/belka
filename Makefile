@@ -263,6 +263,7 @@ QEMU_FLAGS      := $(QEMU_BASE) \
 # QEMU forwards to Belka's ssh (port 22), as "ssh -p 2222 user@localhost"
 # reaches it with SSH_PORT=2222.
 SSH_PORT        ?=
+QEMU_DISPLAY    ?= none
 comma           := ,
 RUN_NETOPTS     := $(if $(SSH_PORT),$(comma)hostfwd=tcp:127.0.0.1:$(SSH_PORT)-:22)
 QEMU_ROOT_FLAGS = $(QEMU_BASE) \
@@ -270,7 +271,7 @@ QEMU_ROOT_FLAGS = $(QEMU_BASE) \
                    -device virtio-blk-pci,drive=vd0,disable-legacy=on \
                    -nic none -netdev user,id=n0$(2) \
                    -device virtio-net-pci,netdev=n0,disable-legacy=on \
-                   -display none -no-reboot
+                   -display $(if $(3),$(3),none) -no-reboot
 
 # The C library: mlibc, from the contrib/mlibc submodule (the belka
 # branch of github.com/Kazuo-Kuroi/mlibc), built with muon and samurai
@@ -507,7 +508,8 @@ run: $(ISO) $(ROOT_IMG)
 	@# A boot that did not end in halt leaves the image dirty, which the
 	@# kernel mounts read-only; repair it here, as Belka has no fsck yet.
 	$(E2FSCK) -p $(ROOT_IMG) || [ $$? -le 1 ]
-	$(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_IMG),$(RUN_NETOPTS)) -cdrom $(ISO) \
+	$(QEMU) $(call QEMU_ROOT_FLAGS,$(ROOT_IMG),$(RUN_NETOPTS),$(QEMU_DISPLAY)) \
+	    -cdrom $(ISO) \
 	    -serial mon:stdio
 
 run-selftest: $(TEST_ISO) $(DISK) $(LIBC_BINS)

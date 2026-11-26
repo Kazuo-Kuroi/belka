@@ -5,9 +5,8 @@
  */
 
 /*
- * The system console. During bring-up the console is a single
- * polled output device that machine-dependent code chooses and
- * registers with cninit(). Kernel output goes through cnputc().
+ * The system console. Machine-dependent code installs a polled device
+ * and can add an output mirror before secondary CPUs start.
  */
 
 #ifndef _SYS_CONS_H_
@@ -23,6 +22,7 @@ struct consdev {
 };
 
 void cninit(struct consdev *);
+void cnmirror(struct consdev *);
 void cnputc(int);
 void cnflush(void);
 void cnputc_raw(int);

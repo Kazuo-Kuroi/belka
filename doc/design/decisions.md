@@ -3725,3 +3725,21 @@ lost completion passes as before.
   `ethertest`) to exercise all three PCI NICs against virtio-net. Run
   500 frames each way so the RTL8139 receive test crosses the 32 KiB
   ring boundary, then check ARP and UDP through the guest IPv4 stack.
+
+## Framebuffer console (2026-11-26)
+
+This implements the framebuffer part of the [initial driver set](#drivers).
+
+- Copy the first supported Limine RGB888 mode into bootinfo as physical
+  address, dimensions, pitch and channel shifts. Validate the extent
+  against the boot memory map. Map it write-combining after the kernel
+  has replaced the boot loader's page tables and initialized KVA.
+- Mirror console output to the display through the existing print
+  lock. The UART supplies the early messages and terminal input.
+  Missing or unsupported display modes and the `nofb` boot option
+  leave the serial console as the sole output.
+- Use an 80×24 ASCII grid to match the tty's default dimensions.
+  Render the public-domain X.Org Misc Fixed bitmap glyphs, with basic
+  ANSI cursor movement and erasure. Scroll the RAM character grid and
+  repaint changed cells without reading from display memory. Choose
+  2× glyphs on a large enough mode and center the grid in either case.

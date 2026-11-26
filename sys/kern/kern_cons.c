@@ -7,8 +7,8 @@
 /*
  * Console output switch. Output before cninit() is discarded.
  *
- * There is no locking yet: only the bootstrap processor runs. A console
- * spinlock is added together with the synchronisation primitives.
+ * The device pointers are set before secondary CPUs start. The print
+ * lock serializes output, except on panic and halt paths.
  *
  * Processes reach the console through cons_vnode(), a private vnode
  * outside any file system that proc_spawn() opens on descriptors 0 to 2
@@ -35,6 +35,7 @@
 #include <sys/vnode.h>
 
 static struct consdev *cn_tab;
+static struct consdev *cn_mirror;
 static struct tty cons_tty;
 static int cons_tty_ready;
 static unsigned int cons_opens;         /* protected by cons_tty.t_lock */
@@ -45,15 +46,19 @@ cninit(struct consdev *cp)
         cn_tab = cp;
 }
 
+void
+cnmirror(struct consdev *cp)
+{
+        cn_mirror = cp;
+}
+
 /* Write one character, expanding a newline to carriage return and newline. */
 void
 cnputc(int c)
 {
-        if (cn_tab == NULL)
-                return;
         if (c == '\n')
-                cn_tab->cn_putc(cn_tab, '\r');
-        cn_tab->cn_putc(cn_tab, c);
+                cnputc_raw('\r');
+        cnputc_raw(c);
 }
 
 /* Write one character as it is (cnwrite(), under printf's lock). */
@@ -62,6 +67,8 @@ cnputc_raw(int c)
 {
         if (cn_tab != NULL)
                 cn_tab->cn_putc(cn_tab, c);
+        if (cn_mirror != NULL)
+                cn_mirror->cn_putc(cn_mirror, c);
 }
 
 /* Wait until everything written to the console has left the device. */

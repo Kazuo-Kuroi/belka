@@ -37,6 +37,7 @@ static volatile struct {
         struct limine_executable_cmdline_request cmdline;
         struct limine_hhdm_request hhdm;
         struct limine_memmap_request memmap;
+        struct limine_framebuffer_request fb;
         struct limine_executable_address_request kaddr;
         struct limine_rsdp_request rsdp;
         struct limine_mp_request mp;
@@ -48,6 +49,7 @@ static volatile struct {
         { LIMINE_EXECUTABLE_CMDLINE_REQUEST_ID, 0, NULL },
         { LIMINE_HHDM_REQUEST_ID, 0, NULL },
         { LIMINE_MEMMAP_REQUEST_ID, 0, NULL },
+        { LIMINE_FRAMEBUFFER_REQUEST_ID, 0, NULL },
         { LIMINE_EXECUTABLE_ADDRESS_REQUEST_ID, 0, NULL },
         { LIMINE_RSDP_REQUEST_ID, 0, NULL },
         { LIMINE_MP_REQUEST_ID, 0, NULL, 0 },
@@ -60,6 +62,39 @@ static void (*limine_cpu_fn)(void *);
 static void limine_cpu_entry(struct limine_mp_info *);
 
 static void limine_strcpy(char *, const char *, size_t);
+
+static void
+limine_fb_collect(struct bootinfo *bi)
+{
+        const struct limine_framebuffer_response *r =
+            limine_requests.fb.response;
+
+        if (r == NULL || bi->bi_hhdm_offset == 0)
+                return;
+        for (uint64_t i = 0; i < r->framebuffer_count; i++) {
+                const struct limine_framebuffer *f = r->framebuffers[i];
+                uint64_t va = (uint64_t)(uintptr_t)f->address;
+
+                if (va <= bi->bi_hhdm_offset || f->width < 640 ||
+                    f->height < 384 || f->memory_model != LIMINE_FRAMEBUFFER_RGB ||
+                    f->bpp != 32 || f->red_mask_size != 8 ||
+                    f->green_mask_size != 8 || f->blue_mask_size != 8 ||
+                    f->red_mask_shift > 24 || f->green_mask_shift > 24 ||
+                    f->blue_mask_shift > 24 ||
+                    ((f->red_mask_shift | f->green_mask_shift |
+                    f->blue_mask_shift) & 7) != 0 ||
+                    f->red_mask_shift == f->green_mask_shift ||
+                    f->red_mask_shift == f->blue_mask_shift ||
+                    f->green_mask_shift == f->blue_mask_shift)
+                        continue;
+                bi->bi_fb = (struct bootfb) {
+                        va - bi->bi_hhdm_offset, f->width, f->height,
+                        f->pitch, f->red_mask_shift, f->green_mask_shift,
+                        f->blue_mask_shift
+                };
+                return;
+        }
+}
 
 /* Copy a string from loader memory, truncating to fit. */
 static void
@@ -126,6 +161,7 @@ limine_boot_collect(struct bootinfo *bi)
                     sizeof(bi->bi_cmdline));
         if ((hhdm = limine_requests.hhdm.response) != NULL)
                 bi->bi_hhdm_offset = hhdm->offset;
+        limine_fb_collect(bi);
         if ((kaddr = limine_requests.kaddr.response) != NULL) {
                 bi->bi_kernel_pa = kaddr->physical_base;
                 bi->bi_kernel_va = kaddr->virtual_base;
