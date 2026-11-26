@@ -277,7 +277,7 @@ selftest_proc(void)
         char *udptest[] = { "udptest", NULL };
         char *tcptest[] = { "tcptest", NULL };
         char *fwdtest[] = { "fwdtest", NULL };
-        char *e1000test[] = { "e1000test", NULL };
+        char *ethertest[] = { "ethertest", NULL };
         size_t used1, used2, zone0[NPROCZONES];
         int zones_ok = 1;
 
@@ -316,7 +316,7 @@ selftest_proc(void)
         CHECK(run("/p/bin/udptest", udptest, CLD_EXITED, 0));
         CHECK(run("/p/bin/tcptest", tcptest, CLD_EXITED, 0));
         CHECK(run("/p/bin/fwdtest", fwdtest, CLD_EXITED, 0));
-        CHECK(run("/p/bin/e1000test", e1000test, CLD_EXITED, 0));
+        CHECK(run("/p/bin/ethertest", ethertest, CLD_EXITED, 0));
         CHECK(run("/p/bin/sproctest", sproctest, CLD_EXITED, 0));
         CHECK(run("/p/bin/sproctest-static", sproctest, CLD_EXITED, 0));
         test_kernel_signal();

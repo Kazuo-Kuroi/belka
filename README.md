@@ -112,12 +112,14 @@ the socket options, and `tcptest` non-blocking connects and `poll`. The
 self-test boot's two more virtio-net devices share a QEMU hub, on which
 `fwdtest` forwards through IP and plays the other hosts, and checks
 reassembly and the ICMP errors that reach the sockets. Intel's 82574
-(QEMU's `e1000e`, by MSI-X) and 82540EM (QEMU's `e1000`, by INTx, which
-the ACPI `_PRT` routes through uACPI, `sys/external/uacpi`) are on that
-hub too, driven by `sys/dev/pci/e1000g.c`: `e1000test` sends frames of
-every size both ways between each and a virtio-net device, a broadcast
-and bursts larger than its rings, and UDP through IP over it. Both
-drivers share the Ethernet DLPI provider, `sys/net/dlether.c`. On a normal
+(QEMU's `e1000e`, by MSI-X), Intel's 82540EM (`e1000`, by INTx), and
+Realtek's RTL8139 (`rtl8139`, by INTx) are on that hub too. The PCI
+drivers in `sys/dev/pci` expose `/dev/e1000g0`, `/dev/e1000g1`, and
+`/dev/rtl81390`. The ACPI `_PRT` routes their INTx interrupts through
+uACPI. `ethertest` checks short and full-size frames, broadcast and
+promiscuity, bursts long enough to wrap each receive ring, and UDP
+through IP against a virtio-net peer. All three drivers share the
+Ethernet DLPI provider, `sys/net/dlether.c`. On a normal
 boot, `/etc/rc.d/network` plumbs the stack with `netcfg(8)` and
 attaches `vionet0`, `/etc/rc.d/dhcpcd` leases its address from QEMU's
 DHCP server with NetBSD's dhcpcd (`contrib/dhcpcd`), as `/etc/rc.conf`

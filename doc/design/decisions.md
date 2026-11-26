@@ -3702,3 +3702,26 @@ from eight threads take 4 or 5 ticks, against 8 one at a time. The
 concurrent test now also flushes 20 times while the readers run, which
 on AHCI makes each flush wait for the queue to drain. Recovery from a
 lost completion passes as before.
+
+## Realtek RTL8139 Ethernet (2026-11-26)
+
+- Drive QEMU's `rtl8139` in legacy mode through its memory BAR and the
+  existing PCI INTx routing. Register each `rtl8139N` with the common
+  Ethernet DLPI provider. The register interface follows the
+  [Realtek RTL8139C(L) datasheet, revision 1.6](https://people.freebsd.org/~wpaul/RealTek/spec-8139c%28160%29.pdf).
+- Allocate a contiguous 32 KiB receive ring and four 2 KiB transmit
+  buffers. Add `PA_DMA32` to the page allocator so the requested block
+  and any pages reclaimed for it come from below 4 GiB. Keep transmit
+  submission nonblocking. The receive worker checks record bounds,
+  handles ring wrap, strips the frame check sequence and copies the
+  frame before releasing its space to the device.
+- Keep the receive acceptance bits fixed and use the DLPI provider's
+  destination and per-stream promiscuity checks. QEMU resets receive
+  ring pointers on an RCR write, so changing the hardware filter for an
+  open stream could discard packets or desynchronize the ring cursor.
+  Leave the C+ command register alone after reset: QEMU changes the
+  interpretation of the transmit registers on any write to it.
+- Use the isolated QEMU hub and the existing Ethernet suite (now
+  `ethertest`) to exercise all three PCI NICs against virtio-net. Run
+  500 frames each way so the RTL8139 receive test crosses the 32 KiB
+  ring boundary, then check ARP and UDP through the guest IPv4 stack.
