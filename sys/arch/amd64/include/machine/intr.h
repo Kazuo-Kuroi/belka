@@ -20,6 +20,8 @@
 
 #include <machine/cpufunc.h>
 
+int intr_selftest_msi(void);
+
 static inline int
 splhi(void)
 {

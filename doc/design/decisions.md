@@ -310,6 +310,8 @@ Recorded 2026-11-07.
   bootstrap processor.
   Superseded in part (2026-11-25): INTx is routed by the `_PRT`, through
   uACPI; see "ACPI through uACPI: INTx, the 82540EM, and power-off".
+  The bootstrap-CPU policy was superseded by
+  [MSI and MSI-X interrupt affinity](#msi-and-msi-x-interrupt-affinity-2026-11-26).
 - **Drivers** match from a static table for now; the names (match,
   attach, softc) are chosen to grow into the planned NetBSD-style
   autoconfiguration.
@@ -3689,10 +3691,11 @@ shutdown complete, and the partition's ext2 came back clean.
   blocks are smaller than the disk's sectors is refused. GPT
   (`kern/subr_gpt.c`) and the NVMe driver already worked in the disk's
   own sector size.
-- **NVMe queues per CPU: not yet.** Belka delivers every MSI-X vector
-  to the bootstrap processor. Queue pairs per processor would only
-  spread the submission lock, while every completion still landed on
-  one CPU, so they wait for interrupt affinity.
+- **NVMe queues per CPU: not yet.** The original blocker was that all
+  MSI-X vectors targeted the bootstrap processor. The default placement
+  now spreads vectors under
+  [MSI and MSI-X interrupt affinity](#msi-and-msi-x-interrupt-affinity-2026-11-26).
+  The driver still uses one I/O queue per controller.
 
 **Testing:** the self-test boot's second NVMe controller has 4 KB
 logical blocks (`nvd1`) and a copy of the 4 KB-block ext2 test image.
@@ -3743,3 +3746,26 @@ This implements the framebuffer part of the [initial driver set](#drivers).
   ANSI cursor movement and erasure. Scroll the RAM character grid and
   repaint changed cells without reading from display memory. Choose
   2× glyphs on a large enough mode and center the grid in either case.
+
+## MSI and MSI-X interrupt affinity (2026-11-26)
+
+- Assign each PCI message vector an online CPU at attachment. The
+  allocator cycles through CPUs with unicast APIC IDs that fit the
+  legacy physical MSI address. Start with the first secondary CPU
+  when available. Include the bootstrap CPU on wrap and use it on
+  uniprocessor boots.
+- Route the message to that CPU and bind its interrupt thread to the
+  same CPU. Fast handlers execute on the receiving CPU as usual.
+  Preserve global vector numbering and the existing INTx routes.
+- Keep this placement fixed for the lifetime of a source. Vector
+  placement balances the number of assignments. Message rates may
+  differ across devices, and the policy does not migrate live vectors
+  or set up additional hardware queues.
+- A full virtio transmit queue may already have completed descriptors
+  awaiting its interrupt thread. Before a nonblocking submit reports
+  the queue full, reap those completions under the virtqueue lock.
+  This avoids dropping a frame just because completion processing
+  has yet to run on the CPU assigned to the queue.
+- After exercising disks and network devices, the self-test checks
+  assignment counts, hardware delivery, and thread affinity. The
+  hardware counters report which CPUs actually received messages.

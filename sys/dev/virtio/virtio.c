@@ -37,6 +37,8 @@
 
 #include "dev/virtio/virtiovar.h"
 
+static int vq_reap(struct virtqueue *);
+
 int
 vq_init(struct virtqueue *vq, int size)
 {
@@ -100,6 +102,9 @@ vq_submit1(struct virtqueue *vq, const struct vq_seg *segs, int nout,
         if (need == 0 || need > vq->vq_size)
                 return -1;
         s = spin_lock(&vq->vq_lock);
+        /* The device may be done before its interrupt thread runs. */
+        if (!wait && vq->vq_nfree < need)
+                (void)vq_reap(vq);
         while (vq->vq_nfree < need) {
                 if (!wait) {
                         spin_unlock(&vq->vq_lock, s);
@@ -166,15 +171,13 @@ vq_trysubmit(struct virtqueue *vq, const struct vq_seg *segs, int nout,
 
 /*
  * Collect completed requests: return each chain to the free list and
- * call the completion callback. The queue's interrupt handler; returns
- * nonzero if anything had completed.
+ * call the completion callback. vq_lock is held. Returns nonzero if
+ * anything had completed.
  */
-int
-vq_intr(void *arg)
+static int
+vq_reap(struct virtqueue *vq)
 {
-        struct virtqueue *vq = arg;
         int claimed = 0;
-        int s = spin_lock(&vq->vq_lock);
 
         while (vq->vq_last_used != vq->vq_used->idx) {
                 volatile struct vring_used_elem *e;
@@ -203,6 +206,16 @@ vq_intr(void *arg)
         }
         if (claimed)
                 (void)sv_broadcast(&vq->vq_space);
+        return claimed;
+}
+
+int
+vq_intr(void *arg)
+{
+        struct virtqueue *vq = arg;
+        int s = spin_lock(&vq->vq_lock);
+        int claimed = vq_reap(vq);
+
         spin_unlock(&vq->vq_lock, s);
         return claimed;
 }

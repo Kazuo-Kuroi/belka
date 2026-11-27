@@ -43,7 +43,7 @@ object locks below.
 | `am_lock`, one per anon map (`vm/anon.h`) | the map's anon slots | Held across a fault on the segment, including `VOP_GETPAGE`. |
 | `blkdev_lock` (`kern/subr_blkdev.c`) | the block device registry | Held only while registering or looking up. |
 | `ap_qlock` (an mrlock), one per AHCI port (`dev/pci/ahci.c`; it was the mutex `ap_lock` before NCQ) | issuing commands against a recovery, and a command that is not queued against all others | Shared while a queued (NCQ) command is issued, not while it waits; exclusive by a command that is not queued (a flush), from issue to completion, which first waits on `ap_idlesv` for the queue to drain, and by a recovery. `ap_intrlock` nests inside. |
-| `intr_mutex` (`arch/amd64/amd64/intr.c`) | the interrupt source table and handler lists, for changes | Held across `smp_call_all()` and `delay()` in `intr_disestablish()`; never taken from an interrupt. |
+| `intr_mutex` (`arch/amd64/amd64/intr.c`) | interrupt source and handler list changes, vector allocation, and the MSI CPU cursor | Held across `smp_call_all()` and `delay()` in `intr_disestablish()`; never taken from an interrupt. MSI sources publish their CPU before the device can signal. |
 
 ## Spin locks
 
@@ -68,7 +68,7 @@ Listed roughly from outermost to innermost.
 | `wt_lock` (`kern/sched_ts.c`) | the time-share active job list and every job's thread list | `kt_lock` | Redistribution holds it and only try-locks threads, leaving a busy thread for the next tick. |
 | `rq_lock`, one per processor (`sys/sched.h`) | that processor's run queue | `kt_lock` | Code holding `rq_lock` takes a `kt_lock` only with `spin_trylock()`. Never hold two run queue locks. |
 | `acpi_work_lock` (`dev/acpi/acpi_uacpi.c`) | uACPI's queue of deferred work and the count running | nothing | Taken by `uacpi_kernel_schedule_work`, perhaps from the SCI's handler, and by the `acpiwork` thread; never held across the work. uACPI's own locks are its semaphores (`struct sema`) and spin locks (`struct spinlock`), which it takes in its own order. |
-| `vq_lock`, one per virtqueue (`dev/virtio/virtio.c`) | the rings, free list, and cookies | nothing | The completion callback runs under it and may only wake threads (`sema`, `sv` locks nest inside). Submitters wait for space with `sv_wait()` on it. |
+| `vq_lock`, one per virtqueue (`dev/virtio/virtio.c`) | the rings, free list, and cookies | nothing | Completion callbacks run under it and must be nonblocking. A nonblocking submitter may reap a full queue under this lock. Blocking submitters wait for space with `sv_wait()` on it. |
 | `vnet_rxlock`, one per virtio-net device (`dev/virtio/vionet.c`) | the received buffers waiting for the device's thread | `vq_lock` | Taken by the receive completion, which wakes the thread on `vnet_rxsv`. The transmit completion frees its buffer (`kmem_free`) under `vq_lock`. |
 | `e1k_intrlock`, one per e1000 device (`dev/pci/e1000g.c`) | the interrupt causes waiting for the device's thread | nothing | Taken by the MSI-X handler, which wakes the thread on `e1k_sv`. Never held with `e1k_txlock`. |
 | `e1k_txlock`, one per e1000 device (`dev/pci/e1000g.c`) | the transmit ring (slots, free count) and RCTL | `de_lock` (a mutex) may be held | Taken by the transmit routine (from a stream's put procedure), by the device's thread to reclaim slots, and by `de_promisc`. Never held across `dlether_input`. |

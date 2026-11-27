@@ -36,8 +36,10 @@ void intr_disestablish(void *);
 /*
  * Attach a handler to a newly allocated message-signalled interrupt.
  * Returns a cookie, and the address and data the device must write to
- * raise it, or NULL if no vector is free. Only INTR_FAST is meaningful
- * in flags; message-signalled interrupts are edge-triggered.
+ * raise it, or NULL if there is no free vector or addressable CPU.
+ * Only INTR_FAST is meaningful in flags. Messages are edge-triggered
+ * and get an online CPU by round robin. A threaded handler stays on
+ * that CPU.
  */
 void *intr_establish_msi(int, int (*)(void *), void *, const char *,
     uint64_t *, uint32_t *);

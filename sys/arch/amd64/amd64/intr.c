@@ -10,10 +10,9 @@
  * Interrupts arrive through interrupt gates, so handlers run with
  * interrupts disabled and never nest. On the way out of an interrupt
  * that arrived at spl0, trap() lets the scheduler preempt the
- * interrupted thread. Only local APIC sources exist so
- * far: the timer, the action IPI, errors, and spurious interrupts.
- * Device interrupts will be dispatched to interrupt threads, as in
- * IRIX, so that device drivers can block.
+ * interrupted thread. Device interrupts normally wake interrupt threads,
+ * as in IRIX, so that device drivers can block. A message-signalled
+ * source and its thread run on the same processor.
  *
  * Cross-processor actions follow the IRIX design: each processor has a
  * FIFO of function calls that others post with cpu_action(), followed
@@ -76,6 +75,7 @@ struct intrhand {
 
 struct intrsource {
         uint32_t        is_gsi;
+        unsigned int    is_cpu;        /* destination for MSI sources */
         int             is_vector;
         int             is_level;
         int             is_active_low;
@@ -85,6 +85,7 @@ struct intrsource {
         struct kthread  *is_thread;
         volatile uint32_t is_busy;      /* thread running handlers */
         volatile uint64_t is_count;     /* hardware interrupts */
+        volatile uint32_t is_badcpu;    /* MSI affinity violations */
 };
 
 #define INTR_NOGSI      UINT32_MAX      /* message-signalled source */
@@ -92,15 +93,17 @@ struct intrsource {
 /* MSI message address: the local APIC window, physical destination. */
 #define MSI_ADDR_BASE   UINT64_C(0xfee00000)
 #define MSI_ADDR_DEST_SHIFT 12
+#define MSI_ADDR_BROADCAST 0xffU
 
 static struct intrsource *volatile intr_sources[NIDT];
 static int intr_next_vector = DEVICE_VECTOR_FIRST;
+static unsigned int intr_msi_next_cpu = 1; /* start off the BSP on SMP */
 static struct mutex intr_mutex;
 static volatile uint32_t cpus_halting;
 static volatile uint32_t stray_reported;
 
 static void smp_call_run(void *);
-static void intr_device(struct intrsource *);
+static void intr_device(struct intrsource *, struct cpu_info *);
 static void intr_thread(void *);
 static void intr_nop(void *);
 
@@ -136,8 +139,13 @@ intr_init(void)
  * thread is woken; it unmasks the line when the handlers are done.
  */
 static void
-intr_device(struct intrsource *src)
+intr_device(struct intrsource *src, struct cpu_info *ci)
 {
+        if (src->is_gsi == INTR_NOGSI) {
+                ci->ci_nmsi++;
+                if (ci->ci_cpuid != src->is_cpu)
+                        atomic_inc_32_nv(&src->is_badcpu);
+        }
         src->is_count++;
         rnd_intr(src->is_vector);
         if (src->is_fast) {
@@ -167,6 +175,8 @@ intr_thread(void *arg)
 
         for (;;) {
                 psema(&src->is_sema);
+                if (src->is_gsi == INTR_NOGSI && cpu_number() != src->is_cpu)
+                        atomic_inc_32_nv(&src->is_badcpu);
                 atomic_store_32(&src->is_busy, 1);
                 /* Order the store before the list read; see disestablish. */
                 membar_sync();
@@ -306,10 +316,20 @@ intr_disestablish(void *cookie)
         kmem_free(ih, sizeof(*ih));
 }
 
+/* An online CPU whose physical APIC ID fits a unicast MSI address. */
+static struct cpu_info *
+intr_msi_cpu(unsigned int id)
+{
+        struct cpu_info *ci = cpu_lookup(id);
+
+        if (ci == NULL || ci->ci_lapic_id >= MSI_ADDR_BROADCAST)
+                return NULL;
+        return ci;
+}
+
 /*
- * Message-signalled interrupts get a source of their own, with no I/O
- * APIC pin. The message targets the bootstrap processor's local APIC in
- * physical mode, fixed delivery, edge-triggered.
+ * Each message has its own vector with fixed, edge-triggered delivery.
+ * Choose a destination in round-robin order under intr_mutex.
  */
 void *
 intr_establish_msi(int flags, int (*fn)(void *), void *arg,
@@ -317,17 +337,27 @@ intr_establish_msi(int flags, int (*fn)(void *), void *arg,
 {
         struct intrsource *src;
         struct intrhand *ih;
-        uint32_t dest = cpu_info_primary.ci_lapic_id;
+        struct cpu_info *target = NULL;
+        unsigned int n = ncpus;
 
-        if (dest > 0xff)
-                return NULL;            /* needs interrupt remapping */
         mutex_lock(&intr_mutex);
         if (intr_next_vector > DEVICE_VECTOR_LAST) {
                 mutex_unlock(&intr_mutex);
                 return NULL;
         }
+        for (unsigned int i = 0; i < n; i++) {
+                target = intr_msi_cpu((intr_msi_next_cpu + i) % n);
+                if (target != NULL)
+                        break;
+        }
+        if (target == NULL) {
+                mutex_unlock(&intr_mutex);
+                return NULL;
+        }
+        intr_msi_next_cpu = (target->ci_cpuid + 1) % n;
         src = kmem_zalloc(sizeof(*src), KM_SLEEP);
         src->is_gsi = INTR_NOGSI;
+        src->is_cpu = target->ci_cpuid;
         src->is_vector = intr_next_vector++;
         src->is_fast = (flags & INTR_FAST) != 0;
         sema_init(&src->is_sema, 0, "intr");
@@ -335,8 +365,8 @@ intr_establish_msi(int flags, int (*fn)(void *), void *arg,
                 char tname[KT_NAMELEN];
 
                 snprintf(tname, sizeof(tname), "msi%d", src->is_vector);
-                src->is_thread = kthread_create(intr_thread, src, PRI_INTR,
-                    tname);
+                src->is_thread = kthread_create_bound(intr_thread, src,
+                    PRI_INTR, tname, (int)src->is_cpu);
                 (void)kthread_setclass(src->is_thread, SCHED_FIFO, PRI_INTR);
         }
         ih = kmem_zalloc(sizeof(*ih), KM_SLEEP);
@@ -349,7 +379,8 @@ intr_establish_msi(int flags, int (*fn)(void *), void *arg,
         intr_sources[src->is_vector] = src;
         mutex_unlock(&intr_mutex);
 
-        *addrp = MSI_ADDR_BASE | ((uint64_t)dest << MSI_ADDR_DEST_SHIFT);
+        *addrp = MSI_ADDR_BASE |
+            ((uint64_t)target->ci_lapic_id << MSI_ADDR_DEST_SHIFT);
         *datap = (uint32_t)src->is_vector;
         return ih;
 }
@@ -360,6 +391,62 @@ intr_handler_count(const void *cookie)
         const struct intrhand *ih = cookie;
 
         return ih->ih_count;
+}
+
+/* Inspect real device deliveries after the disk and network self-tests. */
+int
+intr_selftest_msi(void)
+{
+        unsigned int assigned[MAXCPUS] = { 0 };
+        unsigned int online = 0, receiving = 0, active = 0;
+        unsigned int most = 0, least = NIDT;
+        int failures = 0;
+
+        mutex_lock(&intr_mutex);
+        for (int v = DEVICE_VECTOR_FIRST; v < intr_next_vector; v++) {
+                const struct intrsource *src = intr_sources[v];
+
+                if (src == NULL || src->is_gsi != INTR_NOGSI)
+                        continue;
+                assigned[src->is_cpu]++;
+                if (atomic_load_64(&src->is_count) != 0)
+                        active++;
+                if (atomic_load_32(&src->is_badcpu) != 0) {
+                        printf("selftest: %s:%d: MSI vector %d ran outside "
+                            "cpu%u\n", __FILE__, __LINE__, v, src->is_cpu);
+                        failures++;
+                }
+        }
+        mutex_unlock(&intr_mutex);
+
+        for (unsigned int i = 0; i < ncpus; i++) {
+                const struct cpu_info *ci = intr_msi_cpu(i);
+                uint64_t delivered;
+
+                if (ci == NULL)
+                        continue;
+                online++;
+                if (assigned[i] < least)
+                        least = assigned[i];
+                if (assigned[i] > most)
+                        most = assigned[i];
+                delivered = atomic_load_64(&ci->ci_nmsi);
+                if (delivered != 0)
+                        receiving++;
+                printf("selftest: MSI cpu%u: %u vectors, %ju deliveries\n",
+                    i, assigned[i], (uintmax_t)delivered);
+        }
+        if (online != 0 && most - least > 1) {
+                printf("selftest: %s:%d: MSI vector assignments are uneven\n",
+                    __FILE__, __LINE__);
+                failures++;
+        }
+        if (online > 1 && active > 1 && receiving < 2) {
+                printf("selftest: %s:%d: MSI traffic did not reach multiple "
+                    "CPUs\n", __FILE__, __LINE__);
+                failures++;
+        }
+        return failures;
 }
 
 /*
@@ -411,7 +498,7 @@ intr_dispatch(struct trapframe *tf)
                 break;
         default:
                 if (intr_sources[vector] != NULL) {
-                        intr_device(intr_sources[vector]);
+                        intr_device(intr_sources[vector], ci);
                         break;
                 }
                 if (vector >= ICU_OFFSET && vector < ICU_OFFSET + 16)

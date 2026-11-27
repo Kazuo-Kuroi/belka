@@ -24,6 +24,7 @@
 #include <machine/cpu.h>
 #include <machine/cpufunc.h>
 #include <machine/fpu.h>
+#include <machine/intr.h>
 #include <machine/md_var.h>
 #include <machine/segments.h>
 #include <machine/trap.h>
@@ -665,6 +666,7 @@ md_selftest(void)
 
         failures += md_selftest_hat();
         failures += md_selftest_intr();
+        failures += intr_selftest_msi();
         failures += md_selftest_acpi();
         failures += md_selftest_rtc();
 

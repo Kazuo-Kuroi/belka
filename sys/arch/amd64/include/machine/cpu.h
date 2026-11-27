@@ -80,6 +80,7 @@ struct cpu_info {
         volatile uint64_t ci_ticks;
         volatile uint64_t ci_nintr;
         volatile uint64_t ci_nipi;
+        volatile uint64_t ci_nmsi;     /* PCI messages delivered here */
 
         /*
          * Action queue: functions other processors ask this one to run,
